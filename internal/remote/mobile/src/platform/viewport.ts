@@ -99,9 +99,13 @@ export function trackVisualViewport(): () => void {
   let healTimer = 0
 
   const write = () => {
-    if (open) root.style.setProperty('--app-h', `${height}px`)
-    else root.style.removeProperty('--app-h')
-    root.style.setProperty('--app-y', `${top}px`)
+    if (open) {
+      root.style.setProperty('--app-h', `${height}px`)
+      root.style.setProperty('--app-y', `${top}px`)
+    } else {
+      root.style.removeProperty('--app-h')
+      root.style.removeProperty('--app-y')
+    }
   }
 
   const apply = () => {

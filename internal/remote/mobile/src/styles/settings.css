@@ -1,5 +1,5 @@
 .settings-page {
-  position: fixed; left: 0; right: 0; top: var(--app-y, 0px); height: var(--app-h, 100%); z-index: 35;
+  position: fixed; left: 0; right: 0; top: var(--app-y, 0px); bottom: 0; height: var(--app-h, auto); z-index: 35;
   display: flex; flex-direction: column; background: var(--chat-bg); color: var(--fg); will-change: transform;
 }
 .settings-head { display: flex; align-items: center; gap: 12px; padding: calc(var(--safe-top) + 6px) 20px 10px; background: var(--head-fill); }

@@ -27,8 +27,10 @@ html {
   font-synthesis: none;
 }
 
-html, body { background: var(--chat-bg); }
-:root[data-surface='drawer'], :root[data-surface='drawer'] body { background: var(--drawer-bg); }
+html { background: #000000; }
+body { background: var(--chat-bg); }
+:root[data-theme='light'] html { background: #f2f2f4; }
+:root[data-surface='drawer'] body { background: var(--drawer-bg); }
 
 body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 .say, .md, .bubble-text, .status-card-text, .thought-body, .out, .diff, .code, .notice, .ask-card-title, .ask-card-detail, input, textarea, [contenteditable='true'] {
