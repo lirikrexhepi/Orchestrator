@@ -19,6 +19,10 @@ export interface ToolCall {
   input?: Record<string, unknown>
   output?: string
   diffs?: FileDiff[]
+  durationMs?: number
+  toolCount?: number
+  tokens?: number
+  async?: boolean
 }
 
 export interface PlanEntry {
@@ -63,6 +67,7 @@ export interface RuntimeEvent {
   icon?: string
   files?: FileRef[]
   tool?: ToolCall
+  parentToolId?: string
   plan?: PlanEntry[]
   approval?: ApprovalRequest
   question?: QuestionRequest
@@ -98,6 +103,8 @@ export interface ThreadSummary {
   branch?: string
   live: boolean
   busy: boolean
+  runningSubagents?: number
+  totalSubagents?: number
   turnStartedAt?: number
   lastTurnMs?: number
   lastActivity?: number

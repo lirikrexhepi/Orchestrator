@@ -29,7 +29,7 @@ export function useAttachments(field: RefObject<HTMLTextAreaElement>) {
     picker.click()
   }
 
-  const add = async (list: FileList | null) => {
+  const add = async (list: FileList | File[] | null) => {
     if (!list || list.length === 0) return
     setUploading(true)
     setError(null)

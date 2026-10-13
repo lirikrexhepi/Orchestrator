@@ -58,6 +58,16 @@ function recent(chats: ThreadSummary[], hidden: ReadonlySet<string>): ThreadSumm
     .slice(0, SCRUB.maxChats)
 }
 
+function agentCount(c: ThreadSummary): number {
+  return (c.busy ? 1 : 0) + (c.runningSubagents ?? 0)
+}
+
+function metaOf(c: ThreadSummary): string {
+  const total = agentCount(c)
+  const working = total > 0 ? `${total} agent${total === 1 ? '' : 's'} running` : ''
+  return [c.projectName || 'No project', working, relative(c.lastActivity)].filter(Boolean).join(' · ')
+}
+
 function clampRaw(raw: number, max: number): number {
   return Math.min(max + SCRUB.overscroll, Math.max(-SCRUB.overscroll, raw))
 }
@@ -333,6 +343,8 @@ export function HistoryScrubber({ chats, currentId, onPick }: HistoryScrubberPro
     }
   }
 
+  const anyWorking = chats.some((c) => agentCount(c) > 0)
+
   return (
     <>
       {session ? (
@@ -348,11 +360,12 @@ export function HistoryScrubber({ chats, currentId, onPick }: HistoryScrubberPro
                 role="option"
                 aria-selected={c.threadId === currentId}
                 className="scrub-item"
+                data-working={agentCount(c) > 0 || undefined}
               >
                 <ModelStack drivers={c.drivers && c.drivers.length > 0 ? c.drivers : c.driver ? [c.driver] : []} />
                 <span className="scrub-text">
                   <span className="scrub-label">{c.title || c.preview || 'Untitled chat'}</span>
-                  <span className="scrub-meta">{[c.projectName || 'No project', relative(c.lastActivity)].filter(Boolean).join(' · ')}</span>
+                  <span className="scrub-meta" data-working={agentCount(c) > 0 || undefined}>{metaOf(c)}</span>
                 </span>
               </div>
             ))}
@@ -361,7 +374,7 @@ export function HistoryScrubber({ chats, currentId, onPick }: HistoryScrubberPro
       ) : null}
       <div
         ref={zone}
-        className="scrub-zone"
+        className={anyWorking ? 'scrub-zone has-working' : 'scrub-zone'}
         aria-label="Hold and slide to switch chats"
         onPointerDown={onDown}
         onPointerMove={onMove}
@@ -369,6 +382,7 @@ export function HistoryScrubber({ chats, currentId, onPick }: HistoryScrubberPro
         onPointerCancel={onEnd}
         onContextMenu={(e) => e.preventDefault()}
       >
+        {anyWorking ? <span className="scrub-working" aria-label="Agents working" /> : null}
         {Array.from({ length: SCRUB.ticks }, (_, k) => (
           <span key={k} className="scrub-tick" style={{ width: tickLength(k, false) }} />
         ))}

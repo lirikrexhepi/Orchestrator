@@ -16,6 +16,7 @@ import {
   type IconComponent,
 } from '../icons'
 import Markdown from '../components/Markdown'
+import { ProviderIcon } from '../components/modelPicker/ProviderIcon'
 import { api } from '../api'
 import { basename, dirname, duration } from '../format'
 import { UserBubble } from './user/UserBubble'
@@ -52,7 +53,7 @@ export const BlockView = React.memo(function BlockView({ threadId, block }: { th
       return <UserBubble content={block.content} files={block.files} pending={block.pending} />
 
     case 'notice':
-      return <div className="notice">{block.label}</div>
+      return <SwitchNotice label={block.label} />
 
     case 'text':
       if (block.variant === 'error') {
@@ -122,6 +123,74 @@ export const BlockView = React.memo(function BlockView({ threadId, block }: { th
       return null
   }
 })
+
+function SwitchNotice({ label }: { label: string }) {
+  const parsed = parseSwitchNotice(label)
+  if (!parsed) return <div className="notice">{label}</div>
+  const fromShort = shortSwitchPart(parsed.fromDriver, parsed.fromModel)
+  const toShort = shortSwitchPart(parsed.toDriver, parsed.toModel)
+  if (fromShort.key === toShort.key) {
+    return (
+      <div className="notice notice-switch" aria-label={label}>
+        <span className="notice-switch-item">
+          <ProviderIcon driver={fromShort.iconKey} size={14} />
+          <span className="notice-switch-text">{fromShort.text}</span>
+        </span>
+      </div>
+    )
+  }
+  return (
+    <div className="notice notice-switch" aria-label={label}>
+      <span className="notice-switch-item">
+        <ProviderIcon driver={fromShort.iconKey} size={14} />
+        <span className="notice-switch-text">{fromShort.text}</span>
+      </span>
+      <span className="notice-switch-arrow" aria-hidden>
+        →
+      </span>
+      <span className="notice-switch-item">
+        <ProviderIcon driver={toShort.iconKey} size={14} />
+        <span className="notice-switch-text">{toShort.text}</span>
+      </span>
+    </div>
+  )
+}
+
+function parseSwitchNotice(label: string): { fromDriver: string; fromModel: string; toDriver: string; toModel: string } | null {
+  if (!label.startsWith('Switched from ')) return null
+  const parts = label.slice(14).split(' to ')
+  if (parts.length !== 2) return null
+  const splitPart = (p: string) => {
+    const idx = p.indexOf(':')
+    if (idx !== -1) return { driver: p.slice(0, idx).trim(), model: p.slice(idx + 1).trim() }
+    return { driver: p.trim(), model: '' }
+  }
+  const from = splitPart(parts[0])
+  const to = splitPart(parts[1])
+  if (!from.driver || !to.driver) return null
+  return { fromDriver: from.driver, fromModel: from.model, toDriver: to.driver, toModel: to.model }
+}
+
+function driverIconKey(driver: string): string {
+  const key = driver.toLowerCase().replace(/[^a-z]/g, '')
+  if (key.includes('claude')) return 'claude'
+  if (key.includes('opencode')) return 'opencode'
+  if (key.includes('antigravity') || key.includes('gemini')) return 'antigravity'
+  if (key.includes('codex') || key.includes('openai') || key.includes('gpt')) return 'codex'
+  return driver.toLowerCase()
+}
+
+function shortModelId(model: string): string {
+  const last = model.split('/').pop()?.trim() || model.trim()
+  return last
+}
+
+function shortSwitchPart(driver: string, model: string): { key: string; text: string; iconKey: string } {
+  const short = shortModelId(model)
+  const text = short ? `${driver}:${short}` : driver
+  const key = `${driver.toLowerCase()}:${short.toLowerCase()}`
+  return { key, text, iconKey: driverIconKey(driver) }
+}
 
 function Thought({ thinking, text }: { thinking: boolean; text: string }) {
   const [open, setOpen] = useState(false)

@@ -182,7 +182,13 @@ export function Conversation({ threadId, openDrawer, go }: ConversationProps) {
             ) : (
               <div className="working" role="status">
                 <span className="dot" aria-hidden />
-                <span className="shimmer">Working</span>
+                <span className="shimmer">
+                  {(() => {
+                    const running = thread?.subagents?.filter((a) => a.status === 'running').length ?? 0
+                    const total = 1 + running
+                    return total === 1 ? 'Working' : `${total} agents running`
+                  })()}
+                </span>
                 <Elapsed since={thread?.turnStartedAt} />
               </div>
             )}

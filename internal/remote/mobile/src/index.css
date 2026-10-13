@@ -180,6 +180,12 @@ svg { flex-shrink: 0; }
 .turn-end::before, .turn-end::after { content: ''; height: 1px; flex: 1; background: var(--line-soft); }
 
 .notice { font-size: 13px; color: var(--text-3); text-align: center; }
+.notice-switch { display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; }
+.notice-switch-item { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 42%; }
+.notice-switch-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.notice-switch-arrow { color: var(--text-3); flex-shrink: 0; }
+.provider-icon { border-radius: 3px; object-fit: contain; flex-shrink: 0; }
+.provider-icon-fallback { display: inline-grid; place-items: center; border-radius: 4px; background: var(--raise); color: var(--text-2); font-weight: 600; flex-shrink: 0; }
 
 .thought { text-align: left; width: 100%; color: var(--text-3); font-size: 14px; display: flex; gap: 8px; align-items: center; min-height: 32px; }
 .thought-body { font-size: 14px; color: var(--text-2); font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere; border-left: 2px solid var(--line); padding-left: 12px; margin-top: 4px; }

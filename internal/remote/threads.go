@@ -69,25 +69,27 @@ func (s *Server) currentHooks() Hooks {
 // ThreadSummary is one row of the phone's inbox: who is working, who needs
 // an answer, and what they last said.
 type ThreadSummary struct {
-	ThreadID      string              `json:"threadId"`
-	Title         string              `json:"title"`
-	Kind          string              `json:"kind"` // "coordinator" | "agent"
-	Driver        string              `json:"driver"`
-	Account       string              `json:"account,omitempty"`
-	Drivers       []string            `json:"drivers,omitempty"`
-	Model         string              `json:"model"`
-	Options       domain.ModelOptions `json:"options,omitempty"`
-	State         domain.TaskState    `json:"state,omitempty"`
-	Cwd           string              `json:"cwd,omitempty"`
-	ProjectCwd    string              `json:"projectCwd,omitempty"`
-	ProjectName   string              `json:"projectName,omitempty"`
-	Branch        string              `json:"branch,omitempty"`
-	Live          bool                `json:"live"`
-	Busy          bool                `json:"busy"`
-	TurnStartedAt int64               `json:"turnStartedAt,omitempty"`
-	LastTurnMs    int64               `json:"lastTurnMs,omitempty"`
-	LastActivity  int64               `json:"lastActivity,omitempty"`
-	Preview       string              `json:"preview,omitempty"`
+	ThreadID         string              `json:"threadId"`
+	Title            string              `json:"title"`
+	Kind             string              `json:"kind"` // "coordinator" | "agent"
+	Driver           string              `json:"driver"`
+	Account          string              `json:"account,omitempty"`
+	Drivers          []string            `json:"drivers,omitempty"`
+	Model            string              `json:"model"`
+	Options          domain.ModelOptions `json:"options,omitempty"`
+	State            domain.TaskState    `json:"state,omitempty"`
+	Cwd              string              `json:"cwd,omitempty"`
+	ProjectCwd       string              `json:"projectCwd,omitempty"`
+	ProjectName      string              `json:"projectName,omitempty"`
+	Branch           string              `json:"branch,omitempty"`
+	Live             bool                `json:"live"`
+	Busy             bool                `json:"busy"`
+	RunningSubagents int                 `json:"runningSubagents,omitempty"`
+	TotalSubagents   int                 `json:"totalSubagents,omitempty"`
+	TurnStartedAt    int64               `json:"turnStartedAt,omitempty"`
+	LastTurnMs       int64               `json:"lastTurnMs,omitempty"`
+	LastActivity     int64               `json:"lastActivity,omitempty"`
+	Preview          string              `json:"preview,omitempty"`
 	// Attention is "approval" or "question" while the agent waits on the user.
 	Attention string `json:"attention,omitempty"`
 	Source    string `json:"source,omitempty"`
@@ -109,11 +111,28 @@ func summarize(summary *ThreadSummary, events []domain.RuntimeEvent) {
 	}
 	approvals := map[string]bool{}
 	questions := []string{}
+	pendingSubagents := map[string]bool{}
+	totalSubagents := 0
 	var preview strings.Builder
 	previewItem := ""
 	for _, event := range events {
 		if event.At > summary.LastActivity {
 			summary.LastActivity = event.At
+		}
+		if event.Kind == domain.EventToolCall && event.Tool != nil {
+			switch strings.ToLower(event.Tool.Name) {
+			case "task", "agent":
+				if event.Tool.ID != "" {
+					if !pendingSubagents[event.Tool.ID] {
+						pendingSubagents[event.Tool.ID] = true
+						totalSubagents++
+					}
+				}
+			}
+		} else if event.Kind == domain.EventToolResult && event.Tool != nil {
+			if event.Tool.ID != "" && pendingSubagents[event.Tool.ID] && !event.Tool.Async {
+				delete(pendingSubagents, event.Tool.ID)
+			}
 		}
 		switch event.Kind {
 		case domain.EventTurnStarted:
@@ -127,9 +146,13 @@ func summarize(summary *ThreadSummary, events []domain.RuntimeEvent) {
 			summary.TurnStartedAt = 0
 			approvals = map[string]bool{}
 			questions = questions[:0]
+			if event.Kind == domain.EventTurnFailed || (event.Kind == domain.EventTurnCompleted && event.StopReason == domain.StopCancelled) {
+				pendingSubagents = map[string]bool{}
+			}
 		case domain.EventSessionStopped:
 			summary.Busy = false
 			summary.TurnStartedAt = 0
+			pendingSubagents = map[string]bool{}
 		case domain.EventAgentMessage:
 			key := event.TurnID + "|" + event.ItemID
 			if !event.Delta || key != previewItem {
@@ -174,6 +197,8 @@ func summarize(summary *ThreadSummary, events []domain.RuntimeEvent) {
 	}
 	summary.Preview = text
 	summary.Drivers = driverTrail(used, summary.Driver)
+	summary.RunningSubagents = len(pendingSubagents)
+	summary.TotalSubagents = totalSubagents
 }
 
 func projectName(path string) string {

@@ -6,6 +6,7 @@ import { interrupt, removeQueued, send, useStore } from '../../store'
 import { PcDownNotice } from '../status/PcDownNotice'
 import { AttachmentStrip } from './AttachmentStrip'
 import { QueuedList } from './QueuedList'
+import { SubagentPill } from './SubagentPill'
 import { useAttachments } from './useAttachments'
 import { useDictation } from './useDictation'
 import type { FileRef } from '../../types'
@@ -17,6 +18,26 @@ interface ComposerProps {
 }
 
 const MAX_INPUT_HEIGHT = 132
+const MIN_INPUT_HEIGHT = 40
+const MIRRORED = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontStretch', 'letterSpacing', 'lineHeight', 'paddingTop', 'paddingBottom', 'paddingLeft', 'paddingRight', 'borderTopWidth', 'borderBottomWidth', 'boxSizing', 'wordBreak', 'overflowWrap', 'whiteSpace', 'tabSize', 'textTransform', 'wordSpacing'] as const
+
+let mirror: HTMLTextAreaElement | null = null
+
+function contentHeight(el: HTMLTextAreaElement): number {
+  if (!mirror) {
+    mirror = document.createElement('textarea')
+    mirror.setAttribute('aria-hidden', 'true')
+    mirror.tabIndex = -1
+    mirror.rows = 1
+    Object.assign(mirror.style, { position: 'fixed', left: '-10000px', top: '0', visibility: 'hidden', pointerEvents: 'none', overflow: 'hidden', height: '0', minHeight: '0', maxHeight: 'none' })
+    document.body.appendChild(mirror)
+  }
+  const style = getComputedStyle(el)
+  for (const key of MIRRORED) mirror.style[key] = style[key]
+  mirror.style.width = `${el.getBoundingClientRect().width}px`
+  mirror.value = el.value
+  return mirror.scrollHeight
+}
 const ICON = { size: 24, strokeWidth: 1.75 } as const
 const BUTTON = 44
 const TAP_MS = 350
@@ -46,10 +67,10 @@ export function Composer({ threadId, placeholder, onCreate }: ComposerProps) {
   function grow() {
     const el = field.current
     if (!el) return
-    el.style.height = 'auto'
-    const target = Math.min(el.scrollHeight, MAX_INPUT_HEIGHT)
-    el.style.overflowY = target >= MAX_INPUT_HEIGHT ? 'auto' : 'hidden'
-    el.style.height = `${target}px`
+    const natural = contentHeight(el)
+    const target = Math.max(MIN_INPUT_HEIGHT, Math.min(natural, MAX_INPUT_HEIGHT))
+    el.style.overflowY = natural > MAX_INPUT_HEIGHT ? 'auto' : 'hidden'
+    if (Math.abs(el.getBoundingClientRect().height - target) > 0.5 || !el.style.height) el.style.height = `${target}px`
   }
 
   useEffect(grow, [text, dictation.draft])
@@ -127,6 +148,7 @@ export function Composer({ threadId, placeholder, onCreate }: ComposerProps) {
       <AttachmentStrip files={attachments.files} onRemove={attachments.remove} />
       {attachments.error ? <div className="hint composer-error">{attachments.error}</div> : null}
       <PcDownNotice placement="dock" />
+      {thread ? <SubagentPill subagents={thread.subagents ?? []} blocks={thread.blocks} busy={busy} /> : null}
       <GlassSquircle radius={30} fill="var(--composer-fill)" className="composer-surface" onPointerDown={focusField}>
         <button className="composer-attach" onClick={attachments.open} disabled={attachments.uploading} aria-label="Attach a file">
           <Paperclip {...ICON} className={attachments.uploading ? 'spin' : undefined} aria-hidden />
@@ -151,6 +173,14 @@ export function Composer({ threadId, placeholder, onCreate }: ComposerProps) {
           enterKeyHint="send"
           onTouchStart={onFieldTouchStart}
           onTouchEnd={onFieldTouchEnd}
+          onPaste={(e) => {
+            const dt = e.clipboardData
+            if (!dt) return
+            const files = dt.files && dt.files.length > 0 ? Array.from(dt.files) : Array.from(dt.items || []).filter((i) => i.kind === 'file').map((i) => i.getAsFile()).filter((f): f is File => Boolean(f))
+            if (files.length === 0) return
+            e.preventDefault()
+            void attachments.add(files)
+          }}
           onChange={(e) => {
             const next = e.target.value
             if (dictation.listening && dictation.draft && next.endsWith(dictation.draft)) {

@@ -11,6 +11,7 @@ import {
 } from './phoneLogger'
 import { api, getBase, getToken } from './api'
 import { reduceEvent, userBlock } from './feed/reducer'
+import { trackSubagents, type SubagentData } from './feed/subagents'
 import { readLocal, readThread, writeLocal, writeThread } from './cache'
 import { setBadge } from './push'
 import type { AgentStreamBlock } from './feed/types'
@@ -51,6 +52,7 @@ export interface ThreadState {
   queued: QueuedMessage[]
   sending: boolean
   context?: { tokens: number; window?: number }
+  subagents: SubagentData[]
 }
 
 export type Connection = 'connecting' | 'live' | 'offline'
@@ -132,7 +134,7 @@ export function getState(): State {
 // ---------------------------------------------------------------------------
 
 function emptyThread(): ThreadState {
-  return { blocks: [], lastSeq: 0, loaded: false, loading: false, busy: false, turnMs: {}, queued: [], sending: false }
+  return { blocks: [], lastSeq: 0, loaded: false, loading: false, busy: false, turnMs: {}, queued: [], sending: false, subagents: [] }
 }
 
 function patchThread(threadId: string, patch: (t: ThreadState) => ThreadState) {
@@ -145,6 +147,7 @@ function patchThread(threadId: string, patch: (t: ThreadState) => ThreadState) {
 /** Folds events into a thread, tracking busy state and turn durations. */
 function fold(t: ThreadState, events: RuntimeEvent[]): ThreadState {
   let { blocks, busy, turnStartedAt, turnMs, context } = t
+  let subagents = t.subagents ?? []
   let lastSeq = t.lastSeq
   let durations: Record<string, number> | null = null
   for (const event of events) {
@@ -156,6 +159,7 @@ function fold(t: ThreadState, events: RuntimeEvent[]): ThreadState {
       continue
     }
     blocks = reduceEvent(blocks, event)
+    subagents = trackSubagents(subagents, event)
     if (event.seq > lastSeq) lastSeq = event.seq
     if (event.kind === 'turn.started') {
       busy = true
@@ -169,7 +173,7 @@ function fold(t: ThreadState, events: RuntimeEvent[]): ThreadState {
       turnStartedAt = undefined
     }
   }
-  return { ...t, blocks, busy, turnStartedAt, lastSeq, turnMs: durations ?? turnMs, context }
+  return { ...t, blocks, busy, turnStartedAt, lastSeq, turnMs: durations ?? turnMs, context, subagents }
 }
 
 const saveTimers = new Map<string, number>()
@@ -241,6 +245,42 @@ function scheduleSummaryRefresh(delay = 1200) {
   refreshTimer = window.setTimeout(() => void refreshSummaries(), delay)
 }
 
+const SPAWN_TOOL_NAMES = new Set(['task', 'agent'])
+const pendingSubagentIds = new Map<string, Set<string>>()
+
+function trackSummarySubagents(threadId: string, summary: { runningSubagents?: number; totalSubagents?: number }, e: RuntimeEvent) {
+  if (e.kind === 'tool.call' && e.tool && SPAWN_TOOL_NAMES.has(e.tool.name.toLowerCase()) && e.tool.id) {
+    let pending = pendingSubagentIds.get(threadId)
+    if (!pending) {
+      pending = new Set()
+      pendingSubagentIds.set(threadId, pending)
+    }
+    if (!pending.has(e.tool.id)) {
+      pending.add(e.tool.id)
+      summary.runningSubagents = (summary.runningSubagents ?? 0) + 1
+      summary.totalSubagents = (summary.totalSubagents ?? 0) + 1
+    }
+    return
+  }
+  if (e.kind === 'tool.result' && e.tool?.id) {
+    const pending = pendingSubagentIds.get(threadId)
+    if (pending?.has(e.tool.id) && !e.tool.async) {
+      pending.delete(e.tool.id)
+      summary.runningSubagents = Math.max(0, (summary.runningSubagents ?? 1) - 1)
+    }
+    return
+  }
+  if (e.kind === 'turn.failed' || e.kind === 'session.stopped') {
+    pendingSubagentIds.delete(threadId)
+    summary.runningSubagents = 0
+    return
+  }
+  if (e.kind === 'turn.completed' && e.stopReason === 'cancelled') {
+    pendingSubagentIds.delete(threadId)
+    summary.runningSubagents = 0
+  }
+}
+
 function applyEvents(events: RuntimeEvent[]) {
   const byThread = new Map<string, RuntimeEvent[]>()
   for (const event of events) {
@@ -275,6 +315,7 @@ function applyEvents(events: RuntimeEvent[]) {
       for (const e of list) {
         summary.lastActivity = Math.max(summary.lastActivity ?? 0, e.at || 0)
         if (e.driver) summary.drivers = withDriver(summary.drivers ?? (summary.driver ? [summary.driver] : []), e.driver.toLowerCase())
+        trackSummarySubagents(threadId, summary, e)
         switch (e.kind) {
           case 'turn.started':
             summary.busy = true
@@ -336,6 +377,19 @@ export async function refreshSummaries() {
   try {
     const summaries = await api.threads()
     const list = Array.isArray(summaries) ? summaries : []
+    const seen = new Set(list.map((s) => s.threadId))
+    for (const id of pendingSubagentIds.keys()) {
+      if (!seen.has(id)) pendingSubagentIds.delete(id)
+    }
+    for (const s of list) {
+      const pending = pendingSubagentIds.get(s.threadId)
+      if (!pending || pending.size === 0) {
+        if ((s.runningSubagents ?? 0) === 0) pendingSubagentIds.delete(s.threadId)
+        continue
+      }
+      if ((s.runningSubagents ?? 0) === 0) pendingSubagentIds.delete(s.threadId)
+      else s.runningSubagents = Math.max(s.runningSubagents ?? 0, pending.size)
+    }
     writeLocal(SUMMARIES_CACHE_KEY, list)
     set({ summaries: list, summariesLoaded: true, pcDown: false })
     setBadge(list.filter((t) => t.attention).length)
