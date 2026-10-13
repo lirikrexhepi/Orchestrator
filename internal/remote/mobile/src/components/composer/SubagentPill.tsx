@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { GlassSquircle } from '../../ui'
 import { Sheet, SheetList, SheetRow } from '../sheet'
 import { ChevronLeft } from '../../icons'
 import { elapsed } from '../../format'
@@ -50,10 +51,6 @@ function detailOf(agent: SubagentData, now: number): string {
   return [STATUS_WORD[agent.status], time, formatTokens(agent.tokens)].filter(Boolean).join(' · ')
 }
 
-function Glyph({ live }: { live: boolean }) {
-  return <span className={live ? 'subagent-glyph live' : 'subagent-glyph'} aria-hidden />
-}
-
 function AgentDetail({ agent, now, onBack }: { agent: SubagentData; now: number; onBack: () => void }) {
   return (
     <div className="subagent-detail">
@@ -92,30 +89,34 @@ export function SubagentPill({ subagents, blocks, busy }: { subagents: SubagentD
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const running = subagents.filter((agent) => agent.status === 'running').length
   const shells = useMemo(() => (busy ? runningShells(blocks) : 0), [busy, blocks])
-  const totalAgents = (busy ? 1 : 0) + running
-  const live = totalAgents > 0 || shells > 0
+  const live = running > 0 || shells > 0
   const now = useNow(open && running > 0)
   const selected = subagents.find((agent) => agent.id === selectedId) ?? null
 
   if (!live && subagents.length === 0) return null
 
   const parts = live
-    ? [`${plural(totalAgents, 'agent')} running`, shells > 0 ? plural(shells, 'shell') : ''].filter(Boolean)
+    ? [
+        running > 0 ? `${plural(running, 'subagent')} running` : '',
+        shells > 0 ? (running > 0 ? plural(shells, 'shell') : `${plural(shells, 'shell')} running`) : '',
+      ].filter(Boolean)
     : [plural(subagents.length, 'subagent')]
   const canOpen = subagents.length > 0
 
   return (
     <>
-      <button
-        type="button"
+      <GlassSquircle
+        as="button"
+        radius={16}
+        fill="var(--composer-fill)"
+        pressable={false}
         className={live ? 'subagent-pill live' : 'subagent-pill'}
         onClick={() => canOpen && setOpen(true)}
         aria-label={canOpen ? `${parts.join(', ')}. Show subagents` : parts.join(', ')}
         disabled={!canOpen}
       >
-        <Glyph live={live} />
-        <span>{parts.join(' · ')}</span>
-      </button>
+        <span className={live ? 'shimmer' : undefined}>{parts.join(' · ')}</span>
+      </GlassSquircle>
       {open ? (
         <Sheet
           title="Subagents"

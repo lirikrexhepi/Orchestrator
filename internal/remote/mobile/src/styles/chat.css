@@ -108,16 +108,13 @@ button.start-row:active { opacity: 0.6; }
 .chat-list .feed { padding-top: 0; }
 
 .subagent-pill {
-  align-self: flex-start; display: inline-flex; align-items: center; gap: 8px;
-  min-height: 32px; margin: 0 4px; padding: 0 12px 0 10px; border-radius: 999px;
-  background: var(--surface-2, rgba(255, 255, 255, 0.06)); border: 1px solid rgba(var(--ink), 0.08);
+  align-self: flex-start; display: inline-flex; align-items: center;
+  min-height: 32px; margin: 0 4px; padding: 0 14px;
   font: 500 13px/1 var(--font); color: var(--fg-2); touch-action: manipulation;
 }
 .subagent-pill:disabled { cursor: default; opacity: 1; }
 .subagent-pill:not(:disabled):active { opacity: 0.7; }
 .subagent-pill.live { color: var(--fg); }
-.subagent-glyph { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-4); flex-shrink: 0; }
-.subagent-glyph.live { background: var(--accent, #0a84ff); animation: pulse 1.4s ease-in-out infinite; }
 .subagent-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-4); flex-shrink: 0; }
 .subagent-dot[data-status='running'] { background: var(--accent, #0a84ff); animation: pulse 1.4s ease-in-out infinite; }
 .subagent-dot[data-status='completed'] { background: var(--ok, #30d158); }
