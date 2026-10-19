@@ -13,6 +13,7 @@ import { PlanTool } from './PlanTool';
 import { QuestionTool } from './QuestionTool';
 import { ApprovalCard } from './ApprovalCard';
 import { MarkdownText } from './MarkdownText';
+import { SubagentFeedRow } from './WorkspacePanel';
 import { NoticeDivider } from './NoticeDivider';
 import { InlinePlanCard } from '../orchestrator/InlinePlanCard';
 import { extractPlanFromText } from '../orchestrator/extractPlan';
@@ -66,6 +67,7 @@ export interface AgentSessionFeedProps {
   ) => void;
   onDismissPlan?: () => void;
   onLoadEarlier?: () => void;
+  onOpenSubagent?: (id: string) => void;
   hasEarlier?: boolean;
   loadingEarlier?: boolean;
 }
@@ -317,6 +319,16 @@ const FeedBlock = React.memo(function FeedBlock({
               }
             }
           }}
+        />
+      );
+
+    case 'subagent':
+      return (
+        <SubagentFeedRow
+          agent={block}
+          driver={defaultDriver}
+          modelId={defaultModel}
+          onOpen={(agentId) => handlers.current.onOpenSubagent?.(agentId)}
         />
       );
 

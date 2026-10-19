@@ -22,6 +22,10 @@ export function AddProject(arg1) {
   return window['go']['main']['App']['AddProject'](arg1);
 }
 
+export function AvailableEditors() {
+  return window['go']['main']['App']['AvailableEditors']();
+}
+
 export function ChooseAttachments() {
   return window['go']['main']['App']['ChooseAttachments']();
 }
@@ -162,6 +166,10 @@ export function GitPull(arg1) {
   return window['go']['main']['App']['GitPull'](arg1);
 }
 
+export function GitPullRequestURL(arg1) {
+  return window['go']['main']['App']['GitPullRequestURL'](arg1);
+}
+
 export function GitPush(arg1) {
   return window['go']['main']['App']['GitPush'](arg1);
 }
@@ -276,6 +284,10 @@ export function MutateAgentTask(arg1, arg2, arg3, arg4) {
 
 export function NewChat() {
   return window['go']['main']['App']['NewChat']();
+}
+
+export function OpenInEditor(arg1, arg2) {
+  return window['go']['main']['App']['OpenInEditor'](arg1, arg2);
 }
 
 export function OpenPath(arg1) {

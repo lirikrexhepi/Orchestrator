@@ -15,6 +15,8 @@ export interface SubagentMenuProps {
   driver?: string;
   modelId?: string;
   dockable?: boolean;
+  workspace?: React.ReactNode;
+  onOpenAgent?: (id: string) => void;
 }
 
 const MAX_ROWS = 5;
@@ -77,21 +79,21 @@ function isStacked(agents: SubagentBlockData[]): boolean {
   return agents.length > MAX_ROWS && agents.filter((agent) => agent.status !== 'running').length > 1;
 }
 
-const STATUS_WORD: Record<SubagentBlockData['status'], string> = {
+export const STATUS_WORD: Record<SubagentBlockData['status'], string> = {
   running: 'Running',
   completed: 'Done',
   error: 'Failed',
   stopped: 'Stopped',
 };
 
-const DOT_TONE: Record<SubagentBlockData['status'], string> = {
+export const DOT_TONE: Record<SubagentBlockData['status'], string> = {
   running: 'bg-amber-400 animate-pulse shadow-[0_0_6px_rgba(251,191,36,0.8)]',
   completed: 'bg-emerald-400',
   error: 'bg-rose-500',
   stopped: 'bg-zinc-400',
 };
 
-interface Tone {
+export interface Tone {
   panel: string;
   ring: string;
   divider: string;
@@ -110,7 +112,7 @@ interface Tone {
   stackRing: string;
 }
 
-const DARK_TONE: Tone = {
+export const DARK_TONE: Tone = {
   panel: 'bg-[#0b0b0d] border-white/[0.08] text-white shadow-[0_28px_64px_-12px_rgba(0,0,0,0.75)]',
   ring: 'ring-[#0b0b0d]',
   divider: 'border-white/10',
@@ -129,7 +131,7 @@ const DARK_TONE: Tone = {
   stackRing: 'ring-[#161619]',
 };
 
-const LIGHT_TONE: Tone = {
+export const LIGHT_TONE: Tone = {
   panel: 'bg-white border-black/10 text-[#111] shadow-[0_24px_60px_-12px_rgba(0,0,0,0.25)]',
   ring: 'ring-white',
   divider: 'border-black/[0.08]',
@@ -148,18 +150,33 @@ const LIGHT_TONE: Tone = {
   stackRing: 'ring-white',
 };
 
-function useNow(active: boolean): number {
+const tickListeners = new Set<(now: number) => void>();
+let tickTimer = 0;
+
+export function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!active) return;
     setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
+    tickListeners.add(setNow);
+    if (!tickTimer) {
+      tickTimer = window.setInterval(() => {
+        const t = Date.now();
+        tickListeners.forEach((listener) => listener(t));
+      }, 1000);
+    }
+    return () => {
+      tickListeners.delete(setNow);
+      if (tickListeners.size === 0) {
+        window.clearInterval(tickTimer);
+        tickTimer = 0;
+      }
+    };
   }, [active]);
   return now;
 }
 
-function formatElapsed(ms: number): string {
+export function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000));
   if (total < 60) return `${total}s`;
   const minutes = Math.floor(total / 60);
@@ -167,7 +184,7 @@ function formatElapsed(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
 
-function elapsedOf(agent: SubagentBlockData, now: number): string {
+export function elapsedOf(agent: SubagentBlockData, now: number): string {
   if (!agent.startedAt) return '';
   const end = agent.status === 'running' ? now : (agent.endedAt ?? now);
   return formatElapsed(end - agent.startedAt);
@@ -194,7 +211,7 @@ function toolCount(agent: SubagentBlockData): number {
   return Math.max(seen, agent.toolCount ?? 0);
 }
 
-const StatusMark: React.FC<{ status: SubagentBlockData['status']; size?: number }> = ({ status, size = 13 }) => {
+export const StatusMark: React.FC<{ status: SubagentBlockData['status']; size?: number }> = ({ status, size = 13 }) => {
   if (status === 'running') return <OrbitLoader size={size} />;
   const tone =
     status === 'completed' ? 'text-emerald-500' : status === 'error' ? 'text-rose-500' : 'text-zinc-400';
@@ -206,7 +223,7 @@ const StatusMark: React.FC<{ status: SubagentBlockData['status']; size?: number 
   );
 };
 
-const EntryRow: React.FC<{ entry: SubagentEntry; tone: Tone }> = ({ entry, tone }) => {
+export const EntryRow: React.FC<{ entry: SubagentEntry; tone: Tone }> = ({ entry, tone }) => {
   if (entry.kind === 'text') {
     return (
       <div className={`text-[12px] leading-relaxed select-text pl-0.5 ${tone.body}`}>
@@ -570,7 +587,7 @@ const AgentList: React.FC<{
 const PILL_DARK = 'bg-[#2a2a2a] hover:bg-[#363636] text-white/90 border-white/15';
 const PILL_LIGHT = 'bg-white hover:bg-[#efeff2] text-[#111] border-black/10 shadow-[0_1px_2px_rgba(0,0,0,0.05)]';
 
-export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, driver = 'claude', modelId, dockable = false }) => {
+export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, driver = 'claude', modelId, dockable = false, workspace, onOpenAgent }) => {
   const [open, setOpen] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -654,7 +671,7 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
     };
   }, [open, close, measure]);
 
-  if (agents.length === 0) return null;
+  if (agents.length === 0 && !(docked && workspace)) return null;
 
   const width = Math.min(selected ? TRANSCRIPT_WIDTH : listWidth, window.innerWidth - EDGE * 2);
   const list = (
@@ -667,7 +684,7 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
       isLight={isLight}
       expanded={expanded}
       onExpandedChange={setExpanded}
-      onSelect={setOpenId}
+      onSelect={onOpenAgent ?? setOpenId}
     />
   );
 
@@ -696,9 +713,12 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
         {selected ? (
           <Transcript agent={selected} now={now} tone={tone} onBack={() => setOpenId(null)} />
         ) : (
-          <div className="flex min-h-0 flex-col p-2">
+          <div className="flex min-h-0 flex-col">
+            {workspace}
+            {agents.length > 0 && (
+            <div className={`flex min-h-0 flex-col p-2 ${workspace ? `border-t ${tone.divider}` : ''}`}>
             <div className="flex items-center gap-3 px-2 pb-1.5 pt-1.5">
-              <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>Subagents</span>
+              <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>Lineage</span>
               <span className={`h-px flex-1 ${tone.divider} border-t`} />
               <Summary agents={agents} tone={tone} now={now} />
               <button
@@ -728,6 +748,8 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
                 </motion.div>
               )}
             </AnimatePresence>
+            </div>
+            )}
           </div>
         )}
       </div>,
@@ -785,9 +807,10 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
                 <Transcript agent={selected} now={now} tone={tone} onBack={() => setOpenId(null)} />
               ) : (
                 <div className="flex min-h-0 flex-col p-2">
+                  {workspace && <div className={`-mx-2 -mt-2 mb-1 border-b ${tone.divider}`}>{workspace}</div>}
                   <div className="flex items-center gap-3 px-2 pb-2 pt-1.5">
-                    <span className={`text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>
-                      Subagents
+                    <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>
+                      Lineage
                     </span>
                     <span className={`h-px flex-1 ${tone.divider} border-t`} />
                     <Summary agents={agents} tone={tone} now={now} />

@@ -27,6 +27,8 @@ export function AddAccount(arg1:string,arg2:string,arg3:boolean):Promise<main.Ac
 
 export function AddProject(arg1:string):Promise<projects.Project>;
 
+export function AvailableEditors():Promise<Array<string>>;
+
 export function ChooseAttachments():Promise<Array<attachments.Attachment>>;
 
 export function ChooseProject():Promise<projects.Project>;
@@ -97,6 +99,8 @@ export function GitOverview():Promise<Array<domain.WorktreeChanges>>;
 
 export function GitPull(arg1:string):Promise<void>;
 
+export function GitPullRequestURL(arg1:string):Promise<string>;
+
 export function GitPush(arg1:string):Promise<void>;
 
 export function GitStage(arg1:string,arg2:Array<string>):Promise<void>;
@@ -154,6 +158,8 @@ export function MoveProject(arg1:string,arg2:number):Promise<void>;
 export function MutateAgentTask(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Array<domain.PlanEntry>>;
 
 export function NewChat():Promise<void>;
+
+export function OpenInEditor(arg1:string,arg2:string):Promise<void>;
 
 export function OpenPath(arg1:string):Promise<void>;
 

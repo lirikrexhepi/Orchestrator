@@ -14,6 +14,7 @@ import { OrbitLoader } from './OrbitLoader';
 import { TextShimmer } from './TextShimmer';
 import { AgentStreamBlock, SubagentBlockData, TodoToolBlockData } from './types';
 import { SubagentMenu } from './SubagentMenu';
+import { SubagentFullView, WorkspaceSection } from './WorkspacePanel';
 import { AgentTasklistView } from './AgentTasklistView';
 import { AgentViewSwitcher } from './AgentViewSwitcher';
 import { useSmoothScroll } from '../common/useSmoothScroll';
@@ -370,6 +371,8 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   const completedTasksCount = todos.filter((t) => t.status === 'completed').length;
   const totalTasksCount = todos.length;
 
+  const [openSubagentId, setOpenSubagentId] = useState<string | null>(null);
+  const closeSubagent = useCallback(() => setOpenSubagentId(null), []);
   const subagents = useMemo(
     () => streamBlocks.filter((block): block is SubagentBlockData => block.type === 'subagent'),
     [streamBlocks],
@@ -423,6 +426,15 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   });
 
   const isGrid = mode === 'grid';
+  const openSubagent = useMemo(
+    () => (openSubagentId ? subagents.find((agent) => agent.id === openSubagentId) ?? null : null),
+    [openSubagentId, subagents],
+  );
+  const openChanges = useCallback(() => {
+    setOpenSubagentId(null);
+    if (onCardModeChange) onCardModeChange('changes');
+    else setInternalMode('changes');
+  }, [onCardModeChange]);
   const showOverview = isDraft && streamBlocks.length === 0;
   const reduceMotion = useReducedMotion();
   const chatCrossfade = reduceMotion
@@ -484,6 +496,10 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
 
   const { currentTheme } = useTheme();
   const isLight = currentTheme.id === 'light' || currentTheme.id === 'white';
+  const workspaceSection = useMemo(
+    () => <WorkspaceSection isLight={isLight} projectName={projectName} lane={matchingLane ?? null} onOpenChanges={openChanges} />,
+    [isLight, projectName, matchingLane, openChanges],
+  );
 
   const projectMeta = (
     <>
@@ -659,7 +675,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 </div>
               )}
 
-              {!isGrid && subagents.length > 0 && <SubagentMenu agents={subagents} isLight={isLight} driver={activeDriver} modelId={activeModel} dockable={isFullscreen && isFocused} />}
+              {!isGrid && (subagents.length > 0 || (isFullscreen && isFocused)) && <SubagentMenu agents={subagents} isLight={isLight} driver={activeDriver} modelId={activeModel} dockable={isFullscreen && isFocused} workspace={workspaceSection} onOpenAgent={setOpenSubagentId} />}
 
               <AgentViewSwitcher
                 mode={activeMode}
@@ -752,9 +768,24 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                         onLoadEarlier={onLoadEarlier}
                         hasEarlier={hasEarlier}
                         loadingEarlier={loadingEarlier}
+                        onOpenSubagent={setOpenSubagentId}
                         virtual={feedVirtual}
                       />
                     </motion.div>
+                  )}
+                </AnimatePresence>
+                <AnimatePresence>
+                  {openSubagent && (
+                    <SubagentFullView
+                      key={openSubagent.id}
+                      agent={openSubagent}
+                      isLight={isLight}
+                      parentTitle={title}
+                      projectName={projectName}
+                      driver={activeDriver}
+                      modelId={activeModel}
+                      onBack={closeSubagent}
+                    />
                   )}
                 </AnimatePresence>
               </div>
