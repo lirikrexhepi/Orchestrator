@@ -46,6 +46,8 @@ const orchestratorSpawnedChannel = "orchestrator:spawned"
 
 const historyChangedChannel = "history:changed"
 
+const providersChangedChannel = "providers:changed"
+
 // projectsChangedChannel tells the window its saved project list changed
 // somewhere else, such as a folder added from the phone.
 const projectsChangedChannel = "projects:changed"
@@ -188,6 +190,9 @@ func NewApp() *App {
 	if activityRepo != nil {
 		app.activity = activity.NewTracker(activityRepo, app.activityThread)
 	}
+	registry.UseSnapshotCache(filepath.Join(configRoot(), "provider_snapshots.json"), func() {
+		app.emit(providersChangedChannel)
+	})
 	app.wireRemote()
 	manager.SetRefExpander(app.expandChatRefs)
 	return app
@@ -197,7 +202,7 @@ func NewApp() *App {
 // falling back to the working directory when the user config dir is unavailable.
 func configRoot() string {
 	if dir, err := os.UserConfigDir(); err == nil {
-		return filepath.Join(dir, "composer")
+		return filepath.Join(dir, "composer"+profileSuffix())
 	}
 	return ".composer"
 }
@@ -208,21 +213,27 @@ func historyRoot() string {
 }
 
 func (a *App) startup(ctx context.Context) {
+	traceStartup("wails startup")
 	a.ctx = ctx
 	runtime.WindowShow(ctx)
 	a.startCore(ctx)
+	traceStartup("core ready")
 }
 
 // startCore brings up everything that does not need a window: stored history,
 // the phone gateway, and the event feed. The desktop and headless modes share it.
 func (a *App) startCore(ctx context.Context) {
 	a.enableManagedServers()
+	traceStartup("managed servers")
 	a.rehydrateFromHistory()
+	traceStartup("history rehydrated")
 	a.startActivity()
+	traceStartup("activity started")
 	go a.watchClaudeUpdates(ctx)
 	if a.remoteServer != nil {
 		a.wireRemote()
 		_ = a.remoteServer.Start(ctx)
+		traceStartup("remote started")
 	}
 	a.orchestrator.SetOnSpawn(func(result session.SpawnResult) {
 		if a.sessionService != nil {
@@ -336,6 +347,7 @@ func (a *App) observe(event domain.RuntimeEvent) {
 }
 
 func (a *App) domReady(ctx context.Context) {
+	traceStartup("dom ready")
 	runtime.WindowShow(ctx)
 }
 

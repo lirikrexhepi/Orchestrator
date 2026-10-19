@@ -61,7 +61,9 @@ func main() {
 	}
 
 	// Create an instance of the app structure
+	traceStartup("new app")
 	app := NewApp()
+	traceStartup("app built")
 
 	// Check if user disabled GPU acceleration in settings.
 	// Defaults to false (GPU enabled), allowing users experiencing display driver crashes to toggle software rendering.
@@ -98,7 +100,7 @@ func main() {
 		OnDomReady:       app.domReady,
 		OnShutdown:       app.shutdown,
 		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId: "orchestrator-desktop-6f0c2b1e",
+			UniqueId: "orchestrator-desktop-6f0c2b1e" + profileSuffix(),
 			OnSecondInstanceLaunch: func(options.SecondInstanceData) {
 				if app.ctx == nil {
 					return

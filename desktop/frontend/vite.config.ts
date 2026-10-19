@@ -17,6 +17,13 @@ export default defineConfig({
     react(),
     tailwindcss(),
     fileIcons({ packageDirs: [here + 'node_modules/material-icon-theme'] }),
-  ]
+  ],
+  build: {
+    rollupOptions: {
+      treeshake: {
+        moduleSideEffects: (id) => !id.endsWith('/components/agent-session/index.ts'),
+      },
+    },
+  },
 })
 

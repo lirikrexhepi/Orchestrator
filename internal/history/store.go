@@ -75,9 +75,9 @@ type Session struct {
 type Store struct {
 	root string
 
-	mu      sync.Mutex
-	open    map[string]*openFile
-	counts  map[string]int
+	mu       sync.Mutex
+	open     map[string]*openFile
+	counts   map[string]int
 	disabled bool
 }
 
@@ -1035,68 +1035,144 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
+type transcriptScan struct {
+	size    int64
+	modTime time.Time
+	offset  int64
+	drivers []domain.DriverKind
+	models  []string
+}
+
+var (
+	transcriptScansMu sync.Mutex
+	transcriptScans   = map[string]transcriptScan{}
+)
+
+var (
+	driverKey    = []byte(`"driver":"`)
+	noticeKind   = []byte(`"kind":"notice"`)
+	switchedFrom = []byte("Switched from ")
+)
+
 func scanTranscriptDriversAndModels(path string, existingDrivers []domain.DriverKind, existingModels []string) ([]domain.DriverKind, []string) {
-	file, err := os.Open(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		return existingDrivers, existingModels
 	}
-	defer file.Close()
 
-	drivers := make([]domain.DriverKind, len(existingDrivers))
+	transcriptScansMu.Lock()
+	cached, ok := transcriptScans[path]
+	transcriptScansMu.Unlock()
+
+	if !ok || info.Size() < cached.offset {
+		cached = transcriptScan{}
+	}
+	if !ok || info.Size() != cached.size || !info.ModTime().Equal(cached.modTime) {
+		scanned, err := scanTranscriptFrom(path, cached)
+		if err != nil {
+			return existingDrivers, existingModels
+		}
+		scanned.size = info.Size()
+		scanned.modTime = info.ModTime()
+		cached = scanned
+		transcriptScansMu.Lock()
+		transcriptScans[path] = cached
+		transcriptScansMu.Unlock()
+	}
+
+	drivers := make([]domain.DriverKind, len(existingDrivers), len(existingDrivers)+len(cached.drivers))
 	copy(drivers, existingDrivers)
-	models := make([]string, len(existingModels))
+	for _, d := range cached.drivers {
+		if !containsDriver(drivers, d) {
+			drivers = append(drivers, d)
+		}
+	}
+	models := make([]string, len(existingModels), len(existingModels)+len(cached.models))
 	copy(models, existingModels)
-
-	scanner := bufio.NewScanner(file)
-	// Allow large tokens (up to 1MB per line)
-	buf := make([]byte, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var partial struct {
-			Kind   string `json:"kind"`
-			Driver string `json:"driver"`
-			Text   string `json:"text"`
-		}
-		if err := json.Unmarshal(line, &partial); err != nil {
-			continue
-		}
-		if partial.Driver != "" {
-			dKind := domain.DriverKind(strings.ToLower(partial.Driver))
-			if !containsDriver(drivers, dKind) {
-				drivers = append(drivers, dKind)
-			}
-		}
-		if partial.Kind == "notice" && strings.Contains(partial.Text, "Switched from ") {
-			text := strings.TrimPrefix(partial.Text, "Switched from ")
-			parts := strings.Split(text, " to ")
-			if len(parts) == 2 {
-				for _, part := range parts {
-					part = strings.TrimSpace(part)
-					subParts := strings.SplitN(part, ": ", 2)
-					if len(subParts) == 2 {
-						dName := strings.TrimSpace(subParts[0])
-						mName := strings.TrimSpace(subParts[1])
-						dKind := domain.DriverKind(strings.ToLower(dName))
-						if dKind != "" && !containsDriver(drivers, dKind) {
-							drivers = append(drivers, dKind)
-						}
-						if mName != "" && !containsString(models, mName) {
-							models = append(models, mName)
-						}
-					} else {
-						dKind := domain.DriverKind(strings.ToLower(part))
-						if dKind != "" && !containsDriver(drivers, dKind) {
-							drivers = append(drivers, dKind)
-						}
-					}
-				}
-			}
+	for _, m := range cached.models {
+		if !containsString(models, m) {
+			models = append(models, m)
 		}
 	}
 	return drivers, models
+}
+
+func scanTranscriptFrom(path string, prev transcriptScan) (transcriptScan, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return prev, err
+	}
+	defer file.Close()
+
+	next := transcriptScan{
+		offset:  prev.offset,
+		drivers: append([]domain.DriverKind(nil), prev.drivers...),
+		models:  append([]string(nil), prev.models...),
+	}
+	if next.offset > 0 {
+		if _, err := file.Seek(next.offset, io.SeekStart); err != nil {
+			return prev, err
+		}
+	}
+
+	addDriver := func(d domain.DriverKind) {
+		if d != "" && !containsDriver(next.drivers, d) {
+			next.drivers = append(next.drivers, d)
+		}
+	}
+
+	reader := bufio.NewReaderSize(file, 256*1024)
+	for {
+		line, err := reader.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			rest := append([]byte(nil), line...)
+			for err == bufio.ErrBufferFull {
+				line, err = reader.ReadSlice('\n')
+				rest = append(rest, line...)
+			}
+			line = rest
+		}
+		if err != nil {
+			break
+		}
+		next.offset += int64(len(line))
+
+		head := line
+		if len(head) > 512 {
+			head = head[:512]
+		}
+		if i := bytes.Index(head, driverKey); i >= 0 {
+			value := line[i+len(driverKey):]
+			if j := bytes.IndexByte(value, '"'); j > 0 {
+				addDriver(domain.DriverKind(strings.ToLower(string(value[:j]))))
+			}
+		}
+		if !bytes.Contains(line, noticeKind) || !bytes.Contains(line, switchedFrom) {
+			continue
+		}
+		var partial struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(line, &partial) != nil || !strings.Contains(partial.Text, "Switched from ") {
+			continue
+		}
+		text := strings.TrimPrefix(partial.Text, "Switched from ")
+		parts := strings.Split(text, " to ")
+		if len(parts) != 2 {
+			continue
+		}
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			subParts := strings.SplitN(part, ": ", 2)
+			if len(subParts) == 2 {
+				addDriver(domain.DriverKind(strings.ToLower(strings.TrimSpace(subParts[0]))))
+				if mName := strings.TrimSpace(subParts[1]); mName != "" && !containsString(next.models, mName) {
+					next.models = append(next.models, mName)
+				}
+			} else {
+				addDriver(domain.DriverKind(strings.ToLower(part)))
+			}
+		}
+	}
+	return next, nil
 }

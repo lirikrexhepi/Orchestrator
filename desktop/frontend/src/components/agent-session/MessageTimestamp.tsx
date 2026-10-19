@@ -14,6 +14,14 @@ export interface MessageTimestampProps {
   isLight?: boolean;
 }
 
+const MONTH_FORMAT = new Intl.DateTimeFormat('en-US', { month: 'short' });
+const TIME_FORMAT = new Intl.DateTimeFormat('en-US', {
+  hour: 'numeric',
+  minute: '2-digit',
+  hour12: true,
+});
+const FULL_DATE_FORMAT = new Intl.DateTimeFormat();
+
 /**
  * Formats a message timestamp matching Cursor / Composer style:
  * e.g. "Sep 18 at 10:03 PM" (or with year if different year).
@@ -28,13 +36,9 @@ export function formatMessageTime(timestamp?: number | string | Date): string {
   const now = new Date();
   const isSameYear = date.getFullYear() === now.getFullYear();
 
-  const month = date.toLocaleDateString('en-US', { month: 'short' });
+  const month = MONTH_FORMAT.format(date);
   const day = date.getDate();
-  const time = date.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  });
+  const time = TIME_FORMAT.format(date);
 
   if (isSameYear) {
     return `${month} ${day} at ${time}`;
@@ -46,7 +50,7 @@ export function formatMessageTime(timestamp?: number | string | Date): string {
  * MessageTimestamp Component
  * Clean, subtle message timestamp, current model indicator, and copy action.
  */
-export const MessageTimestamp: React.FC<MessageTimestampProps> = ({
+const MessageTimestampImpl: React.FC<MessageTimestampProps> = ({
   timestamp,
   content,
   className = '',
@@ -69,8 +73,8 @@ export const MessageTimestamp: React.FC<MessageTimestampProps> = ({
   }, [content]);
 
   const modelLabel = model || driver ? formatModelBadge(model, driver) : null;
-  const formattedTime = timestamp ? formatMessageTime(timestamp) : '';
-  const fullDateTitle = timestamp ? new Date(timestamp).toLocaleString() : '';
+  const formattedTime = React.useMemo(() => timestamp ? formatMessageTime(timestamp) : '', [timestamp]);
+  const fullDateTitle = React.useMemo(() => timestamp ? FULL_DATE_FORMAT.format(new Date(timestamp)) : '', [timestamp]);
 
   if (!formattedTime && !modelLabel) return null;
 
@@ -126,5 +130,8 @@ export const MessageTimestamp: React.FC<MessageTimestampProps> = ({
     </div>
   );
 };
+
+export const MessageTimestamp = React.memo(MessageTimestampImpl);
+MessageTimestamp.displayName = 'MessageTimestamp';
 
 export default MessageTimestamp;

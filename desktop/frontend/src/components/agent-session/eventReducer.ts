@@ -60,6 +60,13 @@ function field(input: Record<string, unknown>, keys: string[]): string {
   return '';
 }
 
+function findLastIndex<T>(items: readonly T[], predicate: (item: T) => boolean | undefined): number {
+  for (let index = items.length - 1; index >= 0; index--) {
+    if (predicate(items[index])) return index;
+  }
+  return -1;
+}
+
 function extractTarget(name: string, input: Record<string, unknown>): string {
   const filePath = field(input, PATH_KEYS);
   if (filePath) {
@@ -218,7 +225,7 @@ function upsertApproval(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentS
     status: 'pending',
   };
 
-  const existingIdx = blocks.findIndex(
+  const existingIdx = findLastIndex(blocks,
     (b) => b.type === 'approval_request' && (b.id === id || b.requestID === reqID),
   );
   if (existingIdx >= 0) {
@@ -308,7 +315,7 @@ function upsertQuestion(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentS
     items,
   };
 
-  const existingIdx = blocks.findIndex(
+  const existingIdx = findLastIndex(blocks,
     (b) => b.id === id || (b.type === 'tool_question' && Boolean(requestID) && b.id.includes(requestID)),
   );
   if (existingIdx >= 0) {
@@ -507,15 +514,15 @@ function appendText(
 
 /** Marks open thinking blocks finished once the agent moves on. */
 function closeThinking(blocks: AgentStreamBlock[]): AgentStreamBlock[] {
-  let changed = false;
-  const next = blocks.map((b) => {
+  let next: AgentStreamBlock[] | null = null;
+  for (let index = 0; index < blocks.length; index++) {
+    const b = blocks[index];
     if (b.type === 'thinking' && b.isThinking) {
-      changed = true;
-      return { ...b, isThinking: false };
+      next ??= blocks.slice();
+      next[index] = { ...b, isThinking: false };
     }
-    return b;
-  });
-  return changed ? next : blocks;
+  }
+  return next ?? blocks;
 }
 
 /** Tools that always render as their own card, never folded into a group. */
@@ -535,7 +542,7 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
   blocks = closeThinking(blocks);
 
   const id = `tool-${tool.id}`;
-  const index = blocks.findIndex(
+  const index = findLastIndex(blocks,
     (candidate) =>
       candidate.id === id ||
       (candidate.type === 'tool_group' && candidate.memberIds?.includes(tool.id)),
@@ -572,7 +579,7 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
   if (isQuestionTool(name)) {
     const qBlock = toQuestionBlock(tool);
     if (!qBlock) return blocks;
-    const existingQ = blocks.findIndex(
+    const existingQ = findLastIndex(blocks,
       (b) => b.type === 'tool_question' && (b.id === qBlock.id || b.id.includes(tool.id)),
     );
     if (existingQ >= 0) {
@@ -948,12 +955,7 @@ function closeStreaming(blocks: AgentStreamBlock[]): AgentStreamBlock[] {
 // Closes out any streaming indicators so the feed does not keep pulsing after
 // the turn ends.
 function settle(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStreamBlock[] {
-  const cleaned = closeStreaming(blocks).map((b) => {
-    if (b.type === 'thinking' && b.isThinking) {
-      return { ...b, isThinking: false };
-    }
-    return b;
-  });
+  const cleaned = closeThinking(closeStreaming(blocks));
 
   if (event.kind === 'turn.failed' && event.error) {
     if (friendlyError(event.error)) return cleaned;

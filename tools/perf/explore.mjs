@@ -1,0 +1,11 @@
+import { launch, sleep } from './lib.mjs'
+const { browser, page } = await launch()
+await page.waitForLoadState('load')
+await sleep(2000)
+console.log(await page.evaluate(() => [...document.querySelectorAll('[title],[aria-label]')].slice(0,30).map(e => e.tagName+':'+(e.getAttribute('aria-label')||e.getAttribute('title')).slice(0,40)).join(' | ')))
+await page.locator('[title*="Click to switch"], [aria-label*="Project:"]').first().click()
+await sleep(900)
+await page.screenshot({ path: 'shot-island.png' })
+const btns = await page.evaluate(() => [...document.querySelectorAll('button,[role=button]')].map((b) => (b.getAttribute('aria-label') || b.title || b.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 50)).filter(Boolean))
+console.log(JSON.stringify(btns.slice(0, 80)))
+await browser.close().catch(() => {})

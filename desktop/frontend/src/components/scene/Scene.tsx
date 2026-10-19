@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   OrchestratorInput,
@@ -14,11 +14,9 @@ import { useAttachments } from '../common/useAttachments';
 import { requestPinToBottom } from '../common/usePinnedScroll';
 import { TitleBar } from '../common/TitleBar';
 import { DynamicIsland, DynamicIslandNotification } from '../common/DynamicIsland';
-import { SettingsWindow } from '../sidebar/SettingsWindow';
 import { useGit } from '../git';
 import { useClaudeImport, useHistory } from '../history';
 import {
-  SettingsPanel,
   Sidebar,
   SidebarPanel,
   useDefaultModels,
@@ -46,6 +44,9 @@ const SCENE_BG_BASE: React.CSSProperties = {
   transform: 'translateZ(0)',
   backfaceVisibility: 'hidden',
 };
+
+const SettingsPanel = React.lazy(() => import('../sidebar/SettingsPanel'));
+const SettingsWindow = React.lazy(() => import('../sidebar/SettingsWindow'));
 
 
 
@@ -287,6 +288,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
   const runningServers = useServers(true);
   const wallpaper = useWallpaper();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsWindowMounted, setSettingsWindowMounted] = useState(false);
   const defaultModels = useDefaultModels(activePanel === 'settings' || settingsOpen);
 
   const historyState = useHistory(true);
@@ -1253,6 +1255,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                       transformOrigin: '50% 100%',
                     }}
                   >
+                    <Suspense fallback={null}>
                     <AgentWindow
                     id={task.threadId}
                     title={task.isDraft ? 'New chat' : task.title}
@@ -1327,7 +1330,8 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                     cardWidth={sizedBrowser ? sizedBrowser.width : thisCardSize.width}
                     cardHeight={sizedBrowser ? sizedBrowser.height : thisCardSize.height}
                     className="w-full h-full"
-                  />
+                    />
+                    </Suspense>
                   </div>
                 </div>
               );
@@ -1541,15 +1545,18 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
               style={{ transformOrigin: 'left center' }}
               className="w-[380px] h-[470px] flex flex-col shrink-0"
             >
+              <Suspense fallback={null}>
               <SettingsPanel
                 wallpaper={wallpaper}
                 defaultModels={defaultModels}
                 onClose={closePanel}
                 onOpenAll={() => {
                   closePanel();
+                  setSettingsWindowMounted(true);
                   setSettingsOpen(true);
                 }}
               />
+              </Suspense>
             </motion.div>
           </motion.div>
         )}
@@ -1557,12 +1564,16 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
 
 
 
+      {settingsWindowMounted && (
+        <Suspense fallback={null}>
       <SettingsWindow
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         wallpaper={wallpaper}
         defaultModels={defaultModels}
       />
+        </Suspense>
+      )}
 
       {/* Background Canvas Layer */}
       <div className="absolute inset-0 pointer-events-none z-10">

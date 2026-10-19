@@ -12,7 +12,7 @@ const google = (family: string) =>
 const fontshare = (slug: string) => `https://api.fontshare.com/v2/css?f[]=${slug}@300,400,500,600,700&display=swap`;
 
 export const FONT_PRESETS: FontPreset[] = [
-  { id: 'geist', label: 'Geist', family: 'Geist' },
+  { id: 'geist', label: 'Geist', family: 'Geist Variable' },
   { id: 'matter', label: 'Matter', family: 'Matter', note: 'Install or upload it' },
   { id: 'inter', label: 'Inter', family: 'Inter', css: google('Inter') },
   { id: 'system', label: 'System', family: '"Segoe UI Variable Text", -apple-system, BlinkMacSystemFont' },
@@ -71,7 +71,7 @@ export function currentFontChoice(): string {
 
 export function familyForChoice(choice: string): string {
   if (choice.startsWith('custom:')) return choice.slice('custom:'.length);
-  return presetFor(choice)?.family ?? 'Geist';
+  return presetFor(choice)?.family ?? 'Geist Variable';
 }
 
 export function applyFont(choice: string) {

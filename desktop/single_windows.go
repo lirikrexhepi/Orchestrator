@@ -21,7 +21,7 @@ var (
 )
 
 func claimWindow() bool {
-	name, err := windows.UTF16PtrFromString(windowMutexName)
+	name, err := windows.UTF16PtrFromString(windowMutexName + profileSuffix())
 	if err != nil {
 		return true
 	}

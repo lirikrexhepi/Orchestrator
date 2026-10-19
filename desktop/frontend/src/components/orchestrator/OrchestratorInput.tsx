@@ -19,6 +19,7 @@ import type { QueuedMessage } from '../scene/QueuedMessages';
 import { SlashMenu } from './SlashMenu';
 import { ListSlashCommands } from '../../../wailsjs/go/main/App';
 import { slashcmd } from '../../../wailsjs/go/models';
+import { EventsOn } from '../../../wailsjs/runtime/runtime';
 import { ArrowUp, ChevronDown, Loader2, Paperclip, Plus, MaterialIcon } from '../common/icons';
 
 export interface OrchestratorInputProps {
@@ -96,6 +97,7 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
 
   useEffect(() => {
     void loadProviders();
+    return EventsOn('providers:changed', () => void loadProviders());
   }, [loadProviders]);
 
   const containerRef = useRef<HTMLDivElement>(null);

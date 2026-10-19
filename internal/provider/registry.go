@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -21,6 +24,48 @@ type Registry struct {
 	prefs *Prefs
 
 	accounts *Accounts
+
+	snapshotPath string
+	stale        map[domain.DriverKind]domain.ProviderSnapshot
+	refreshing   map[domain.DriverKind]bool
+	onRefresh    func()
+}
+
+func (r *Registry) UseSnapshotCache(path string, onRefresh func()) {
+	stored := map[domain.DriverKind]domain.ProviderSnapshot{}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &stored)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.snapshotPath = path
+	r.onRefresh = onRefresh
+	r.stale = make(map[domain.DriverKind]domain.ProviderSnapshot, len(stored))
+	for kind, snapshot := range stored {
+		if _, ok := r.drivers[kind]; ok {
+			r.stale[kind] = snapshot
+		}
+	}
+}
+
+func (r *Registry) saveSnapshotsLocked() {
+	if r.snapshotPath == "" {
+		return
+	}
+	out := make(map[domain.DriverKind]domain.ProviderSnapshot, len(r.cache))
+	for kind, snapshot := range r.cache {
+		snapshot.Accounts = nil
+		out[kind] = snapshot
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(r.snapshotPath), 0o755)
+	tmp := r.snapshotPath + ".tmp"
+	if os.WriteFile(tmp, data, 0o644) == nil {
+		_ = os.Rename(tmp, r.snapshotPath)
+	}
 }
 
 func (r *Registry) UseAccounts(accounts *Accounts) {
@@ -149,6 +194,7 @@ func (r *Registry) SetSettings(kind domain.DriverKind, settings domain.ProviderS
 	// Dropped so the next probe re-reads the CLI with the new settings; a
 	// changed binary path or model would otherwise report stale results.
 	delete(r.cache, kind)
+	delete(r.stale, kind)
 	prefs := r.prefs
 	r.mu.Unlock()
 
@@ -198,14 +244,30 @@ func (r *Registry) Probe(ctx context.Context, force bool) []domain.ProviderSnaps
 
 func (r *Registry) probeOne(ctx context.Context, kind domain.DriverKind, force bool) domain.ProviderSnapshot {
 	r.mu.RLock()
-	driver := r.drivers[kind]
 	settings := r.settings[kind]
 	cached, hasCached := r.cache[kind]
+	stale, hasStale := r.stale[kind]
 	r.mu.RUnlock()
 
-	if !force && hasCached && time.Since(time.UnixMilli(cached.CheckedAt)) < snapshotTTL {
+	if !force && hasCached {
+		if time.Since(time.UnixMilli(cached.CheckedAt)) >= snapshotTTL {
+			r.refreshInBackground(ctx, kind)
+		}
 		return r.withAccounts(kind, cached)
 	}
+	if !force && hasStale {
+		r.refreshInBackground(ctx, kind)
+		stale.Settings = settings
+		return r.withAccounts(kind, stale)
+	}
+	return r.withAccounts(kind, r.probeLive(ctx, kind))
+}
+
+func (r *Registry) probeLive(ctx context.Context, kind domain.DriverKind) domain.ProviderSnapshot {
+	r.mu.RLock()
+	driver := r.drivers[kind]
+	settings := r.settings[kind]
+	r.mu.RUnlock()
 
 	snapshot := driver.Probe(ctx, settings)
 	snapshot.Driver = kind
@@ -215,8 +277,35 @@ func (r *Registry) probeOne(ctx context.Context, kind domain.DriverKind, force b
 
 	r.mu.Lock()
 	r.cache[kind] = snapshot
+	delete(r.stale, kind)
+	r.saveSnapshotsLocked()
 	r.mu.Unlock()
-	return r.withAccounts(kind, snapshot)
+	return snapshot
+}
+
+func (r *Registry) refreshInBackground(ctx context.Context, kind domain.DriverKind) {
+	r.mu.Lock()
+	if r.refreshing == nil {
+		r.refreshing = make(map[domain.DriverKind]bool)
+	}
+	if r.refreshing[kind] {
+		r.mu.Unlock()
+		return
+	}
+	r.refreshing[kind] = true
+	r.mu.Unlock()
+
+	go func() {
+		r.probeLive(context.WithoutCancel(ctx), kind)
+		r.mu.Lock()
+		delete(r.refreshing, kind)
+		done := len(r.refreshing) == 0
+		notify := r.onRefresh
+		r.mu.Unlock()
+		if done && notify != nil {
+			notify()
+		}
+	}()
 }
 
 func (r *Registry) withAccounts(kind domain.DriverKind, snapshot domain.ProviderSnapshot) domain.ProviderSnapshot {

@@ -51,18 +51,33 @@ async function toStoredImage(file: File): Promise<string> {
 }
 
 export function useWallpaper(): WallpaperState {
-  const [custom, setCustom] = useState<Wallpaper[]>(readCustom);
   const [selectedId, setSelectedId] = useState<string>(
     () => localStorage.getItem(SELECTED_KEY) || BUILT_IN[0]?.id || '',
   );
+  const [custom, setCustom] = useState<Wallpaper[]>(() => (isCustom(selectedId) ? readCustom() : []));
+  const [customLoaded, setCustomLoaded] = useState(() => isCustom(selectedId));
   const [error, setError] = useState<string | null>(null);
 
   const wallpapers = [...BUILT_IN, ...custom];
   const selected = wallpapers.find((item) => item.id === selectedId) ?? wallpapers[0] ?? null;
 
   useEffect(() => {
-    if (selected) localStorage.setItem(SELECTED_KEY, selected.id);
-  }, [selected]);
+    if (customLoaded) return;
+    const load = () => {
+      setCustom(readCustom());
+      setCustomLoaded(true);
+    };
+    if ('requestIdleCallback' in window) {
+      const id = window.requestIdleCallback(load, { timeout: 1000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const timer = globalThis.setTimeout(load, 0);
+    return () => globalThis.clearTimeout(timer);
+  }, [customLoaded]);
+
+  useEffect(() => {
+    if (selected && (customLoaded || !isCustom(selected.id))) localStorage.setItem(SELECTED_KEY, selected.id);
+  }, [customLoaded, selected]);
 
   const persist = useCallback((next: Wallpaper[]) => {
     setCustom(next);

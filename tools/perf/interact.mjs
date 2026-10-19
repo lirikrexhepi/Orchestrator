@@ -1,0 +1,13 @@
+import { launch, sleep, killPerf, instrumentedReload, frameStats } from './lib.mjs'
+const { browser, page } = await launch()
+await page.waitForLoadState('load')
+await sleep(1500)
+await instrumentedReload(page)
+await sleep(3000)
+const island = page.locator('[title*="Project:"], [aria-label*="Project:"]').first()
+console.log('open island', JSON.stringify(await frameStats(page, () => island.click(), 900)))
+console.log('open project chats', JSON.stringify(await frameStats(page, () => page.locator('[aria-label="36 chats"], [title="36 chats"]').first().click(), 900)))
+await page.screenshot({ path: 'shot-chats.png' })
+const rows = await page.evaluate(() => [...document.querySelectorAll('button,[role=button]')].map((b) => (b.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60)).filter(Boolean))
+console.log(JSON.stringify(rows.slice(0, 40)))
+await browser.close().catch(() => {})

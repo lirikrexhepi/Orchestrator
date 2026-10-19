@@ -140,13 +140,73 @@ const COMPONENTS: Components = {
 
 const PLUGINS = [remarkGfm];
 
-const MarkdownTextImpl: React.FC<MarkdownTextProps> = ({ content, className = '' }) => (
-  <div className={`markdown-body ${className}`}>
+const FENCE = /^( {0,3})(`{3,}|~{3,})[^`~]*$/;
+const LIST = /^ {0,3}(?:[-+*]|\d+[.)])\s+/;
+
+function isFenceClose(line: string, fence: string): boolean {
+  const marker = fence[0];
+  const match = line.match(new RegExp(`^ {0,3}${marker}{${fence.length},}[ \\t]*$`));
+  return Boolean(match);
+}
+
+function isStandaloneStart(line: string): boolean {
+  return /^(?: {0,3}#{1,6}(?:\s|$)| {0,3}(?:`{3,}|~{3,})| {0,3}(?:[-*_][ \t]*){3,}$)/.test(line);
+}
+
+function splitMarkdownBlocks(content: string): string[] {
+  if (!content) return [''];
+  const blocks: string[] = [];
+  let start = 0;
+  let fence = '';
+  let lineStart = 0;
+  let previousLine = '';
+
+  for (let i = 0; i <= content.length; i++) {
+    if (i !== content.length && content[i] !== '\n') continue;
+    const line = content.slice(lineStart, i);
+    const end = i < content.length ? i + 1 : i;
+    if (fence) {
+      if (isFenceClose(line, fence)) fence = '';
+    } else {
+      const opening = line.match(FENCE);
+      if (opening) {
+        fence = opening[2];
+      } else if (line === '' && previousLine !== '') {
+        const nextLineEnd = content.indexOf('\n', end);
+        const nextLine = content.slice(end, nextLineEnd === -1 ? content.length : nextLineEnd);
+        if (nextLine !== '' && !LIST.test(nextLine) && !/^[ 	>]/.test(nextLine)) {
+          blocks.push(content.slice(start, end));
+          start = end;
+        }
+      } else if (isStandaloneStart(line) && lineStart > start) {
+        blocks.push(content.slice(start, lineStart));
+        start = lineStart;
+      }
+    }
+    previousLine = line;
+    lineStart = end;
+  }
+
+  if (start < content.length || blocks.length === 0) blocks.push(content.slice(start));
+  return blocks;
+}
+
+const MarkdownBlock = React.memo(function MarkdownBlock({ content }: { content: string }) {
+  return (
     <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>
       {content}
     </ReactMarkdown>
-  </div>
-);
+  );
+});
+
+const MarkdownTextImpl: React.FC<MarkdownTextProps> = ({ content, className = '' }) => {
+  const blocks = React.useMemo(() => splitMarkdownBlocks(content), [content]);
+  return (
+    <div className={`markdown-body ${className}`}>
+      {blocks.map((block, index) => <MarkdownBlock key={index} content={block} />)}
+    </div>
+  );
+};
 
 export const MarkdownText = React.memo(MarkdownTextImpl);
 MarkdownText.displayName = 'MarkdownText';

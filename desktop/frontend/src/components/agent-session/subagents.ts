@@ -39,9 +39,11 @@ function insertAgent(blocks: AgentStreamBlock[], agent: SubagentBlockData): Agen
 
 function findAgent(blocks: AgentStreamBlock[], toolId: string): number {
   const id = `subagent-${toolId}`;
-  return blocks.findIndex(
-    (block) => block.type === 'subagent' && (block.id === id || block.previousToolIds?.includes(toolId)),
-  );
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const block = blocks[index];
+    if (block.type === 'subagent' && (block.id === id || block.previousToolIds?.includes(toolId))) return index;
+  }
+  return -1;
 }
 
 function update(
