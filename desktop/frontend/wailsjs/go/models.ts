@@ -1560,6 +1560,7 @@ export namespace history {
 	export class Session {
 	    meta: Meta;
 	    transcripts: Record<string, Array<domain.RuntimeEvent>>;
+	    truncated?: Record<string, number>;
 	
 	    static createFrom(source: any = {}) {
 	        return new Session(source);
@@ -1569,6 +1570,7 @@ export namespace history {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.meta = this.convertValues(source["meta"], Meta);
 	        this.transcripts = this.convertValues(source["transcripts"], Array<domain.RuntimeEvent>, true);
+	        this.truncated = source["truncated"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

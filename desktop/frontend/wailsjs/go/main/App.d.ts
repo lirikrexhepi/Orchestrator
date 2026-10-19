@@ -145,6 +145,8 @@ export function ListWorkspaces():Promise<Array<domain.Workspace>>;
 
 export function LoadHistory(arg1:string):Promise<history.Session>;
 
+export function LoadHistoryTail(arg1:string,arg2:number):Promise<history.Session>;
+
 export function MoveChat(arg1:string,arg2:string):Promise<void>;
 
 export function MoveProject(arg1:string,arg2:number):Promise<void>;

@@ -9,6 +9,7 @@ interface PinnedScrollOptions {
   snap?: (el: HTMLElement, top: number) => void;
   /** Called when the user takes over; use it to cancel an in-flight programmatic glide. */
   onUnpin?: () => void;
+  element?: HTMLElement | null;
 }
 
 type PinListener = () => void;
@@ -42,7 +43,7 @@ export function usePinnedScroll(
   followInputs: unknown[],
   options: PinnedScrollOptions = {},
 ) {
-  const { near = 48 } = options;
+  const { near = 48, element } = options;
   const pinned = useRef(true);
   const scrollRef = useRef(options.scroll);
   scrollRef.current = options.scroll;
@@ -52,7 +53,7 @@ export function usePinnedScroll(
   unpinRef.current = options.onUnpin;
 
   const glide = () => {
-    const el = targetRef.current;
+    const el = element ?? targetRef.current;
     if (!el || !pinned.current) return;
     const top = el.scrollHeight;
     const fn = scrollRef.current;
@@ -67,7 +68,7 @@ export function usePinnedScroll(
   }, followInputs);
 
   useEffect(() => {
-    const el = targetRef.current;
+    const el = element ?? targetRef.current;
     if (!el) return;
     const pin = () => {
       pinned.current = true;
@@ -80,6 +81,10 @@ export function usePinnedScroll(
     const distance = () => el.scrollHeight - el.scrollTop - el.clientHeight;
     let lastTop = el.scrollTop;
     let touchY: number | null = null;
+    let intendsDown = true;
+    const intent = (down: boolean) => {
+      intendsDown = down;
+    };
     const release = (cancelGlide: boolean) => {
       if (!pinned.current) return;
       pinned.current = false;
@@ -87,7 +92,8 @@ export function usePinnedScroll(
     };
     const onWheel = (event: WheelEvent) => {
       if (event.ctrlKey) return;
-      if (event.deltaY < 0) release(false);
+      intent(event.deltaY > 0);
+      if (event.deltaY < 0) release(true);
     };
     const onTouchStart = (event: TouchEvent) => {
       touchY = event.touches[0]?.clientY ?? null;
@@ -95,15 +101,18 @@ export function usePinnedScroll(
     const onTouchMove = (event: TouchEvent) => {
       const y = event.touches[0]?.clientY;
       if (y === undefined || touchY === null) return;
+      intent(y < touchY);
       if (y > touchY + 2) release(true);
       touchY = y;
     };
     const onKey = (event: KeyboardEvent) => {
+      intent(event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End' || (event.key === ' ' && !event.shiftKey));
       if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home' || (event.key === ' ' && event.shiftKey)) {
         release(true);
       }
     };
     const onPointerDown = () => {
+      intent(true);
       if (distance() > near) release(true);
     };
     const onScroll = () => {
@@ -112,7 +121,7 @@ export function usePinnedScroll(
       const movedDown = top > lastTop + 1;
       lastTop = top;
       if (movedUp && distance() > near) release(true);
-      else if (movedDown && distance() < near) pinned.current = true;
+      else if (movedDown && distance() < near && intendsDown) pinned.current = true;
     };
     const content = el.firstElementChild ?? el;
     const ro = new ResizeObserver(() => {
@@ -139,5 +148,5 @@ export function usePinnedScroll(
       el.removeEventListener('scroll', onScroll);
       ro.disconnect();
     };
-  }, [near]);
+  }, [near, element]);
 }

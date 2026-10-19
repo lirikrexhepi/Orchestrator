@@ -65,6 +65,9 @@ export interface AgentSessionFeedProps {
     modelIds: string[],
   ) => void;
   onDismissPlan?: () => void;
+  onLoadEarlier?: () => void;
+  hasEarlier?: boolean;
+  loadingEarlier?: boolean;
 }
 
 /** extractPlanFromText parses every text block on every render; cache it. */
@@ -336,6 +339,9 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
   modelId,
   driver,
   virtual,
+  onLoadEarlier,
+  hasEarlier,
+  loadingEarlier,
   ...handlerProps
 }) => {
   const handlers = React.useRef<Handlers>(handlerProps);
@@ -494,6 +500,16 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
           drawDistance={1200}
           recycleItems={false}
           initialScrollAtEnd
+          maintainVisibleContentPosition={isWorking ? undefined : { data: true }}
+          onStartReached={hasEarlier && onLoadEarlier ? () => onLoadEarlier() : undefined}
+          onStartReachedThreshold={0.1}
+          ListHeaderComponent={
+            loadingEarlier ? (
+              <div className={virtual.itemClassName}>
+                <NoticeDivider label="Loading earlier messages" />
+              </div>
+            ) : undefined
+          }
           ListFooterComponent={virtual.footer ? <div className={virtual.itemClassName}>{virtual.footer}</div> : undefined}
         />
       </TimelineAnimateContext.Provider>

@@ -394,7 +394,7 @@ const Summary: React.FC<{ agents: SubagentBlockData[]; tone: Tone; now: number }
   return (
     <span
       title={label}
-      className="flex items-center gap-1.5 text-[11.5px] font-(family-name:--app-font) tabular-nums"
+      className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] font-(family-name:--app-font) tabular-nums"
     >
       {parts.map((part, index) => (
         <React.Fragment key={part.text}>
@@ -457,7 +457,7 @@ const FinishedStack: React.FC<{
         <span className={`min-w-0 flex-1 truncate text-[13.5px] font-medium tracking-tight font-(family-name:--app-font) ${tone.title}`}>
           {agents.length} finished
         </span>
-        <span className="flex shrink-0 items-center gap-1.5 text-[12px] tabular-nums font-(family-name:--app-font)">
+        <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[12px] tabular-nums font-(family-name:--app-font)">
           {parts.map((part, index) => (
             <React.Fragment key={part.text}>
               {index > 0 && <span className={tone.faint}>·</span>}
@@ -698,7 +698,7 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
         ) : (
           <div className="flex min-h-0 flex-col p-2">
             <div className="flex items-center gap-3 px-2 pb-1.5 pt-1.5">
-              <span className={`text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>Subagents</span>
+              <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>Subagents</span>
               <span className={`h-px flex-1 ${tone.divider} border-t`} />
               <Summary agents={agents} tone={tone} now={now} />
               <button

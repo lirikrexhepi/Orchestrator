@@ -10,3 +10,6 @@ internal/remote/mobile/dist/
 *_stderr.txt
 *_stdout.txt
 .DS_Store
+tools/perf/*.png
+tools/perf/*.cpuprofile
+desktop/frontend/tmp/

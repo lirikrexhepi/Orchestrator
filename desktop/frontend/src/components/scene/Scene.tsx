@@ -1269,6 +1269,9 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                     drivers={(task as any).drivers}
                     models={(task as any).models}
                     streamBlocks={task.blocks}
+                    onLoadEarlier={() => spawner.loadEarlier(task.threadId)}
+                    hasEarlier={task.hasEarlier}
+                    loadingEarlier={task.loadingEarlier}
                     isDraft={task.isDraft}
                     isFocused={viewMode === 'deck' ? isCenter : false}
                     isAnimating={currentCardMode === 'browser' ? isAnimating : false}

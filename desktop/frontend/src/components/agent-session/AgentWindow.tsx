@@ -48,6 +48,9 @@ export interface AgentWindowProps {
   drivers?: string[];
   models?: string[];
   streamBlocks: AgentStreamBlock[];
+  onLoadEarlier?: () => void;
+  hasEarlier?: boolean;
+  loadingEarlier?: boolean;
   isDraft?: boolean;
   isFocused?: boolean;
   isAnimating?: boolean;
@@ -118,6 +121,9 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   drivers,
   models,
   streamBlocks,
+  onLoadEarlier,
+  hasEarlier,
+  loadingEarlier,
   isDraft = false,
   isFocused = false,
   isAnimating = false,
@@ -153,8 +159,10 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
 }) => {
   const cardContainerRef = useRef<HTMLDivElement>(null);
   const feedScrollRef = useRef<HTMLDivElement | null>(null);
+  const [feedScrollEl, setFeedScrollEl] = useState<HTMLElement | null>(null);
   const attachFeedScroll = useCallback((element: HTMLElement | null) => {
     feedScrollRef.current = element as HTMLDivElement | null;
+    setFeedScrollEl(element);
   }, []);
   const [internalMode, setInternalMode] = useState<AgentCardMode>('chat');
   const activeMode = cardMode !== undefined ? cardMode : internalMode;
@@ -411,6 +419,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
       }
     },
     onUnpin: () => smoothScroll.stopGlide(),
+    element: feedScrollEl,
   });
 
   const isGrid = mode === 'grid';
@@ -740,6 +749,9 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                         onAnswerQuestion={onAnswerQuestion}
                         onSkipQuestion={onSkipQuestion}
                         onDeleteTurn={isWorking ? undefined : onDeleteTurn}
+                        onLoadEarlier={onLoadEarlier}
+                        hasEarlier={hasEarlier}
+                        loadingEarlier={loadingEarlier}
                         virtual={feedVirtual}
                       />
                     </motion.div>

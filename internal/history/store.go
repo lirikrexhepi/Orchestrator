@@ -65,6 +65,7 @@ const currentVersion = 1
 type Session struct {
 	Meta        Meta                             `json:"meta"`
 	Transcripts map[string][]domain.RuntimeEvent `json:"transcripts"`
+	Truncated   map[string]int                   `json:"truncated,omitempty"`
 }
 
 // Store owns the on-disk history tree.
@@ -541,6 +542,14 @@ func (s *Store) List() ([]Meta, error) {
 
 // Load reads a whole workspace back: metadata plus every transcript in it.
 func (s *Store) Load(workspaceID string) (Session, error) {
+	return s.load(workspaceID, 0)
+}
+
+func (s *Store) LoadTail(workspaceID string, maxBytes int) (Session, error) {
+	return s.load(workspaceID, maxBytes)
+}
+
+func (s *Store) load(workspaceID string, maxBytes int) (Session, error) {
 	var loaded Session
 	// Buffered writes would otherwise be missing from a session reopened in the
 	// same run that produced it.
@@ -565,11 +574,25 @@ func (s *Store) Load(workspaceID string) (Session, error) {
 		if entry.IsDir() || !strings.HasSuffix(name, transcriptExt) {
 			continue
 		}
+		threadID := strings.TrimSuffix(name, transcriptExt)
+		if maxBytes > 0 {
+			events, dropped, err := readTranscriptTail(filepath.Join(dir, name), maxBytes)
+			if err != nil {
+				continue
+			}
+			loaded.Transcripts[threadID] = events
+			if dropped > 0 {
+				if loaded.Truncated == nil {
+					loaded.Truncated = make(map[string]int)
+				}
+				loaded.Truncated[threadID] = dropped
+			}
+			continue
+		}
 		events, err := readTranscript(filepath.Join(dir, name))
 		if err != nil {
 			continue
 		}
-		threadID := strings.TrimSuffix(name, transcriptExt)
 		loaded.Transcripts[threadID] = events
 	}
 
@@ -598,6 +621,13 @@ func (s *Store) Load(workspaceID string) (Session, error) {
 			rootEvents := loaded.Transcripts[rootID]
 			loaded.Transcripts[rootID] = append(rootEvents, contEvents...)
 			delete(loaded.Transcripts, contID)
+			if dropped, ok := loaded.Truncated[contID]; ok {
+				if loaded.Truncated == nil {
+					loaded.Truncated = make(map[string]int)
+				}
+				loaded.Truncated[rootID] += dropped
+				delete(loaded.Truncated, contID)
+			}
 
 			contPath := filepath.Join(dir, safeName(contID)+transcriptExt)
 			rootPath := filepath.Join(dir, safeName(rootID)+transcriptExt)
@@ -786,6 +816,64 @@ func readTranscript(path string) ([]domain.RuntimeEvent, error) {
 		}
 	}
 	return events, nil
+}
+
+var userMessageLineMarker = []byte(`"kind":"user.message"`)
+
+func readTranscriptTail(path string, maxBytes int) ([]domain.RuntimeEvent, int, error) {
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	raw := bytes.Split(payload, []byte("\n"))
+	lines := make([][]byte, 0, len(raw))
+	for _, line := range raw {
+		trimmed := bytes.Trim(line, "\r\n\t \x00")
+		if len(trimmed) > 0 {
+			lines = append(lines, trimmed)
+		}
+	}
+	if len(lines) == 0 {
+		return []domain.RuntimeEvent{}, 0, nil
+	}
+
+	start := 0
+	if maxBytes > 0 {
+		suffix := make([]int, len(lines)+1)
+		for i := len(lines) - 1; i >= 0; i-- {
+			suffix[i] = suffix[i+1] + len(lines[i]) + 1
+		}
+		lastBoundary := -1
+		for i := len(lines) - 1; i >= 0; i-- {
+			if bytes.Contains(lines[i], userMessageLineMarker) {
+				lastBoundary = i
+				break
+			}
+		}
+		if lastBoundary >= 0 {
+			start = lastBoundary
+			for i := lastBoundary; i >= 0; i-- {
+				if !bytes.Contains(lines[i], userMessageLineMarker) {
+					continue
+				}
+				if suffix[i] <= maxBytes {
+					start = i
+				} else {
+					break
+				}
+			}
+		}
+	}
+
+	events := make([]domain.RuntimeEvent, 0, len(lines)-start)
+	for _, line := range lines[start:] {
+		var event domain.RuntimeEvent
+		if json.Unmarshal(line, &event) == nil {
+			events = append(events, event)
+		}
+	}
+	return events, start, nil
 }
 
 // healMetaFromTranscripts reconstructs a valid Meta object from any .jsonl transcripts

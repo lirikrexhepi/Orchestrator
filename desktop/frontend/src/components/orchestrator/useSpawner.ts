@@ -5,6 +5,7 @@ import {
   InterruptTurn,
   IsGitRepo,
   LoadHistory,
+  LoadHistoryTail,
   OrchestratorLatest,
   OrchestratorMessageAgent,
   ParseTasks,
@@ -59,6 +60,8 @@ export interface SpawnedTask {
   /** Duration of the most recent finished turn, in milliseconds. */
   lastTurnMs?: number;
   context?: ContextUsage;
+  hasEarlier?: boolean;
+  loadingEarlier?: boolean;
 }
 
 export interface Spawner {
@@ -113,6 +116,7 @@ export interface Spawner {
   ) => Promise<string | undefined>;
   /** Opens a specific task from a past session directly into the active deck (always 1 chat) */
   openHistorySession: (workspaceId: string, threadId?: string) => Promise<number>;
+  loadEarlier: (threadId: string) => Promise<void>;
   /** Drops every window after the backend has stopped their sessions. */
   clear: () => void;
   deleteTurn: (threadId: string, turnId: string) => Promise<void>;
@@ -127,6 +131,25 @@ export interface UseSpawnerOptions {
 function replay(events: RuntimeEvent[] | undefined): AgentStreamBlock[] {
   if (!events?.length) return [];
   return events.reduce<AgentStreamBlock[]>((blocks, event) => reduceEvent(blocks, event), []);
+}
+
+function threadBlocks(
+  meta: history.Meta,
+  rawTranscripts: Record<string, RuntimeEvent[]>,
+  threadId: string,
+): AgentStreamBlock[] {
+  const rawTasks = meta.tasks ? [...meta.tasks] : [];
+  const { tasks: loadedTasks, transcripts } = normalizeSessionTasks(rawTasks, rawTranscripts);
+  const t = loadedTasks.find((item) => item.threadId === threadId) as any;
+  const replayed: AgentStreamBlock[] = (t && t.blocks) || replay(transcripts[threadId]);
+  const firstNonNotice = replayed.find((b) => b.type !== 'notice');
+  const prompt = t?.prompt || meta.workspace?.prompt;
+  return firstNonNotice?.type !== 'user' && prompt
+    ? [
+        userBlock(prompt, `orch-prompt-${threadId}`, [], t?.createdAt || meta.workspace?.createdAt || Date.now()),
+        ...replayed,
+      ]
+    : replayed;
 }
 
 /** Merges any split continuation tasks into their root conversation thread */
@@ -1239,9 +1262,10 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
           }
         }
 
-        const loaded = await LoadHistory(targetWorkspaceId);
+        const loaded = await LoadHistoryTail(targetWorkspaceId, 1500000);
         const meta = loaded.meta;
         const rawTranscripts = (loaded.transcripts ?? {}) as Record<string, RuntimeEvent[]>;
+        const truncated = (loaded.truncated ?? {}) as Record<string, number>;
         let rawTasks = meta.tasks ? [...meta.tasks] : [];
         const cwd = meta.workspace?.cwd || '';
         const folderName = cwd ? cwd.replace(/\\/g, '/').split('/').filter(Boolean).pop() : undefined;
@@ -1296,21 +1320,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
         }
 
         threads.current.add(t.threadId);
-        const replayed = (t as any).blocks || replay(transcripts[t.threadId]);
-        const firstNonNotice = replayed.find((b: AgentStreamBlock) => b.type !== 'notice');
-        const prompt = t.prompt || meta.workspace?.prompt;
-        const blocks =
-          firstNonNotice?.type !== 'user' && prompt
-            ? [
-                userBlock(
-                  prompt,
-                  `orch-prompt-${t.threadId}`,
-                  [],
-                  t.createdAt || meta.workspace?.createdAt || Date.now(),
-                ),
-                ...replayed,
-              ]
-            : replayed;
+        const blocks = threadBlocks(meta, rawTranscripts, t.threadId);
 
         const threadEvents = (transcripts[t.threadId] ?? []) as RuntimeEvent[];
         const recorded = [...threadEvents].reverse().find((event) => event.model);
@@ -1328,6 +1338,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
           isBusy: false,
           workspaceId: targetWorkspaceId,
           isLive: false,
+          hasEarlier: Boolean(truncated[t.threadId]),
           importedFrom: (meta.workspace as any)?.importedFrom,
           projectName: folderName,
           projectPath: cwd,
@@ -1348,6 +1359,30 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
     },
     [],
   );
+
+  const loadEarlier = useCallback(async (threadId: string) => {
+    const task = tasksRef.current.find((item) => item.threadId === threadId);
+    if (!task || !task.hasEarlier || task.loadingEarlier || !task.workspaceId) return;
+    const workspaceId = task.workspaceId;
+    setTasks((previous) =>
+      previous.map((item) => (item.threadId === threadId ? { ...item, loadingEarlier: true } : item)),
+    );
+    try {
+      const loaded = await LoadHistory(workspaceId);
+      const rawTranscripts = (loaded.transcripts ?? {}) as Record<string, RuntimeEvent[]>;
+      const blocks = threadBlocks(loaded.meta, rawTranscripts, threadId);
+      setTasks((previous) =>
+        previous.map((item) =>
+          item.threadId === threadId ? { ...item, blocks, hasEarlier: false, loadingEarlier: false } : item,
+        ),
+      );
+    } catch (cause) {
+      setTasks((previous) =>
+        previous.map((item) => (item.threadId === threadId ? { ...item, hasEarlier: false, loadingEarlier: false } : item)),
+      );
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
 
   const deleteTurn = useCallback(async (threadId: string, turnId: string) => {
     try {
@@ -1485,6 +1520,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       openDraft,
       spawnSkillTest,
       openHistorySession,
+      loadEarlier,
       clear,
       deleteTurn,
       moveChat,
@@ -1493,7 +1529,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
     [
       plan, tasks, backgroundTasks, allActiveTasks, error, workspaceId, canUseWorktree, launchedKeys,
       inspect, confirm, confirmTasks, adoptSpawned, dismiss, send, sendWithModel, interrupt, close,
-      terminate, spawnAgent, openDraft, spawnSkillTest, openHistorySession, clear, deleteTurn, moveChat, renameChat,
+      terminate, spawnAgent, openDraft, spawnSkillTest, openHistorySession, loadEarlier, clear, deleteTurn, moveChat, renameChat,
     ],
   );
 }

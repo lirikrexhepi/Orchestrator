@@ -258,6 +258,10 @@ export function LoadHistory(arg1) {
   return window['go']['main']['App']['LoadHistory'](arg1);
 }
 
+export function LoadHistoryTail(arg1, arg2) {
+  return window['go']['main']['App']['LoadHistoryTail'](arg1, arg2);
+}
+
 export function MoveChat(arg1, arg2) {
   return window['go']['main']['App']['MoveChat'](arg1, arg2);
 }

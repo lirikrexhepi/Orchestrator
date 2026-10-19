@@ -40,13 +40,18 @@ export function useSmoothScroll<T extends HTMLElement = HTMLDivElement>(
   const { speed = 1.0, enabled = true } = options;
   const lenisRef = useRef<Lenis | null>(null);
 
+  const attached = useRef<{ el: T; enabled: boolean; speed: number; destroy: () => void } | null>(null);
+
   useEffect(() => {
     const el = targetRef.current;
+    const current = attached.current;
+    if (current && current.el === el && current.enabled === enabled && current.speed === speed) return;
+    current?.destroy();
+    attached.current = null;
     if (!el || !enabled) return;
 
     const content = (el.firstElementChild as HTMLElement) || el;
 
-    // Exact kinematic setup from Valhalla project
     const lenis = new Lenis({
       wrapper: el,
       content,
@@ -63,12 +68,29 @@ export function useSmoothScroll<T extends HTMLElement = HTMLDivElement>(
 
     track(lenis);
 
-    return () => {
-      untrack(lenis);
-      lenis.destroy();
-      lenisRef.current = null;
+    const sizes = new ResizeObserver(() => lenis.dimensions.resize());
+    sizes.observe(content);
+
+    attached.current = {
+      el,
+      enabled,
+      speed,
+      destroy: () => {
+        sizes.disconnect();
+        untrack(lenis);
+        lenis.destroy();
+        if (lenisRef.current === lenis) lenisRef.current = null;
+      },
     };
-  }, [enabled, speed, targetRef]);
+  });
+
+  useEffect(
+    () => () => {
+      attached.current?.destroy();
+      attached.current = null;
+    },
+    [],
+  );
 
   const scrollTo = useCallback((target: number, smooth = true) => {
     if (lenisRef.current) {

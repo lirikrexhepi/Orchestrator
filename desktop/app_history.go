@@ -58,6 +58,10 @@ func (a *App) LoadHistory(workspaceID string) (history.Session, error) {
 	return a.historyStore.Load(workspaceID)
 }
 
+func (a *App) LoadHistoryTail(workspaceID string, maxBytes int) (history.Session, error) {
+	return a.historyStore.LoadTail(workspaceID, maxBytes)
+}
+
 // DeleteHistory removes a stored session permanently.
 func (a *App) DeleteHistory(workspaceID string) error {
 	return a.recorder.Forget(workspaceID)
