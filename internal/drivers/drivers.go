@@ -132,10 +132,39 @@ func (d *openCodeDriver) Probe(ctx context.Context, settings domain.ProviderSett
 	}
 
 	snapshot := provider.ProbeVersion(ctx, binaryFor(settings, "opencode"), settings)
-	if snapshot.Availability == domain.AvailabilityReady {
+	if snapshot.Availability != domain.AvailabilityReady {
+		return snapshot
+	}
+	if opencode.MajorOf(snapshot.Version) >= 2 {
+		snapshot.Models = d.modelsV2(ctx, settings)
+	} else {
 		snapshot.Models = d.models(ctx, settings)
 	}
 	return snapshot
+}
+
+func (d *openCodeDriver) modelsV2(ctx context.Context, settings domain.ProviderSettings) []domain.Model {
+	infos, err := opencode.ListModels(ctx, settings)
+	if err != nil {
+		return nil
+	}
+	models := make([]domain.Model, 0, len(infos))
+	for _, info := range infos {
+		name := info.Name
+		if name == "" {
+			name = formatOpenCodeModelName(info.ID)
+		}
+		model := domain.Model{ID: info.ID, DisplayName: name}
+		variants := make(map[string]openCodeVariant, len(info.Variants))
+		for _, variant := range info.Variants {
+			variants[variant] = openCodeVariant{}
+		}
+		if option, ok := variantOption(variants); ok {
+			model.Options = []domain.OptionDescriptor{option}
+		}
+		models = append(models, model)
+	}
+	return models
 }
 
 func (d *openCodeDriver) models(ctx context.Context, settings domain.ProviderSettings) []domain.Model {
@@ -261,5 +290,5 @@ func formatOpenCodeModelName(id string) string {
 }
 
 func (d *openCodeDriver) NewAdapter(settings domain.ProviderSettings, emit provider.Emitter) (provider.Adapter, error) {
-	return opencode.NewAdapter(settings, emit), nil
+	return opencode.NewRouter(settings, emit), nil
 }

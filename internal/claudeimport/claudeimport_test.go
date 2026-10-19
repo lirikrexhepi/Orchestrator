@@ -149,3 +149,117 @@ func TestListSkipsTranscriptsWithoutHumanText(t *testing.T) {
 		t.Fatalf("sessions = %+v, want none", sessions)
 	}
 }
+
+func writeSubagentSession(t *testing.T, withNotification bool) string {
+	t.Helper()
+	dir := t.TempDir()
+	lines := []string{
+		`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"run agents"}]},"uuid":"u1","timestamp":"2026-09-20T10:00:00.000Z","sessionId":"sess-2"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_fg","name":"Agent","input":{"description":"foreground"}},{"type":"tool_use","id":"toolu_bg","name":"Agent","input":{"description":"background","run_in_background":true}}]},"uuid":"a1","timestamp":"2026-09-20T10:00:01.000Z","sessionId":"sess-2"}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bg","content":"Async agent launched"}]},"uuid":"u2","timestamp":"2026-09-20T10:00:02.000Z","toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"bgagent"},"sessionId":"sess-2"}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_fg","content":"report"}]},"uuid":"u3","timestamp":"2026-09-20T10:01:01.000Z","toolUseResult":{"status":"completed","totalDurationMs":60000,"totalToolUseCount":4},"sessionId":"sess-2"}`,
+	}
+	if withNotification {
+		lines = append(lines, `{"type":"queue-operation","operation":"enqueue","timestamp":"2026-09-20T10:20:00.000Z","sessionId":"sess-2","content":"<task-notification>\n<task-id>bgagent</task-id>\n<tool-use-id>toolu_bg</tool-use-id>\n<status>completed</status>\n<usage><subagent_tokens>9</subagent_tokens><tool_uses>2</tool_uses><duration_ms>1100000</duration_ms></usage>\n</task-notification>"}`)
+	}
+	payload := ""
+	for _, line := range lines {
+		payload += line + "\n"
+	}
+	path := filepath.Join(dir, "sess-2.jsonl")
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "sess-2", "subagents")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "agent-bgagent.meta.json"), []byte(`{"toolUseId":"toolu_bg"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	transcript := `{"isSidechain":true,"type":"user","message":{"role":"user","content":"do the thing"},"uuid":"s0","timestamp":"2026-09-20T10:00:03.000Z"}
+{"isSidechain":true,"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"on it"},{"type":"tool_use","id":"toolu_s1","name":"Read","input":{"file_path":"a.go"}}]},"uuid":"s1","timestamp":"2026-09-20T10:05:00.000Z"}
+{"isSidechain":true,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s1","content":"package a"}]},"uuid":"s2","timestamp":"2026-09-20T10:05:01.000Z"}
+{"isSidechain":true,"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_s2","name":"Bash","input":{"command":"ls"}}]},"uuid":"s3","timestamp":"2026-09-20T10:15:00.000Z"}
+`
+	if err := os.WriteFile(filepath.Join(sub, "agent-bgagent.jsonl"), []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestParseFileMergesSubagentTranscriptsAndNotificationTotals(t *testing.T) {
+	parsed, err := ParseFile(writeSubagentSession(t, true))
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	subCalls, subResults, subMessages := 0, 0, 0
+	var launch, finish *domain.RuntimeEvent
+	var fg *domain.RuntimeEvent
+	var callAt int64
+	for i := range parsed.Events {
+		event := &parsed.Events[i]
+		switch event.Kind {
+		case domain.EventSubagentToolCall:
+			subCalls++
+			if event.ParentToolID != "toolu_bg" {
+				t.Fatalf("parent = %q", event.ParentToolID)
+			}
+		case domain.EventSubagentToolDone:
+			subResults++
+		case domain.EventSubagentMessage:
+			subMessages++
+		case domain.EventToolCall:
+			if event.Tool.ID == "toolu_bg" {
+				callAt = event.At
+			}
+		case domain.EventToolResult:
+			switch {
+			case event.Tool.ID == "toolu_fg":
+				fg = event
+			case event.Tool.Async:
+				launch = event
+			case event.Tool.ID == "toolu_bg":
+				finish = event
+			}
+		}
+	}
+	if subCalls != 2 || subResults != 1 || subMessages != 1 {
+		t.Fatalf("subagent events calls=%d results=%d messages=%d", subCalls, subResults, subMessages)
+	}
+	if launch == nil || finish == nil || fg == nil {
+		t.Fatalf("missing results launch=%v finish=%v fg=%v", launch, finish, fg)
+	}
+	if finish.Tool.ToolCount != 2 || finish.Tool.DurationMs != 1100000 || finish.At <= launch.At {
+		t.Fatalf("finish = %+v at=%d launch at=%d", finish.Tool, finish.At, launch.At)
+	}
+	if fg.Tool.ToolCount != 4 || fg.Tool.DurationMs != 60000 || fg.At-callAt < 59000 {
+		t.Fatalf("foreground = %+v", fg.Tool)
+	}
+	for i := 1; i < len(parsed.Events); i++ {
+		if parsed.Events[i].At < parsed.Events[i-1].At {
+			t.Fatalf("events out of order at %d", i)
+		}
+	}
+}
+
+func TestParseFileClosesLaunchedAgentWithoutNotificationAtLastActivity(t *testing.T) {
+	parsed, err := ParseFile(writeSubagentSession(t, false))
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	var launchAt, endAt int64
+	for _, event := range parsed.Events {
+		if event.Kind != domain.EventToolResult || event.Tool.ID != "toolu_bg" {
+			continue
+		}
+		if event.Tool.Async {
+			launchAt = event.At
+		} else {
+			endAt = event.At
+		}
+	}
+	if launchAt == 0 || endAt-launchAt < 10*60*1000 {
+		t.Fatalf("launch=%d end=%d", launchAt, endAt)
+	}
+}

@@ -91,6 +91,28 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE INDEX IF NOT EXISTS idx_projects_last_opened ON projects(last_opened_at DESC);
 `,
 	},
+	{
+		version: 2,
+		name:    "activity_daily",
+		sql: `
+CREATE TABLE IF NOT EXISTS activity_daily (
+    day TEXT NOT NULL,
+    project TEXT NOT NULL DEFAULT '',
+    driver TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    messages INTEGER NOT NULL DEFAULT 0,
+    sessions INTEGER NOT NULL DEFAULT 0,
+    tool_calls INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, project, driver, model)
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_daily_day ON activity_daily(day);
+`,
+	},
 }
 
 func (d *DB) migrate(ctx context.Context) error {

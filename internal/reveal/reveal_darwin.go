@@ -14,3 +14,7 @@ func open(target string) error {
 	}
 	return exec.Command("open", args...).Start()
 }
+
+func launch(target string) error {
+	return exec.Command("open", target).Start()
+}

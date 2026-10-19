@@ -33,10 +33,10 @@ const (
 // Task is one unit of delegated work: a thread, the agent running it, and the
 // isolation it was given.
 type Task struct {
-	ID          string     `json:"id"`
-	WorkspaceID string     `json:"workspaceId"`
-	ThreadID    string     `json:"threadId"`
-	Title       string     `json:"title"`
+	ID          string       `json:"id"`
+	WorkspaceID string       `json:"workspaceId"`
+	ThreadID    string       `json:"threadId"`
+	Title       string       `json:"title"`
 	Prompt      string       `json:"prompt"`
 	Driver      DriverKind   `json:"driver"`
 	Drivers     []DriverKind `json:"drivers,omitempty"`
@@ -50,12 +50,27 @@ type Task struct {
 	Permission PermissionMode `json:"permission,omitempty"`
 	Archived   bool           `json:"archived,omitempty"`
 
+	TitleSource string `json:"titleSource,omitempty"`
+	TitleTurn   int    `json:"titleTurn,omitempty"`
+	UserTurns   int    `json:"userTurns,omitempty"`
+
 	Worktree *Worktree `json:"worktree,omitempty"`
+	Cwd      string    `json:"cwd,omitempty"`
 	// Summary is captured at turn completion rather than on close, so context
 	// survives a crashed or force-closed session.
 	Summary   string `json:"summary,omitempty"`
 	CreatedAt int64  `json:"createdAt"`
 	UpdatedAt int64  `json:"updatedAt"`
+}
+
+func (t Task) Dir(workspaceCwd string) string {
+	if t.Worktree != nil && t.Worktree.Path != "" {
+		return t.Worktree.Path
+	}
+	if t.Cwd != "" {
+		return t.Cwd
+	}
+	return workspaceCwd
 }
 
 // Worktree records the isolated checkout a task ran in. Composer creates and

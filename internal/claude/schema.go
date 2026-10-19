@@ -28,6 +28,9 @@ type Usage struct {
 	OutputTokens             int64 `json:"output_tokens"`
 	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	ToolUses                 int   `json:"tool_uses,omitempty"`
+	DurationMs               int64 `json:"duration_ms,omitempty"`
+	TotalTokens              int64 `json:"total_tokens,omitempty"`
 }
 
 // Envelope is the union of every line the CLI emits on stdout under
@@ -42,8 +45,12 @@ type Envelope struct {
 	Cwd       string          `json:"cwd,omitempty"`
 	Event     json.RawMessage `json:"event,omitempty"`
 	// ParentToolUseID is set on frames produced inside a subagent (Task tool).
-	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
-	UUID            string `json:"uuid,omitempty"`
+	ParentToolUseID string          `json:"parent_tool_use_id,omitempty"`
+	UUID            string          `json:"uuid,omitempty"`
+	ToolUseID       string          `json:"tool_use_id,omitempty"`
+	TaskStatus      string          `json:"status,omitempty"`
+	TaskSummary     string          `json:"summary,omitempty"`
+	ToolUseResult   json.RawMessage `json:"tool_use_result,omitempty"`
 
 	IsError    bool                  `json:"is_error,omitempty"`
 	StopReason string                `json:"stop_reason,omitempty"`

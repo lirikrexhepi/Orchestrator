@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -41,10 +42,37 @@ func (a *App) SendTurn(input domain.SendTurnInput) error {
 	logger.Infof("App", "SendTurn: threadID=%s turnID=%s files=%d prompt=%q", input.ThreadID, input.TurnID, len(input.Files), preview)
 	a.manager.RecordUserMessage(input.ThreadID, input.TurnID, input.Text, input.Files...)
 	err := a.manager.Send(a.ctx, input)
+	if errors.Is(err, session.ErrNoSession) {
+		err = a.resumeAndSend(input, err)
+	}
 	if err != nil {
 		logger.Errorf("App", "SendTurn failed: %v", err)
 	}
 	return err
+}
+
+func (a *App) resumeAndSend(input domain.SendTurnInput, cause error) error {
+	workspaceID := ""
+	if task, ok := a.workspaces.TaskByThread(input.ThreadID); ok {
+		workspaceID = task.WorkspaceID
+	}
+	if workspaceID == "" {
+		workspaceID, _ = a.recorder.WorkspaceOf(input.ThreadID)
+	}
+	if workspaceID == "" {
+		return cause
+	}
+	logger.Infof("App", "SendTurn: thread %s has no live session; resuming it", input.ThreadID)
+	result, err := a.ResumeHistoryThread(workspaceID, input.ThreadID)
+	if err != nil {
+		return fmt.Errorf("resume %s: %w", input.ThreadID, err)
+	}
+	for _, outcome := range result.Outcomes {
+		if outcome.ThreadID == input.ThreadID && !outcome.Live {
+			return fmt.Errorf("resume %s: %s", input.ThreadID, outcome.Reason)
+		}
+	}
+	return a.manager.Send(a.ctx, input)
 }
 
 func (a *App) InterruptTurn(threadID string) error {
@@ -139,7 +167,7 @@ func (a *App) SpawnTasks(requests []session.SpawnRequest, opts session.SpawnOpti
 					cwd = task.Worktree.Path
 				}
 			}
-			_ = a.sessionService.CreateSession(a.ctx, task.ThreadID, task.Title, cwd, string(task.Driver), task.Model, branch)
+			_ = a.sessionService.CreateSession(a.ctx, task.ThreadID, task.Title, task.Dir(cwd), string(task.Driver), task.Model, branch)
 		}
 	}
 	a.emit(historyChangedChannel)
@@ -175,15 +203,8 @@ func (a *App) SwitchTaskAccountWithOptions(oldThreadID, driver, account, model s
 		return domain.Task{}, fmt.Errorf("no task for thread %s", oldThreadID)
 	}
 	workspace := a.workspaces.Get(oldTask.WorkspaceID)
-	cwd := ""
-	if workspace != nil {
-		cwd = workspace.Cwd
-	}
-	if oldTask.Worktree != nil && oldTask.Worktree.Path != "" {
-		cwd = oldTask.Worktree.Path
-	}
-	var err error
-	if cwd, err = a.requireCwd(cwd); err != nil {
+	cwd, err := a.requireCwd(a.liveTaskCwd(oldTask))
+	if err != nil {
 		return domain.Task{}, err
 	}
 	projectCwd := cwd
@@ -198,12 +219,7 @@ func (a *App) SwitchTaskAccountWithOptions(oldThreadID, driver, account, model s
 	}
 	oldAccount := domain.NormalizeAccount(oldTask.Account)
 
-	events := a.manager.History(oldThreadID)
-	if len(events) == 0 && a.historyStore != nil {
-		if loaded, lerr := a.historyStore.Load(oldTask.WorkspaceID); lerr == nil {
-			events = loaded.Transcripts[oldThreadID]
-		}
-	}
+	events := a.threadTranscript(oldTask)
 	handoff := session.BuildHandoffPrompt(oldTask.Driver, newDriver, events, cwd)
 
 	_ = a.manager.Stop(a.ctx, oldThreadID)
@@ -308,21 +324,14 @@ func (a *App) UpdateTaskModel(threadID, driver, model string, options domain.Mod
 		}
 		return *task, nil
 	}
-	workspace := a.workspaces.Get(task.WorkspaceID)
-	cwd := ""
-	if workspace != nil {
-		cwd = workspace.Cwd
-	}
-	if task.Worktree != nil && task.Worktree.Path != "" {
-		cwd = task.Worktree.Path
-	}
-	var err error
-	if cwd, err = a.requireCwd(cwd); err != nil {
+	cwd, err := a.requireCwd(a.liveTaskCwd(task))
+	if err != nil {
 		return domain.Task{}, err
 	}
 	resume := a.manager.ProviderSessionID(threadID)
+	transcript := a.threadTranscript(task)
 	_ = a.manager.Stop(a.ctx, threadID)
-	if _, err := a.manager.Start(a.ctx, live.Driver, domain.SessionStartInput{
+	if _, err := a.manager.StartResumed(a.ctx, live.Driver, domain.SessionStartInput{
 		ThreadID:   threadID,
 		Account:    domain.NormalizeAccount(live.Account),
 		Cwd:        cwd,
@@ -330,7 +339,7 @@ func (a *App) UpdateTaskModel(threadID, driver, model string, options domain.Mod
 		Options:    options,
 		Permission: session.TaskPermission(task.Permission),
 		Resume:     resume,
-	}); err != nil {
+	}, transcript); err != nil {
 		return *task, err
 	}
 	a.workspaces.SetTaskModel(threadID, live.Driver, model, options)
@@ -342,6 +351,27 @@ func (a *App) UpdateTaskModel(threadID, driver, model string, options domain.Mod
 		return *updated, nil
 	}
 	return *task, nil
+}
+
+func (a *App) liveTaskCwd(task *domain.Task) string {
+	if live, ok := a.manager.ThreadSession(task.ThreadID); ok && live.Cwd != "" {
+		return live.Cwd
+	}
+	workspaceCwd := ""
+	if workspace := a.workspaces.Get(task.WorkspaceID); workspace != nil {
+		workspaceCwd = workspace.Cwd
+	}
+	return task.Dir(workspaceCwd)
+}
+
+func (a *App) threadTranscript(task *domain.Task) []domain.RuntimeEvent {
+	events := a.manager.History(task.ThreadID)
+	if len(events) == 0 && a.historyStore != nil {
+		if loaded, err := a.historyStore.Load(task.WorkspaceID); err == nil {
+			events = loaded.Transcripts[task.ThreadID]
+		}
+	}
+	return events
 }
 
 func sameModelOptions(a, b domain.ModelOptions) bool {

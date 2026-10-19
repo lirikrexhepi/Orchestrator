@@ -76,9 +76,10 @@ export function useGit(isOpen: boolean): GitState {
 
   const lanesKey = useRef('');
   const diffKey = useRef('');
+  const inFlight = useRef<Promise<void> | null>(null);
+  const queued = useRef(false);
 
-  const refresh = useCallback(async (silent = false) => {
-    if (!silent) setIsLoading(true);
+  const load = useCallback(async () => {
     try {
       const next = await GitOverview();
       const key = JSON.stringify(next);
@@ -89,10 +90,37 @@ export function useGit(isOpen: boolean): GitState {
       setError((prev) => (prev === null ? prev : null));
     } catch (cause) {
       setError(message(cause));
-    } finally {
-      if (!silent) setIsLoading(false);
     }
   }, []);
+
+  const refresh = useCallback(
+    async (silent = false) => {
+      if (inFlight.current) {
+        queued.current = true;
+        if (!silent) {
+          setIsLoading(true);
+          await inFlight.current;
+          setIsLoading(false);
+        }
+        return;
+      }
+      if (!silent) setIsLoading(true);
+      const run = (async () => {
+        do {
+          queued.current = false;
+          await load();
+        } while (queued.current);
+      })();
+      inFlight.current = run;
+      try {
+        await run;
+      } finally {
+        inFlight.current = null;
+        if (!silent) setIsLoading(false);
+      }
+    },
+    [load],
+  );
 
   useEffect(() => {
     if (!isOpen) return;

@@ -18,7 +18,7 @@ func Ignored(ctx context.Context, dir string, paths []string) map[string]bool {
 		return ignored
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "check-ignore", "-z", "--stdin")
+	cmd := exec.CommandContext(ctx, binary(), "check-ignore", "-z", "--stdin")
 	cmd.Dir = dir
 	cmd.Env = shell.Slice(shell.BaseEnvironment())
 	hideWindow(cmd)

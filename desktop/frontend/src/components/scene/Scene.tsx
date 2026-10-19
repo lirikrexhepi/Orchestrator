@@ -26,7 +26,6 @@ import {
   useUsage,
   useWallpaper,
 } from '../sidebar';
-import { DeckNavigationPill } from './DeckNavigationPill';
 import type { QueuedMessage } from './QueuedMessages';
 import { LiquidGlass } from '../../liquid-glass';
 import { useTheme } from '../../themes';
@@ -34,7 +33,6 @@ import { MutateAgentTask, RespondToQuestion } from '../../../wailsjs/go/main/App
 import { EventsOn } from '../../../wailsjs/runtime/runtime';
 import { session } from '../../../wailsjs/go/models';
 import { playTaskComplete } from '../../sound';
-import { SubagentDock } from '../agent-session/SubagentDock';
 import { SubagentBlockData } from '../agent-session/types';
 
 export interface SceneProps {
@@ -196,20 +194,21 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
   // View mode: 'deck' (focused 1-card carousel), 'grid' (Exposé multi-agent overview), or 'orchestrator' (Stratosphere lead workspace)
   const [viewMode, setViewMode] = useState<'deck' | 'grid' | 'orchestrator'>('deck');
   const [activeCardIndex, setActiveCardIndex] = useState(0);
-  const [isCreatingNewAgent, setIsCreatingNewAgent] = useState(false);
-  // Synchronous twin of the flag above. State commits after the current
-  // handler, so an instant "+" spawn sets this for handleSubmit to read.
-  const explicitNewRef = useRef(false);
-  // Folder override for the armed new-agent spawn only. Null means the active
-  // project, so picking another folder here never switches the top-level one.
-  const [newAgentProject, setNewAgentProject] = useState<{ id: string; name: string; path: string } | null>(null);
 
-  useEffect(() => {
-    if (viewMode !== 'deck') {
-      setIsCreatingNewAgent(false);
-      setNewAgentProject(null);
+  const handleNewDraft = useCallback(() => {
+    const blank = spawner.tasks.findIndex((t) => t.isDraft && t.blocks.length === 0);
+    if (blank >= 0) {
+      setActiveCardIndex(blank);
+    } else {
+      spawner.openDraft();
+      setActiveCardIndex(spawner.tasks.length);
     }
-  }, [viewMode]);
+    setViewMode('deck');
+    requestAnimationFrame(() => {
+      const textarea = document.querySelector('textarea');
+      if (textarea) textarea.focus();
+    });
+  }, [spawner]);
 
   // Dynamic viewport tracking for 1:1 hardware Exposé positioning
   const [windowSize, setWindowSize] = useState(() => ({
@@ -268,8 +267,11 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
     } catch {}
     return {};
   });
+  const [browserDimensionsMap, setBrowserDimensionsMap] = useState<Record<string, { width: number; height: number }>>({});
   const [isResizingCard, setIsResizingCard] = useState(false);
   const [fullscreenId, setFullscreenId] = useState<string | null>(null);
+  const [browserImmersive, setBrowserImmersive] = useState(false);
+  const immersiveActive = browserImmersive && Boolean(fullscreenId);
 
   useEffect(() => {
     try {
@@ -287,21 +289,20 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const defaultModels = useDefaultModels(activePanel === 'settings' || settingsOpen);
 
-  const clearSession = useCallback(() => {
-    spawner.clear();
-    coordinator.clear();
-    setActiveCardIndex(0);
-    setViewMode('deck');
-    setCardModes({});
-    setLaunchingThreadId(null);
-    setIsExitingEmptyState(false);
-  }, [spawner, coordinator]);
-
   const historyState = useHistory(true);
   const claudeImport = useClaudeImport();
+  const prefetchClaudeChats = claudeImport.list;
+  useEffect(() => {
+    const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback;
+    const timer = window.setTimeout(() => {
+      if (idle) idle(() => void prefetchClaudeChats(), { timeout: 4000 });
+      else void prefetchClaudeChats();
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [prefetchClaudeChats]);
 
   const endSessionRef = useRef<(() => Promise<void>) | null>(null);
-  endSessionRef.current = historyState.newChat;
+  endSessionRef.current = historyState.projectSwitched;
   const projects = useProjects(useCallback(() => endSessionRef.current?.(), []));
   const composerFiles = useAttachments();
 
@@ -476,10 +477,14 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
       height: 690,
     };
 
+  const activeCenterBrowserSize = activeCenterTask ? browserDimensionsMap[activeCenterTask.threadId] : undefined;
+
   const centerModeSpecs = {
     chat: { yBase: -28, baseMaxHeight: activeCenterSize.height, heightDeduction: 210 },
     tasklist: { yBase: -30, baseMaxHeight: 720, heightDeduction: 205 },
-    browser: { yBase: -32, baseMaxHeight: 730, heightDeduction: 200 },
+    browser: activeCenterBrowserSize
+      ? { yBase: -32, baseMaxHeight: Math.min(activeCenterBrowserSize.height, windowSize.height - 190), heightDeduction: 0 }
+      : { yBase: -32, baseMaxHeight: 730, heightDeduction: 200 },
     servers: { yBase: -30, baseMaxHeight: 720, heightDeduction: 205 },
     changes: { yBase: -34, baseMaxHeight: 770, heightDeduction: 180 },
   }[activeCenterCardMode] || { yBase: -28, baseMaxHeight: activeCenterSize.height, heightDeduction: 210 };
@@ -504,6 +509,25 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
   const pushUpOffset =
     proximityDeficit > 0 ? Math.min(130, Math.round(proximityDeficit)) : 0;
 
+  const centerCardHeight = (() => {
+    const base = centerModeSpecs.baseMaxHeight;
+    const wanted =
+      activeCenterCardMode === 'chat' || activeCenterBrowserSize
+        ? base
+        : windowSize.height - centerModeSpecs.heightDeduction;
+    const capped = Math.min(wanted, Math.max(420, base - Math.round(pushUpOffset * 0.4)), windowSize.height - 190);
+    return Math.max(440, capped);
+  })();
+  const centerCardTop = windowSize.height / 2 + centerModeSpecs.yBase - pushUpOffset - centerCardHeight / 2;
+  const [islandHovered, setIslandHovered] = useState(false);
+  const islandDocked =
+    viewMode === 'deck' &&
+    !fullscreenId &&
+    activeTasks.length > 0 &&
+    centerCardTop < 44 &&
+    !islandHovered &&
+    !islandNotification;
+
   // When new agents are spawned, automatically focus the new card
   const spawnedCount = spawner.tasks.length;
   const previousSpawnedCount = useRef(spawnedCount);
@@ -522,7 +546,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
   // - Ctrl + ArrowDown: enter Deck focused mode
   // - Ctrl + G / Cmd + G: toggle Grid overview mode
   // - Ctrl + Space: toggle Grid overview mode
-  // - Ctrl + N / Cmd + N: focus Omnibar for new agent (@new)
+  // - Ctrl + N / Cmd + N: open a new blank chat tab
   // - Escape: exit Grid mode to Deck mode
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -532,13 +556,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
 
       if ((e.ctrlKey || e.metaKey) && (e.key === 'n' || e.key === 'N')) {
         e.preventDefault();
-        useOrchestratorStore.getState().setMessageText('@new ');
-        const textarea = document.querySelector('textarea');
-        if (textarea) {
-          textarea.focus();
-          const len = textarea.value.length;
-          textarea.setSelectionRange(len, len);
-        }
+        handleNewDraft();
         return;
       }
 
@@ -581,7 +599,11 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
       }
 
       if (e.key === 'Escape' && fullscreenId) {
-        setFullscreenId(null);
+        if (browserImmersive) {
+          setBrowserImmersive(false);
+        } else {
+          setFullscreenId(null);
+        }
         return;
       }
 
@@ -600,7 +622,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTasks.length, viewMode, activePanel, fullscreenId]);
+  }, [activeTasks.length, viewMode, activePanel, fullscreenId, browserImmersive, handleNewDraft]);
 
   useEffect(() => {
     if (viewMode !== 'deck') setFullscreenId(null);
@@ -611,9 +633,14 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
   const isGlass = currentTheme.id === 'glass' || currentTheme.id === 'refractive-glass';
 
   const activeTask = activeTasks[activeCardIndex];
-  const activeSubagents = React.useMemo(
-    () => (activeTask?.blocks ?? []).filter((block): block is SubagentBlockData => block.type === 'subagent'),
-    [activeTask?.blocks],
+  const providers = useOrchestratorStore((state) => state.providers);
+  const accountLabel = useCallback(
+    (driver?: string, account?: string) => {
+      const accounts = providers.find((provider) => provider.id === driver)?.accounts ?? [];
+      if (accounts.length < 2) return undefined;
+      return accounts.find((entry) => entry.id === (account || 'default'))?.name;
+    },
+    [providers],
   );
   const isCurrentBusy =
     viewMode === 'orchestrator' ? coordinator.isBusy : Boolean(activeTask?.isBusy);
@@ -622,6 +649,9 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
   const chatsFullscreen = useOrchestratorStore((state) => state.chatsFullscreen);
   const [fullscreenSettled, setFullscreenSettled] = useState(false);
   const inFullscreen = Boolean(fullscreenId);
+  useEffect(() => {
+    if (!fullscreenId) setBrowserImmersive(false);
+  }, [fullscreenId]);
   useEffect(() => {
     setFullscreenSettled(false);
     if (!inFullscreen) return;
@@ -646,6 +676,15 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
       useOrchestratorStore.getState().selectModelSilently(activeTask.model);
     }
   }, [activeCardIndex, activeTask?.model, viewMode]);
+
+  useEffect(() => {
+    const focused = viewMode === 'deck' && activeTask?.driver ? activeTask : undefined;
+    useOrchestratorStore.getState().focusSession(
+      focused
+        ? { threadId: focused.threadId, providerId: focused.driver || '', account: focused.account || 'default' }
+        : null,
+    );
+  }, [viewMode, activeTask?.threadId, activeTask?.driver, activeTask?.account]);
 
   // Queued messages per agent thread ID
   useEffect(() => {
@@ -718,33 +757,60 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
         return;
       }
 
-      // Deck mode:
-      // If user explicitly clicked "+" (isCreatingNewAgent), typed "@new ...", or there are 0 active tasks:
-      const isExplicitNew =
-        explicitNewRef.current || isCreatingNewAgent || clean.startsWith('@new ') || clean.startsWith('@new');
-      explicitNewRef.current = false;
-      if (isExplicitNew || activeTasks.length === 0) {
-        setIsCreatingNewAgent(false);
+      // Deck mode: a blank draft tab resolves into a real agent on first send.
+      // Project/CLI come from the input bar at send time, not at tab creation.
+      if (activeTask?.isDraft) {
         const promptText = clean.replace(/^@new\s*/i, '').trim();
-        if (!promptText && files.length === 0) {
-          setNewAgentProject(null);
-          return;
-        }
+        if (!promptText && files.length === 0) return;
+        await spawner.spawnAgent(
+          promptText,
+          undefined,
+          modelId,
+          projects.active
+            ? { name: projects.active.name, path: projects.active.path }
+            : undefined,
+          files,
+          activeTask.threadId,
+        );
+        setViewMode('deck');
+        requestPinToBottom();
+        return;
+      }
 
+      // Deck mode with no tabs yet: first message starts the first agent.
+      if (activeTasks.length === 0) {
+        const promptText = clean.replace(/^@new\s*/i, '').trim();
+        if (!promptText && files.length === 0) return;
         const threadId = await spawner.spawnAgent(
           promptText,
           undefined,
           modelId,
-          newAgentProject
-            ? { name: newAgentProject.name, path: newAgentProject.path }
-            : projects.active
-              ? { name: projects.active.name, path: projects.active.path }
-              : undefined,
+          projects.active
+            ? { name: projects.active.name, path: projects.active.path }
+            : undefined,
+          files,
         );
-        setNewAgentProject(null);
         if (threadId) {
           setViewMode('deck');
         }
+        requestPinToBottom();
+        return;
+      }
+
+      // Explicit "@new ..." in a live chat still forks a fresh agent.
+      if (clean.startsWith('@new ') || clean === '@new') {
+        const promptText = clean.replace(/^@new\s*/i, '').trim();
+        if (!promptText && files.length === 0) return;
+        await spawner.spawnAgent(
+          promptText,
+          undefined,
+          modelId,
+          projects.active
+            ? { name: projects.active.name, path: projects.active.path }
+            : undefined,
+          files,
+        );
+        setViewMode('deck');
         requestPinToBottom();
         return;
       }
@@ -775,7 +841,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
         requestPinToBottom();
       }
     },
-    [activeTasks, activeTask, composerFiles, spawner, coordinator, viewMode, isCreatingNewAgent, newAgentProject, projects.active],
+    [activeTasks, activeTask, composerFiles, spawner, coordinator, viewMode, projects.active],
   );
 
   const handleSkillTest = useCallback(
@@ -784,7 +850,6 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
       const files = composerFiles.toRefs();
       if (!clean && files.length === 0) return;
       if (files.length > 0) composerFiles.release();
-      setIsCreatingNewAgent(false);
       const threadId = await spawner.spawnSkillTest(
         clean,
         files,
@@ -881,6 +946,23 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
     <div className="relative w-screen h-screen overflow-hidden select-none bg-black flex flex-col items-center">
       {/* Level 0: Top Window TitleBar with Apple Dynamic Island */}
       <TitleBar>
+        <div
+          aria-hidden="true"
+          onMouseEnter={() => setIslandHovered(true)}
+          onMouseLeave={() => setIslandHovered(false)}
+          className="absolute left-1/2 -translate-x-1/2 -top-3 w-[340px] h-3"
+        />
+        <div
+          onMouseEnter={() => setIslandHovered(true)}
+          onMouseLeave={() => setIslandHovered(false)}
+          style={{
+            transform: islandDocked ? 'translateY(-64px)' : 'translateY(0)',
+            opacity: immersiveActive || islandDocked ? 0 : 1,
+            pointerEvents: immersiveActive ? 'none' : undefined,
+            transition: 'transform 380ms cubic-bezier(0.32, 0.72, 0, 1), opacity 200ms ease',
+            paddingBottom: islandDocked ? 0 : 6,
+          }}
+        >
         <DynamicIsland
           projects={projects}
           activeTaskProjectName={activeTask?.projectName}
@@ -901,6 +983,9 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
           onSetChatArchived={(workspaceId, threadId, archived) => {
             void historyState.setArchived(workspaceId, threadId, archived);
           }}
+          onMoveChat={(payload, project) => {
+            void spawner.moveChat(payload, project).then(() => historyState.refresh());
+          }}
           onRefreshHistory={historyState.refresh}
           onImportClaudeSession={(filePath) => {
             void (async () => {
@@ -915,13 +1000,21 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
           }}
           claudeSessions={claudeImport.sessions}
           claudeLoading={claudeImport.isLoading}
+          claudeLoadingMore={claudeImport.isLoadingMore}
+          claudeExhausted={claudeImport.exhausted}
+          onLoadMoreClaude={(providers) => {
+            void claudeImport.loadMore(providers);
+          }}
           claudeImporting={claudeImport.isImporting}
           claudeError={claudeImport.error}
-          onNewChat={async () => {
-            await historyState.newChat();
-            spawner.clear();
+          onNewChat={() => {
+            void (async () => {
+              await historyState.newChat();
+              spawner.clear();
+            })();
           }}
         />
+        </div>
       </TitleBar>
 
       {/* Wallpaper Layer */}
@@ -958,12 +1051,14 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
               const isPeekingLeft = offset === -1;
               const isPeekingRight = offset === 1;
 
-              const currentCardMode = cardModes[task.threadId] || 'chat';
+              const currentCardMode = cardModes[task.threadId] || (task.cardKey ? cardModes[task.cardKey] : undefined) || 'chat';
               const activeCenterMode = cardModes[activeTasks[activeCardIndex]?.threadId] || 'chat';
 
               const activeCenterTask = activeTasks[activeCardIndex];
               const activeCenterSize = (activeCenterTask && cardDimensionsMap[activeCenterTask.threadId]) || { width: 680, height: 690 };
-              const thisCardSize = cardDimensionsMap[task.threadId] || { width: 680, height: 690 };
+              const thisCardSize = cardDimensionsMap[task.threadId] || (task.cardKey ? cardDimensionsMap[task.cardKey] : undefined) || { width: 680, height: 690 };
+              const sizedBrowser = currentCardMode === 'browser' ? browserDimensionsMap[task.threadId] : undefined;
+              const centerSizedBrowser = activeCenterMode === 'browser' && activeCenterTask ? browserDimensionsMap[activeCenterTask.threadId] : undefined;
 
               let transform = 'translate3d(0, -28px, 0) scale(1)';
               let opacity = 1;
@@ -972,12 +1067,16 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
 
               const MODE_HALF_WIDTH: Record<string, number> = {
                 changes: 620,
-                browser: 550,
+                browser: sizedBrowser ? Math.round(sizedBrowser.width / 2) : 550,
                 tasklist: 390,
                 chat: Math.round(thisCardSize.width / 2),
               };
 
-              const centerHalf = activeCenterMode === 'chat' ? Math.round(activeCenterSize.width / 2) : (MODE_HALF_WIDTH[activeCenterMode] || 340);
+              const centerHalf = activeCenterMode === 'chat'
+                ? Math.round(activeCenterSize.width / 2)
+                : centerSizedBrowser
+                  ? Math.round(centerSizedBrowser.width / 2)
+                  : (MODE_HALF_WIDTH[activeCenterMode] || 340);
               const cardHalf = currentCardMode === 'chat' ? Math.round(thisCardSize.width / 2) : (MODE_HALF_WIDTH[currentCardMode] || 340);
               // Precise offset so adjacent card peeks neatly with a consistent gap,
               // regardless of whether center or side card is 680px, 950px, 1100px, or 1240px:
@@ -1027,7 +1126,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                   currentCardMode === 'changes'
                     ? Math.min(1240, windowSize.width - 80)
                     : currentCardMode === 'browser'
-                      ? Math.min(1100, windowSize.width - 120)
+                      ? (sizedBrowser ? sizedBrowser.width : Math.min(1100, windowSize.width - 120))
                       : currentCardMode === 'tasklist'
                         ? Math.min(780, windowSize.width - 120)
                         : thisCardSize.width;
@@ -1067,7 +1166,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                 currentCardMode === 'changes'
                   ? 'min(1240px, calc(100vw - 80px))'
                   : currentCardMode === 'browser'
-                    ? 'min(1100px, calc(100vw - 120px))'
+                    ? (sizedBrowser ? `${sizedBrowser.width}px` : 'min(1100px, calc(100vw - 120px))')
                     : currentCardMode === 'tasklist'
                       ? 'min(780px, calc(100vw - 120px))'
                       : `${thisCardSize.width}px`;
@@ -1076,7 +1175,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                 currentCardMode === 'changes'
                   ? `calc(100vh - ${180 + Math.round(pushUpOffset * 0.45)}px)`
                   : currentCardMode === 'browser'
-                    ? `calc(100vh - ${200 + Math.round(pushUpOffset * 0.45)}px)`
+                    ? (sizedBrowser ? `${sizedBrowser.height}px` : `calc(100vh - ${200 + Math.round(pushUpOffset * 0.45)}px)`)
                     : currentCardMode === 'tasklist'
                       ? `calc(100vh - ${205 + Math.round(pushUpOffset * 0.45)}px)`
                       : `${thisCardSize.height}px`;
@@ -1085,7 +1184,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                 currentCardMode === 'changes'
                   ? 770
                   : currentCardMode === 'browser'
-                    ? 730
+                    ? (sizedBrowser ? sizedBrowser.height : 730)
                     : currentCardMode === 'tasklist'
                       ? 720
                       : thisCardSize.height;
@@ -1104,7 +1203,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
 
               return (
                 <div
-                  key={task.threadId}
+                  key={task.cardKey || task.threadId}
                   onClick={(e) => {
                     e.stopPropagation();
                     if (viewMode === 'grid') {
@@ -1125,7 +1224,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                   }`}
                   style={{
                     width: isFullscreen ? '100vw' : cardWidth,
-                    maxWidth: isFullscreen ? '100vw' : 'calc(100vw - 120px)',
+                    maxWidth: isFullscreen ? '100vw' : sizedBrowser ? 'calc(100vw - 60px)' : 'calc(100vw - 120px)',
                     height: isFullscreen ? '100vh' : cardHeight,
                     maxHeight: isFullscreen
                       ? '100vh'
@@ -1156,7 +1255,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                   >
                     <AgentWindow
                     id={task.threadId}
-                    title={task.title}
+                    title={task.isDraft ? 'New chat' : task.title}
                     subtitle={task.branch}
                     status={task.isBusy ? 'working' : 'idle'}
                     workStartedAt={task.workStartedAt}
@@ -1167,13 +1266,15 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                     drivers={(task as any).drivers}
                     models={(task as any).models}
                     streamBlocks={task.blocks}
+                    isDraft={task.isDraft}
                     isFocused={viewMode === 'deck' ? isCenter : false}
                     isAnimating={currentCardMode === 'browser' ? isAnimating : false}
                     mode={viewMode === 'deck' ? 'deck' : 'grid'}
                     cardMode={currentCardMode}
-                    onCardModeChange={(m) =>
-                      setCardModes((prev) => ({ ...prev, [task.threadId]: m }))
-                    }
+                    onCardModeChange={(m) => {
+                      if (task.isDraft && m !== 'chat') return;
+                      setCardModes((prev) => ({ ...prev, [task.threadId]: m }));
+                    }}
                     detectedServers={getTaskServers(task.threadId)}
                     onStopServer={runningServers.stop}
                     git={git}
@@ -1185,6 +1286,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                     }}
                     onSendMessage={(text, model, files) => spawner.sendWithModel(task.threadId, text, files, model)}
                     onInterrupt={() => spawner.interrupt(task.threadId)}
+                    onRename={(name) => spawner.renameChat(task.threadId, name)}
                     onAnswerQuestion={async (blockId, answers) => {
                       const qId = blockId.replace(/^question-/, '');
                       try {
@@ -1193,6 +1295,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                         console.error('Failed to answer question:', err);
                       }
                     }}
+                    onDeleteTurn={(turnId) => spawner.deleteTurn(task.threadId, turnId)}
                     onSkipQuestion={async (blockId) => {
                       const qId = blockId.replace(/^question-/, '');
                       try {
@@ -1202,20 +1305,27 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                       }
                     }}
                     onClose={() => spawner.close(task.threadId)}
-                    onResize={(w, h) =>
-                      setCardDimensionsMap((prev) => ({
+                    onResize={(w, h) => {
+                      const setMap = currentCardMode === 'browser' ? setBrowserDimensionsMap : setCardDimensionsMap;
+                      setMap((prev) => ({
                         ...prev,
                         [task.threadId]: { width: w, height: h },
-                      }))
-                    }
+                      }));
+                    }}
                     projectName={task.projectName}
+                    accountName={accountLabel(task.driver, task.account)}
                     isFullscreen={isFullscreen}
                     onEnterFullscreen={() => setFullscreenId(task.threadId)}
                     onExitFullscreen={() => setFullscreenId(null)}
+                    isBrowserImmersive={isFullscreen && browserImmersive}
+                    onBrowserImmersiveChange={(immersive) => {
+                      if (immersive) setFullscreenId(task.threadId);
+                      setBrowserImmersive(immersive);
+                    }}
                     onResizeStart={() => setIsResizingCard(true)}
                     onResizeEnd={() => setIsResizingCard(false)}
-                    cardWidth={thisCardSize.width}
-                    cardHeight={thisCardSize.height}
+                    cardWidth={sizedBrowser ? sizedBrowser.width : thisCardSize.width}
+                    cardHeight={sizedBrowser ? sizedBrowser.height : thisCardSize.height}
                     className="w-full h-full"
                   />
                   </div>
@@ -1226,7 +1336,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
         </div>
       )}
 
-      {fullscreenId && viewMode === 'deck' && (
+      {fullscreenId && viewMode === 'deck' && !immersiveActive && (
         <>
           {([-1, 1] as const).map((dir) => {
             const neighbor = activeTasks[activeCardIndex + dir];
@@ -1237,7 +1347,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                 type="button"
                 onClick={() => setActiveCardIndex(activeCardIndex + dir)}
                 title={neighbor.title}
-                className={`absolute top-1/2 -translate-y-1/2 z-40 pointer-events-auto flex items-center gap-2.5 max-w-[240px] px-3 py-2 rounded-2xl font-(family-name:--app-font) tracking-tight cursor-pointer transition-all duration-150 active:scale-95 ${
+                className={`absolute bottom-6 z-40 pointer-events-auto flex items-center gap-2.5 max-w-[240px] px-3 py-2 rounded-2xl font-(family-name:--app-font) tracking-tight cursor-pointer transition-all duration-150 active:scale-95 ${
                   dir < 0 ? 'left-8' : 'right-12 flex-row-reverse text-right'
                 } ${isLight ? 'text-black/40 hover:text-black/80 hover:bg-black/[0.06]' : 'text-white/35 hover:text-white/80 hover:bg-white/[0.08]'}`}
               >
@@ -1298,27 +1408,13 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
       </div>
 
       {/* Bottom Omnibar & Deck Navigation Area */}
-      <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2.5 w-full max-w-[760px] px-4 pointer-events-none">
-
-        {/* Deck Navigation Pill (Arrows + Grid Switcher) */}
-        {!fullscreenId && (<DeckNavigationPill
-          currentIndex={activeCardIndex}
-          totalCount={activeTasks.length}
-          viewMode={viewMode}
-          onPrev={() => setActiveCardIndex((prev) => Math.max(0, prev - 1))}
-          onNext={() => setActiveCardIndex((prev) => Math.min(activeTasks.length - 1, prev + 1))}
-          onToggleViewMode={() => setViewMode((prev) => (prev === 'deck' ? 'grid' : 'deck'))}
-          onAscend={() => setViewMode((prev) => (prev === 'deck' ? 'grid' : 'orchestrator'))}
-          onDescend={() => setViewMode((prev) => (prev === 'orchestrator' ? 'grid' : 'deck'))}
-          canPrev={activeCardIndex > 0}
-          canNext={activeCardIndex < activeTasks.length - 1}
-        />)}
+      <div
+        className="absolute bottom-5 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2.5 w-full max-w-[760px] px-4 pointer-events-none transition-opacity duration-200"
+        style={immersiveActive ? { opacity: 0, visibility: 'hidden' } : undefined}
+      >
 
         {/* Unified Omnibar Input Bar */}
         <div ref={inputWrapperRef} className="pointer-events-none w-full flex flex-col items-center gap-2">
-          {viewMode === 'deck' && activeSubagents.length > 0 && (
-            <SubagentDock key={activeTask?.threadId} agents={activeSubagents} />
-          )}
           <div className="pointer-events-auto w-full flex justify-center">
           <OrchestratorInput
             queue={
@@ -1335,33 +1431,8 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
             hasActiveAgent={activeTasks.length > 0}
             viewMode={viewMode}
             onToggleViewMode={() => setViewMode((prev) => (prev === 'deck' ? 'grid' : 'deck'))}
-            isCreatingNewAgent={isCreatingNewAgent}
-            onCancelNewAgent={() => {
-              setIsCreatingNewAgent(false);
-              setNewAgentProject(null);
-            }}
-            onNewAgent={() => {
-              // Text already typed spawns instantly in the active project —
-              // no tag step. An empty box arms the new-agent mode instead.
-              const store = useOrchestratorStore.getState();
-              const typed = store.messageText.trim();
-              if (typed) {
-                explicitNewRef.current = true;
-                setIsCreatingNewAgent(true);
-                setNewAgentProject(null);
-                store.setMessageText('');
-                void handleSubmit(typed, store.selectedModelId);
-                return;
-              }
-              setNewAgentProject(null);
-              setIsCreatingNewAgent(true);
-              const textarea = document.querySelector('textarea');
-              if (textarea) {
-                textarea.focus();
-              }
-            }}
-            newAgentProject={newAgentProject}
-            onNewAgentProjectChange={setNewAgentProject}
+            onNewAgent={handleNewDraft}
+            isDraft={Boolean(activeTask?.isDraft)}
             projects={projects}
             attachments={composerFiles}
           />

@@ -3,6 +3,17 @@ import { AIModel, CLIProvider, ModelSettings, ThinkingEffort, ThinkingMode } fro
 import { DEFAULT_MODELS, DEFAULT_PROVIDERS, toModel, toProvider } from './orchestratorData';
 import { ListProviders } from '../../../wailsjs/go/main/App';
 
+export interface FocusedSession {
+  threadId: string;
+  providerId: string;
+  account: string;
+}
+
+interface PendingAccount {
+  providerId: string;
+  account: string;
+}
+
 interface OrchestratorStore {
   providers: CLIProvider[];
   models: AIModel[];
@@ -24,12 +35,17 @@ interface OrchestratorStore {
   accountProject: string;
   chosenAccounts: Record<string, string>;
   projectAccounts: Record<string, string>;
+  focusedSession: FocusedSession | null;
+  pendingAccounts: Record<string, PendingAccount>;
 
   // Actions
   setAccountProject: (projectPath: string, defaults?: Record<string, string>) => void;
   selectAccount: (providerId: string, accountId: string) => void;
   accountFor: (providerId: string, projectPath?: string) => string;
   shownAccount: (providerId: string) => string;
+  focusSession: (session: FocusedSession | null) => void;
+  pendingAccount: (threadId: string, providerId: string) => string;
+  clearPendingAccount: (threadId: string) => void;
   setAutoStartAgents: (enabled: boolean) => void;
   setAutoApprovePermissions: (enabled: boolean) => void;
   setInterfaceSounds: (enabled: boolean) => void;
@@ -104,6 +120,8 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   accountProject: '',
   chosenAccounts: {},
   projectAccounts: {},
+  focusedSession: null,
+  pendingAccounts: {},
 
   setAccountProject: (projectPath, defaults = {}) => {
     const same = samePath(get().accountProject, projectPath);
@@ -115,7 +133,11 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   },
 
   selectAccount: (providerId, accountId) =>
-    set((state) => ({ chosenAccounts: { ...state.chosenAccounts, [providerId]: accountId } })),
+    set((state) => {
+      const focused = state.focusedSession;
+      if (!focused) return { chosenAccounts: { ...state.chosenAccounts, [providerId]: accountId } };
+      return { pendingAccounts: { ...state.pendingAccounts, [focused.threadId]: { providerId, account: accountId } } };
+    }),
 
   accountFor: (providerId, projectPath) => {
     const { accountProject, chosenAccounts } = get();
@@ -124,11 +146,42 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   },
 
   shownAccount: (providerId) => {
-    const { chosenAccounts, projectAccounts, providers } = get();
+    const { chosenAccounts, projectAccounts, providers, focusedSession, pendingAccounts } = get();
     const accounts = providers.find((p) => p.id === providerId)?.accounts ?? [];
-    const wanted = chosenAccounts[providerId] || projectAccounts[providerId] || 'default';
+    const pending = focusedSession ? pendingAccounts[focusedSession.threadId] : undefined;
+    const wanted =
+      (pending?.providerId === providerId && pending.account) ||
+      (focusedSession?.providerId === providerId && (focusedSession.account || 'default')) ||
+      chosenAccounts[providerId] ||
+      projectAccounts[providerId] ||
+      'default';
     return accounts.some((account) => account.id === wanted) ? wanted : 'default';
   },
+
+  focusSession: (session) => {
+    const current = get().focusedSession;
+    if (
+      current?.threadId === session?.threadId &&
+      current?.providerId === session?.providerId &&
+      current?.account === session?.account
+    ) {
+      return;
+    }
+    set({ focusedSession: session });
+  },
+
+  pendingAccount: (threadId, providerId) => {
+    const pending = get().pendingAccounts[threadId];
+    return pending?.providerId === providerId ? pending.account : '';
+  },
+
+  clearPendingAccount: (threadId) =>
+    set((state) => {
+      if (!state.pendingAccounts[threadId]) return state;
+      const next = { ...state.pendingAccounts };
+      delete next[threadId];
+      return { pendingAccounts: next };
+    }),
 
   setAutoStartAgents: (autoStartAgents: boolean) => {
     if (typeof window !== 'undefined') {

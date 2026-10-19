@@ -23,11 +23,16 @@ func (a *Adapter) handleEnvelope(s *session, envelope *Envelope) {
 
 	switch envelope.Type {
 	case "system":
-		if envelope.Subtype == "init" {
+		switch envelope.Subtype {
+		case "init":
 			s.noteModel(envelope.Model)
 			event := a.event(s, domain.EventSessionStarted)
 			event.Text = s.providerSessionID()
 			a.emit.Emit(event)
+		case "task_notification":
+			a.handleTaskNotification(s, envelope)
+		case "task_progress":
+			a.handleTaskProgress(s, envelope)
 		}
 	case "stream_event":
 		a.handleStreamEvent(s, envelope)
@@ -213,8 +218,72 @@ func (a *Adapter) handleToolResults(s *session, envelope *Envelope) {
 			Status: status,
 			Output: flattenContent(block.Content),
 		}
+		applyToolUseResult(event.Tool, envelope.ToolUseResult)
 		a.emit.Emit(event)
 	}
+}
+
+type toolUseResultInfo struct {
+	Status            string `json:"status"`
+	TotalDurationMs   int64  `json:"totalDurationMs"`
+	TotalToolUseCount int    `json:"totalToolUseCount"`
+	TotalTokens       int64  `json:"totalTokens"`
+}
+
+func applyToolUseResult(tool *domain.ToolCall, raw json.RawMessage) {
+	if len(raw) == 0 || raw[0] != '{' {
+		return
+	}
+	var info toolUseResultInfo
+	if json.Unmarshal(raw, &info) != nil {
+		return
+	}
+	if info.Status == "async_launched" {
+		tool.Async = true
+		tool.Output = ""
+		return
+	}
+	tool.DurationMs = info.TotalDurationMs
+	tool.ToolCount = info.TotalToolUseCount
+	tool.Tokens = info.TotalTokens
+}
+
+func (a *Adapter) handleTaskProgress(s *session, envelope *Envelope) {
+	if envelope.ToolUseID == "" || envelope.Usage == nil {
+		return
+	}
+	event := a.event(s, domain.EventSubagentProgress)
+	event.ParentToolID = envelope.ToolUseID
+	event.ItemID = envelope.ToolUseID
+	event.Tool = &domain.ToolCall{
+		ID:         envelope.ToolUseID,
+		Status:     domain.ToolInProgress,
+		DurationMs: envelope.Usage.DurationMs,
+		ToolCount:  envelope.Usage.ToolUses,
+		Tokens:     envelope.Usage.TotalTokens,
+	}
+	a.emit.Emit(event)
+}
+
+func (a *Adapter) handleTaskNotification(s *session, envelope *Envelope) {
+	if envelope.ToolUseID == "" {
+		return
+	}
+	status := domain.ToolCompleted
+	switch envelope.TaskStatus {
+	case "failed", "killed", "error", "stopped":
+		status = domain.ToolFailed
+	}
+	tool := &domain.ToolCall{ID: envelope.ToolUseID, Status: status, Output: envelope.TaskSummary}
+	if envelope.Usage != nil {
+		tool.DurationMs = envelope.Usage.DurationMs
+		tool.ToolCount = envelope.Usage.ToolUses
+		tool.Tokens = envelope.Usage.TotalTokens
+	}
+	event := a.event(s, domain.EventToolResult)
+	event.ItemID = envelope.ToolUseID
+	event.Tool = tool
+	a.emit.Emit(event)
 }
 
 // flattenContent renders a tool_result payload, which is either a bare string

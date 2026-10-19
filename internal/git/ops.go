@@ -12,7 +12,7 @@ import (
 )
 
 func runNetwork(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, binary(), args...)
 	cmd.Dir = dir
 	env := shell.BaseEnvironment()
 	merged := make(map[string]string, len(env)+2)

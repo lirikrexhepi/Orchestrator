@@ -6,12 +6,59 @@ export interface ChatDragPayload {
   workspaceId: string;
   threadId: string;
   title: string;
+  subtitle?: string;
+  driver?: string;
+  model?: string;
+  projectPath?: string;
 }
 
+export interface ChatDragCard {
+  payload: ChatDragPayload;
+  x: number;
+  y: number;
+  origin: DOMRect | null;
+}
+
+type Listener = (card: ChatDragCard | null) => void;
+
+let current: ChatDragCard | null = null;
+const listeners = new Set<Listener>();
+
+export function subscribeChatDragCard(listener: Listener): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function activeChatDrag(): ChatDragCard | null {
+  return current;
+}
+
+function publish(card: ChatDragCard | null) {
+  current = card;
+  for (const listener of listeners) listener(card);
+}
+
+let blankImage: HTMLImageElement | null = null;
+function blank(): HTMLImageElement {
+  if (!blankImage) {
+    blankImage = new Image();
+    blankImage.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  }
+  return blankImage;
+}
+blank();
+
 export function beginChatDrag(event: React.DragEvent, payload: ChatDragPayload) {
-  event.dataTransfer.effectAllowed = 'copy';
+  event.dataTransfer.effectAllowed = 'copyMove';
   event.dataTransfer.setData(CHAT_DRAG_MIME, JSON.stringify(payload));
   event.dataTransfer.setData('text/plain', payload.title);
+  event.dataTransfer.setDragImage(blank(), 0, 0);
+  const source = event.currentTarget instanceof HTMLElement ? event.currentTarget.getBoundingClientRect() : null;
+  publish({ payload, x: event.clientX, y: event.clientY, origin: source });
+}
+
+export function endChatDragCard() {
+  if (current) publish(null);
 }
 
 export function isChatDrag(data: DataTransfer | null): boolean {
@@ -25,7 +72,12 @@ export function readChatDrag(data: DataTransfer | null): ChatDragPayload | null 
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<ChatDragPayload>;
     if (!parsed.workspaceId) return null;
-    return { workspaceId: parsed.workspaceId, threadId: parsed.threadId ?? '', title: parsed.title || 'Chat' };
+    return {
+      workspaceId: parsed.workspaceId,
+      threadId: parsed.threadId ?? '',
+      title: parsed.title || 'Chat',
+      projectPath: parsed.projectPath,
+    };
   } catch {
     return null;
   }

@@ -103,6 +103,8 @@ func (a *Adapter) connection(ctx context.Context) (*jsonrpc.Conn, error) {
 		Command: binary(a.settings),
 		Args:    args,
 		Env:     env,
+
+		DieWithParent: true,
 	})
 	if err != nil {
 		cancel()

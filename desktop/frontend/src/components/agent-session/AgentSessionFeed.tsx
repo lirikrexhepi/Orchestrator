@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { LegendList, type LegendListRef } from '@legendapp/list/react';
 import { AgentStreamBlock } from './types';
 import { UserChatBubble } from './UserChatBubble';
+import { UserTurnMenu } from './UserTurnMenu';
 import { ThinkingBlock } from './ThinkingBlock';
 import { BashTool } from './BashTool';
 import { SearchTool } from './SearchTool';
@@ -31,8 +33,17 @@ const isTimelineSegment = (segment: FeedSegment) =>
 const segmentDotY = (segment: FeedSegment) =>
   segment.kind === 'block' ? TEXT_DOT_Y : ROW_DOT_Y;
 
+export interface VirtualFeedOptions {
+  className?: string;
+  style?: React.CSSProperties;
+  itemClassName?: string;
+  footer?: React.ReactNode;
+  onScrollElement?: (element: HTMLElement | null) => void;
+}
+
 export interface AgentSessionFeedProps {
   blocks: AgentStreamBlock[];
+  virtual?: VirtualFeedOptions;
   threadId?: string;
   className?: string;
   modelId?: string;
@@ -40,6 +51,7 @@ export interface AgentSessionFeedProps {
   onApprovePlan?: (blockId: string) => void;
   onAnswerQuestion?: (blockId: string, answers: string[]) => void;
   onSkipQuestion?: (blockId: string) => void;
+  onDeleteTurn?: (turnId: string) => Promise<void> | void;
   onRespondApproval?: (requestId: string, decision: string) => void;
   onFileClick?: (path: string) => void;
   canUseWorktree?: boolean;
@@ -100,7 +112,11 @@ const FeedBlock = React.memo(function FeedBlock({
   const h = handlers.current;
   switch (block.type) {
     case 'user':
-      return <UserChatBubble message={block.content} timestamp={block.timestamp} files={block.files} />;
+      return (
+        <UserTurnMenu turnId={block.pending ? undefined : block.turnId} getDelete={() => handlers.current.onDeleteTurn}>
+          <UserChatBubble message={block.content} timestamp={block.timestamp} files={block.files} />
+        </UserTurnMenu>
+      );
 
     case 'notice':
       return <NoticeDivider label={block.label} icon={block.icon} />;
@@ -319,6 +335,7 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
   launchedKeys,
   modelId,
   driver,
+  virtual,
   ...handlerProps
 }) => {
   const handlers = React.useRef<Handlers>(handlerProps);
@@ -426,28 +443,67 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
         }
   };
 
+  const renderRow = (segment: FeedSegment, index: number, list: FeedSegment[], segmentClass: string) => {
+    const body = <div className="w-full flex flex-col">{renderSegment(segment)}</div>;
+    if (!isTimelineSegment(segment)) return (
+        <PlainSegment key={segment.key} className={segmentClass}>
+          {body}
+        </PlainSegment>
+      );
+    return (
+      <TimelineSegment
+        key={segment.key}
+        className={segmentClass}
+        connectUp={index > 0 && isTimelineSegment(list[index - 1])}
+        connectDown={index < list.length - 1 && isTimelineSegment(list[index + 1])}
+        dotY={segmentDotY(segment)}
+      >
+        {body}
+      </TimelineSegment>
+    );
+  };
+
+  const listRef = useRef<LegendListRef | null>(null);
+  const onScrollElement = virtual?.onScrollElement;
+  useLayoutEffect(() => {
+    if (!onScrollElement) return;
+    onScrollElement(listRef.current?.getScrollableNode() ?? null);
+    return () => onScrollElement(null);
+  }, [onScrollElement]);
+
+  const itemClassName = virtual?.itemClassName;
+  const extraData = useMemo(
+    () => ({ segments, lastTextId, latestPlanBlockId, launchedSet, drawLines, canUseWorktree, isActive, driver, modelId, itemClassName }),
+    [segments, lastTextId, latestPlanBlockId, launchedSet, drawLines, canUseWorktree, isActive, driver, modelId, itemClassName],
+  );
+
+  if (virtual) {
+    return (
+      <TimelineAnimateContext.Provider value={drawLines}>
+        <LegendList
+          ref={listRef}
+          className={virtual.className}
+          style={virtual.style}
+          data={segments}
+          keyExtractor={(segment) => segment.key}
+          renderItem={({ item, index }) => (
+            <div className={virtual.itemClassName}>{renderRow(item, index, segments, 'w-full')}</div>
+          )}
+          extraData={extraData}
+          estimatedItemSize={140}
+          drawDistance={1200}
+          recycleItems={false}
+          initialScrollAtEnd
+          ListFooterComponent={virtual.footer ? <div className={virtual.itemClassName}>{virtual.footer}</div> : undefined}
+        />
+      </TimelineAnimateContext.Provider>
+    );
+  }
+
   return (
     <TimelineAnimateContext.Provider value={drawLines}>
     <div className={`flex flex-col ${className}`}>
-      {segments.map((segment, index) => {
-        const body = <div className="w-full flex flex-col">{renderSegment(segment)}</div>;
-        if (!isTimelineSegment(segment)) return (
-            <PlainSegment key={segment.key} className="feed-segment w-full">
-              {body}
-            </PlainSegment>
-          );
-        return (
-          <TimelineSegment
-            key={segment.key}
-            className="feed-segment w-full"
-            connectUp={index > 0 && isTimelineSegment(segments[index - 1])}
-            connectDown={index < segments.length - 1 && isTimelineSegment(segments[index + 1])}
-            dotY={segmentDotY(segment)}
-          >
-            {body}
-          </TimelineSegment>
-        );
-      })}
+      {segments.map((segment, index) => renderRow(segment, index, segments, 'feed-segment w-full'))}
     </div>
     </TimelineAnimateContext.Provider>
   );

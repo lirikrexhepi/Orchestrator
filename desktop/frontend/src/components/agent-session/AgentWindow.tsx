@@ -1,7 +1,9 @@
-import React, { useRef, useEffect, useState, useMemo } from 'react';
+import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { LiquidGlass } from '../../liquid-glass';
 import { useTheme } from '../../themes';
-import { AgentSessionFeed } from './AgentSessionFeed';
+import { ActivityOverview } from '../activity/ActivityOverview';
+import { AgentSessionFeed, VirtualFeedOptions } from './AgentSessionFeed';
 import { AgentBrowserView } from './AgentBrowserView';
 import { AgentGitView } from './AgentGitView';
 import { AgentServersView } from './AgentServersView';
@@ -10,11 +12,13 @@ import { GitState } from '../git';
 import { X, Square, Folder, Minimize } from '../common/icons';
 import { OrbitLoader } from './OrbitLoader';
 import { TextShimmer } from './TextShimmer';
-import { AgentStreamBlock, TodoToolBlockData } from './types';
+import { AgentStreamBlock, SubagentBlockData, TodoToolBlockData } from './types';
+import { SubagentMenu } from './SubagentMenu';
 import { AgentTasklistView } from './AgentTasklistView';
 import { AgentViewSwitcher } from './AgentViewSwitcher';
 import { useSmoothScroll } from '../common/useSmoothScroll';
 import { usePinnedScroll } from '../common/usePinnedScroll';
+import { ChatTitle } from './ChatTitle';
 import { ContextRing } from './ContextRing';
 import type { ContextUsage } from './contextUsage';
 import { parseSwitchNotice } from './NoticeDivider';
@@ -44,6 +48,7 @@ export interface AgentWindowProps {
   drivers?: string[];
   models?: string[];
   streamBlocks: AgentStreamBlock[];
+  isDraft?: boolean;
   isFocused?: boolean;
   isAnimating?: boolean;
   mode?: 'deck' | 'grid';
@@ -55,17 +60,22 @@ export interface AgentWindowProps {
   onFocus?: () => void;
   onSendMessage?: (msg: string, modelId: string, files?: domain.FileRef[]) => void;
   onInterrupt?: () => void;
+  onRename?: (title: string) => void;
   onApprovePlan?: (blockId: string) => void;
   onAnswerQuestion?: (blockId: string, answers: string[]) => void;
   onSkipQuestion?: (blockId: string) => void;
+  onDeleteTurn?: (turnId: string) => Promise<void> | void;
   onClose?: () => void;
   onResize?: (width: number, height: number) => void;
   onResizeStart?: () => void;
   onResizeEnd?: () => void;
   projectName?: string;
+  accountName?: string;
   isFullscreen?: boolean;
   onEnterFullscreen?: () => void;
   onExitFullscreen?: () => void;
+  isBrowserImmersive?: boolean;
+  onBrowserImmersiveChange?: (immersive: boolean) => void;
   cardWidth?: number;
   cardHeight?: number;
   className?: string;
@@ -108,6 +118,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   drivers,
   models,
   streamBlocks,
+  isDraft = false,
   isFocused = false,
   isAnimating = false,
   mode = 'deck',
@@ -119,26 +130,37 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   onFocus,
   onSendMessage,
   onInterrupt,
+  onRename,
   onApprovePlan,
   onAnswerQuestion,
   onSkipQuestion,
+  onDeleteTurn,
   onClose,
   onResize,
   onResizeStart,
   onResizeEnd,
   projectName,
+  accountName,
   isFullscreen = false,
   onEnterFullscreen,
   onExitFullscreen,
+  isBrowserImmersive = false,
+  onBrowserImmersiveChange,
   cardWidth,
   cardHeight,
   className = '',
   style,
 }) => {
   const cardContainerRef = useRef<HTMLDivElement>(null);
-  const feedScrollRef = useRef<HTMLDivElement>(null);
+  const feedScrollRef = useRef<HTMLDivElement | null>(null);
+  const attachFeedScroll = useCallback((element: HTMLElement | null) => {
+    feedScrollRef.current = element as HTMLDivElement | null;
+  }, []);
   const [internalMode, setInternalMode] = useState<AgentCardMode>('chat');
   const activeMode = cardMode !== undefined ? cardMode : internalMode;
+  const [browserHost, setBrowserHost] = useState<HTMLElement | null>(null);
+  const browserHeader = activeMode === 'browser';
+  const immersive = isBrowserImmersive && isFullscreen && browserHeader;
 
   const driverProgression = useMemo(() => {
     const steps: Array<{ driver: string; model?: string }> = [];
@@ -183,7 +205,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
     if (driverProgression.length > 0) {
       return driverProgression[driverProgression.length - 1].driver;
     }
-    return driver || 'antigravity';
+    return driver || '';
   }, [driverProgression, driver]);
 
   const activeModel = useMemo(() => {
@@ -200,6 +222,9 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   }, [activeMode]);
 
   const OVERSHOOT_PX = 16;
+  const WIDE_LOCK_PX = 18;
+  const WIDE_RELEASE_PX = 70;
+  const WIDE_HOLD_MS = 380;
   const OVERSHOOT_HOLD_MS = 1000;
   const [isPulsing, setIsPulsing] = useState(false);
   const [isDraggingResize, setIsDraggingResize] = useState(false);
@@ -233,6 +258,15 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
     let lastH = startH;
     let overshootTimer = 0;
 
+    const isBrowserResize = activeMode === 'browser';
+    const viewportRect = isBrowserResize
+      ? cardContainerRef.current?.querySelector('[data-browser-viewport]')?.getBoundingClientRect()
+      : undefined;
+    const overheadW = viewportRect && rect ? rect.width - viewportRect.width : 0;
+    const overheadH = viewportRect && rect ? rect.height - viewportRect.height : 0;
+    let lockedUntil = 0;
+    let isLocked = false;
+
     setIsDraggingResize(true);
     onResizeStart?.();
 
@@ -249,12 +283,31 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
       const snappedH = Math.round(rawH / STEP) * STEP;
 
       const minW = 650;
-      const maxW = Math.min(1350, Math.floor((window.innerWidth - 60) / STEP) * STEP);
+      const maxW = Math.min(isBrowserResize ? 1900 : 1350, Math.floor((window.innerWidth - 60) / STEP) * STEP);
       const minH = 450;
-      const maxH = Math.min(880, Math.floor((window.innerHeight - 190) / STEP) * STEP);
+      const maxH = Math.min(isBrowserResize ? 1000 : 880, Math.floor((window.innerHeight - 190) / STEP) * STEP);
 
       const clampedW = Math.max(minW, Math.min(maxW, snappedW));
-      const clampedH = Math.max(minH, Math.min(maxH, snappedH));
+      let clampedH = Math.max(minH, Math.min(maxH, snappedH));
+
+      if (isBrowserResize && viewportRect) {
+        const wideH = Math.round(((clampedW - overheadW) * 9) / 16 + overheadH);
+        if (wideH >= minH && wideH <= maxH) {
+          const gap = Math.abs(clampedH - wideH);
+          const now = performance.now();
+          if (isLocked) {
+            if (gap > WIDE_RELEASE_PX || (now > lockedUntil && gap > WIDE_LOCK_PX)) {
+              isLocked = false;
+            }
+          } else if (gap <= WIDE_LOCK_PX) {
+            isLocked = true;
+            lockedUntil = now + WIDE_HOLD_MS;
+          }
+          if (isLocked) clampedH = wideH;
+        } else {
+          isLocked = false;
+        }
+      }
 
       const overshoot = rawH - maxH > OVERSHOOT_PX || rawW - maxW > OVERSHOOT_PX * 2;
       if (overshoot && !overshootTimer && onEnterFullscreen) {
@@ -309,6 +362,11 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   const completedTasksCount = todos.filter((t) => t.status === 'completed').length;
   const totalTasksCount = todos.length;
 
+  const subagents = useMemo(
+    () => streamBlocks.filter((block): block is SubagentBlockData => block.type === 'subagent'),
+    [streamBlocks],
+  );
+
   const webServers = (detectedServers || []).filter((s) => !s.agent && s.port > 0);
   const primaryServer = webServers[0];
 
@@ -356,6 +414,11 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   });
 
   const isGrid = mode === 'grid';
+  const showOverview = isDraft && streamBlocks.length === 0;
+  const reduceMotion = useReducedMotion();
+  const chatCrossfade = reduceMotion
+    ? { duration: 0.15 }
+    : { duration: 0.35, ease: [0.32, 0.72, 0, 1] as const };
 
   const MODE_INDEX: Record<AgentCardMode, number> = {
     chat: 0,
@@ -366,7 +429,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   };
 
   const insetForDock = (base: React.CSSProperties): React.CSSProperties =>
-    isFullscreen ? { ...base, bottom: 'var(--input-dock-h, 140px)', left: 68 } : base;
+    immersive ? { ...base, bottom: 0, left: 0 } : isFullscreen ? { ...base, bottom: 'var(--input-dock-h, 140px)', left: 68 } : base;
 
   const getTabStyle = (modeKey: AgentCardMode): React.CSSProperties => {
     const diff = MODE_INDEX[modeKey] - MODE_INDEX[activeMode];
@@ -386,6 +449,30 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
     };
   };
 
+  const feedVirtual = useMemo<VirtualFeedOptions>(
+    () => ({
+      className: `absolute inset-0 overflow-y-auto overflow-x-hidden custom-scrollbar py-2.5 ${isFullscreen ? 'pb-[var(--input-dock-h,150px)] px-4' : 'pr-2'} ${
+        isGrid ? 'pointer-events-none select-none' : ''
+      }`,
+      style: { ...FEED_SCROLL_STYLE },
+      itemClassName: `w-full min-w-0 flex flex-col ${isFullscreen ? 'max-w-[880px] mx-auto' : ''}`,
+      onScrollElement: attachFeedScroll,
+      footer:
+        isWorking && !hasLiveIndicator ? (
+          <div className="flex items-center gap-2 pt-3 pl-0.5">
+            <OrbitLoader size={13} />
+            <TextShimmer
+              duration={1.5}
+              className="text-[12px] font-medium font-(family-name:--app-font) tracking-tight"
+            >
+              Thinking
+            </TextShimmer>
+          </div>
+        ) : undefined,
+    }),
+    [isFullscreen, isGrid, isWorking, hasLiveIndicator, attachFeedScroll],
+  );
+
   const { currentTheme } = useTheme();
   const isLight = currentTheme.id === 'light' || currentTheme.id === 'white';
 
@@ -395,6 +482,14 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
         <span className={'inline-flex items-center gap-1 shrink-0 font-medium font-(family-name:--app-font) tracking-tight ' + (isFullscreen ? 'text-[13px] gap-1.5 ' : 'text-[11px] ') + (isLight ? 'text-black/55' : 'text-white/50')} title={'Project: ' + projectName}>
           <Folder size={isFullscreen ? 15 : 12} strokeWidth={1.75} />
           {projectName}
+        </span>
+      )}
+      {accountName && (
+        <span
+          className={'inline-flex items-center shrink-0 rounded-full border font-medium font-(family-name:--app-font) tracking-tight ' + (isFullscreen ? 'h-[20px] px-2 text-[12px] ' : 'h-[16px] px-1.5 text-[10px] ') + (isLight ? 'border-black/10 bg-black/[0.04] text-black/60' : 'border-white/10 bg-white/[0.06] text-white/60')}
+          title={'Account: ' + accountName}
+        >
+          {accountName}
         </span>
       )}
       {subtitle && (
@@ -408,6 +503,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   return (
     <div
       ref={cardContainerRef}
+      data-agent-card
       onClick={onFocus}
       className={`select-none transition-opacity duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${isPulsing ? 'animate-size-pulse' : ''} ${
         isGrid
@@ -435,7 +531,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
             ? (isFullscreen ? 'none' : '1px solid var(--theme-panel-border, rgba(0, 0, 0, 0.08))')
             : (isFullscreen ? 'none' : '1px solid var(--theme-panel-border, rgba(255, 255, 255, 0.12))')
         }
-        className={`w-full h-full ${isFullscreen ? 'p-4 pt-[60px]' : 'p-4'} ${isLight ? 'text-[#030303]' : 'text-white'} shadow-2xl relative box-border transition-all duration-200 ease-out ${
+        className={`w-full h-full ${immersive ? 'p-0' : isFullscreen ? 'p-4 pt-[60px]' : 'p-4'} ${isLight ? 'text-[#030303]' : 'text-white'} shadow-2xl relative box-border transition-all duration-200 ease-out ${
           isGrid
             ? (isLight
                 ? 'group-hover/card:border-black/25 group-hover/card:shadow-[0_20px_48px_-12px_rgba(0,0,0,0.2),0_0_0_1px_rgba(0,0,0,0.1)]'
@@ -478,8 +574,8 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
           </div>
 
           {/* Card Header (Reinvented: seamless, borderless, organic glass) */}
-          <div className="flex items-center justify-between shrink-0 pt-0.5 pb-2 px-1">
-            <div className={isFullscreen ? 'flex flex-col items-start gap-1.5 min-w-0 pr-2 flex-1' : 'flex items-center gap-2 min-w-0 pr-2'}>
+          <div className={`items-center justify-between shrink-0 pt-0.5 pb-2 px-1 ${immersive ? 'hidden' : 'flex'}`}>
+            <div className={browserHeader ? 'flex items-center gap-2 min-w-0 pr-2 flex-1' : isFullscreen ? 'flex flex-col items-start gap-1.5 min-w-0 pr-2 flex-1' : 'flex items-center gap-2 min-w-0 pr-2'}>
               <div className="flex items-center gap-3 min-w-0">
                 <div
                   className={'relative flex items-center gap-1.5 shrink-0 '}
@@ -514,7 +610,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                     <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 ring-1 ring-black/40 shadow-[0_0_6px_rgba(52,211,153,0.9)] animate-pulse" />
                   )}
                 </div>
-                {isFullscreen && (
+                {isFullscreen && !browserHeader && (
                   <>
                     {projectMeta}
                     <ContextRing usage={contextUsage} isLight={isLight} large />
@@ -522,14 +618,20 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 )}
               </div>
 
-              <div className="flex items-center gap-2 min-w-0 max-w-full">
-                <span className={`${isFullscreen ? 'text-[20px] leading-[26px]' : 'text-[13px]'} font-semibold font-(family-name:--app-font) tracking-tight truncate ${isLight ? 'text-[#030303]' : 'text-white'}`}>
-                  {title}
-                </span>
-                {!isFullscreen && projectMeta}
-              </div>
+              {!browserHeader && (
+                <div className="flex items-center gap-2 min-w-0 max-w-full">
+                  <ChatTitle
+                    title={title}
+                    onRename={isDraft ? undefined : onRename}
+                    className={`${isFullscreen ? 'text-[20px] leading-[26px]' : 'text-[13px]'} font-semibold font-(family-name:--app-font) tracking-tight ${isLight ? 'text-[#030303]' : 'text-white'}`}
+                  />
+                  {!isFullscreen && projectMeta}
+                </div>
+              )}
 
-              {!isFullscreen && <ContextRing usage={contextUsage} isLight={isLight} />}
+              {!browserHeader && !isFullscreen && <ContextRing usage={contextUsage} isLight={isLight} />}
+
+              <div ref={setBrowserHost} className={browserHeader ? 'flex flex-1 min-w-0 items-center' : 'hidden'} />
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
@@ -547,6 +649,8 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                   <span>{cardWidth || 680} × {cardHeight || 690}</span>
                 </div>
               )}
+
+              {!isGrid && subagents.length > 0 && <SubagentMenu agents={subagents} isLight={isLight} driver={activeDriver} modelId={activeModel} dockable={isFullscreen && isFocused} />}
 
               <AgentViewSwitcher
                 mode={activeMode}
@@ -596,37 +700,51 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
 
           {/* Card Body: Chat Feed, Embedded Browser, and Embedded Git View with Liquid Directional Crossfade */}
           <div className="flex-1 min-h-0 h-0 relative overflow-hidden">
-            {/* 1. Chat Feed View */}
             <div
-              ref={feedScrollRef}
-              className={`absolute inset-0 overflow-y-auto overflow-x-hidden custom-scrollbar py-2.5 ${isFullscreen ? 'pb-[var(--input-dock-h,150px)] px-4' : 'pr-2'} ${
+              className={`absolute inset-0 flex flex-col pt-1 ${
                 isGrid ? 'pointer-events-none select-none' : ''
               }`}
-              style={{ ...FEED_SCROLL_STYLE, ...getTabStyle('chat') }}
+              style={insetForDock(getTabStyle('chat'))}
             >
-              <div className={`w-full min-w-0 flex flex-col ${isFullscreen ? 'max-w-[880px] mx-auto' : ''}`}>
-                <AgentSessionFeed
-                  blocks={streamBlocks}
-                  threadId={id}
-                  modelId={activeModel}
-                  driver={activeDriver}
-                  isWorking={isWorking}
-                  onApprovePlan={onApprovePlan}
-                  onAnswerQuestion={onAnswerQuestion}
-                  onSkipQuestion={onSkipQuestion}
-                />
-
-                {isWorking && !hasLiveIndicator && (
-                  <div className="flex items-center gap-2 pt-3 pl-0.5">
-                    <OrbitLoader size={13} />
-                    <TextShimmer
-                      duration={1.5}
-                      className="text-[12px] font-medium font-(family-name:--app-font) tracking-tight"
+              <div className="relative flex-1 min-h-0">
+                <AnimatePresence initial={false}>
+                  {showOverview ? (
+                    <motion.div
+                      key="overview"
+                      className="absolute inset-0"
+                      style={{ zIndex: 1 }}
+                      initial={false}
+                      animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+                      exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -12, scale: 0.98, filter: 'blur(4px)' }}
+                      transition={chatCrossfade}
                     >
-                      Thinking
-                    </TextShimmer>
-                  </div>
-                )}
+                      <ActivityOverview isLight={isLight} fullscreen={isFullscreen} />
+                    </motion.div>
+                  ) : (
+                    <motion.div
+                      key="feed"
+                      className="absolute inset-0"
+                      style={{ zIndex: 2 }}
+                      initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 12, scale: 0.99, filter: 'blur(4px)' }}
+                      animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+                      exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.99, filter: 'blur(4px)' }}
+                      transition={chatCrossfade}
+                    >
+                      <AgentSessionFeed
+                        blocks={streamBlocks}
+                        threadId={id}
+                        modelId={activeModel}
+                        driver={activeDriver}
+                        isWorking={isWorking}
+                        onApprovePlan={onApprovePlan}
+                        onAnswerQuestion={onAnswerQuestion}
+                        onSkipQuestion={onSkipQuestion}
+                        onDeleteTurn={isWorking ? undefined : onDeleteTurn}
+                        virtual={feedVirtual}
+                      />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             </div>
 
@@ -660,6 +778,13 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                   isFocused={isFocused && activeMode === 'browser' && !isGrid}
                   isAnimating={isAnimating}
                   onFocusCard={onFocus}
+                  toolbarHost={browserHost}
+                  immersive={immersive}
+                  onEnterImmersive={
+                    onBrowserImmersiveChange && onEnterFullscreen && !isGrid
+                      ? () => onBrowserImmersiveChange(true)
+                      : undefined
+                  }
                 />
               )}
             </div>
@@ -696,6 +821,21 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 />
               )}
             </div>
+
+            {immersive && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onBrowserImmersiveChange?.(false);
+                }}
+                title="Exit full screen (Esc)"
+                aria-label="Exit full screen"
+                className="absolute top-3 left-3 z-50 w-[30px] h-[30px] rounded-full flex items-center justify-center bg-black/55 hover:bg-black/75 text-white/80 hover:text-white backdrop-blur-md border border-white/15 shadow-lg active:scale-90 transition-all duration-150 cursor-pointer pointer-events-auto"
+              >
+                <Minimize size={14} strokeWidth={2} />
+              </button>
+            )}
 
             {/* In Grid / Exposé mode, full shield prevents iframe/feed stealing click so card zooms smoothly */}
             {isGrid && <div className="absolute inset-0 z-30 cursor-pointer" />}

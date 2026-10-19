@@ -31,9 +31,8 @@ export interface ProjectsState {
  * Owns the saved project list and which one agents start in.
  *
  * @param onSwitched runs after the active project changes, so the caller can
- *   end the conversation that belonged to the previous one. A CLI process
- *   inherits its working directory at spawn and can never be moved, so a
- *   transcript cannot meaningfully span two projects.
+ *   reset the coordinator conversation for the new project. Running agents
+ *   are preserved across projects; only the coordinator transcript is cut.
  */
 export function useProjects(onSwitched?: () => void | Promise<void>): ProjectsState {
   const [list, setList] = useState<Project[]>([]);

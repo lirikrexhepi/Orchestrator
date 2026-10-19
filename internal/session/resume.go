@@ -24,6 +24,7 @@ type ResumeRequest struct {
 	// Permission is the mode the task originally ran with.
 	Permission domain.PermissionMode `json:"permission,omitempty"`
 	Fork       bool                  `json:"fork,omitempty"`
+	Transcript []domain.RuntimeEvent `json:"-"`
 }
 
 // TaskPermission returns the mode a task should run with. Tasks recorded
@@ -106,26 +107,20 @@ func (s *Spawner) resumeOne(ctx context.Context, request ResumeRequest) ResumeOu
 		Fork:       request.Fork,
 	}
 
-	if request.ProviderSessionID != "" {
-		if _, err := s.manager.Start(ctx, request.Driver, start); err == nil {
-			outcome.Live, outcome.Continued = true, true
-			return outcome
-		}
-		// A stale or rejected session id is the expected failure here, so the
-		// fallback is a fresh session in the same place rather than an error.
-		start.Resume = ""
-	}
-
-	if _, err := s.manager.Start(ctx, request.Driver, start); err != nil {
+	continued, err := s.manager.StartResumed(ctx, request.Driver, start, request.Transcript)
+	if err != nil {
 		outcome.Reason = err.Error()
 		return outcome
 	}
 
-	outcome.Live = true
+	outcome.Live, outcome.Continued = true, continued
+	if continued {
+		return outcome
+	}
 	if request.ProviderSessionID == "" {
-		outcome.Reason = "no stored session id; started fresh in the same directory"
+		outcome.Reason = "no stored session id; started fresh with the stored transcript"
 	} else {
-		outcome.Reason = "stored session was rejected; started fresh in the same directory"
+		outcome.Reason = "stored session could not be resumed; started fresh with the stored transcript"
 	}
 	return outcome
 }

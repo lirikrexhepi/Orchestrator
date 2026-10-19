@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"composer/internal/activity"
 	"composer/internal/domain"
 )
 
@@ -213,5 +214,26 @@ func TestPreferenceAndProjectRepo(t *testing.T) {
 	}
 	if projects[0].Name != "composer" || !projects[0].IsGit {
 		t.Errorf("project mismatch: %+v", projects[0])
+	}
+}
+
+func TestActivityRepoAccumulates(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	repo := NewActivityRepo(db)
+
+	row := activity.Row{
+		Key:    activity.Key{Day: "2026-10-12", Project: "/p", Driver: "claude", Model: "opus"},
+		Counts: activity.Counts{Messages: 2, InputTokens: 10},
+	}
+	if err := repo.AddActivity(ctx, []activity.Row{row, row}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := repo.Rows(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Messages != 4 || rows[0].InputTokens != 20 {
+		t.Fatalf("got %+v", rows)
 	}
 }

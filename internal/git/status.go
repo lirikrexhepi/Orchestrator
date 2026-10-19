@@ -14,13 +14,16 @@ import (
 // are the two status columns and the path, v1 gives exactly those, and NUL
 // separation keeps paths with spaces or quotes intact without unquoting rules.
 func (r *Repo) Status(ctx context.Context) ([]domain.FileChange, error) {
-	raw, err := runRaw(ctx, r.Root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	raw, err := runRaw(ctx, r.Root, "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
 		return nil, err
 	}
 
-	stats := r.numstats(ctx)
 	changes := make([]domain.FileChange, 0, 16)
+	if strings.Trim(raw, "\x00") == "" {
+		return changes, nil
+	}
+	stats := r.numstats(ctx)
 
 	fields := strings.Split(raw, "\x00")
 	for i := 0; i < len(fields); i++ {

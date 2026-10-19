@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"composer/internal/domain"
+	"composer/internal/opencode"
 	"composer/internal/provider"
 )
 
@@ -129,6 +131,9 @@ func (d *openCodeDriver) SignInArgs() []string {
 }
 
 func (d *openCodeDriver) StatusArgs() []string {
+	if opencode.IsV2(context.Background(), domain.ProviderSettings{}) {
+		return []string{"auth", "list", "--standalone"}
+	}
 	return []string{"auth", "list"}
 }
 
@@ -138,7 +143,15 @@ var ansiSequence = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 
 func (d *openCodeDriver) ParseStatus(result provider.CommandResult) provider.AccountStatus {
 	text := ansiSequence.ReplaceAllString(result.Stdout+"\n"+result.Stderr, "")
+	if strings.Contains(text, "No authenticated integrations") {
+		return provider.AccountStatus{Known: true, Detail: "Not signed in"}
+	}
 	match := openCodeCredentials.FindStringSubmatch(text)
+	if match == nil && result.Err == nil && opencode.IsV2(context.Background(), domain.ProviderSettings{}) {
+		if line := strings.TrimSpace(firstLine(text)); line != "" {
+			return provider.AccountStatus{SignedIn: true, Known: true, Detail: line}
+		}
+	}
 	if match == nil {
 		return provider.AccountStatus{Detail: strings.TrimSpace(firstLine(text))}
 	}

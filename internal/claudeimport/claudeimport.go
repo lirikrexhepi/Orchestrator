@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,7 @@ type ExternalSession struct {
 	// of the list even when they contain text.
 	AgentRun   bool   `json:"agentRun"`
 	Entrypoint string `json:"entrypoint,omitempty"`
+	Provider   string `json:"provider,omitempty"`
 }
 
 // ParsedSession is a fully converted transcript, ready to be stored. Events
@@ -159,22 +161,9 @@ func describe(path string) *ExternalSession {
 	if ok && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
 		return cached.session
 	}
-	var session *ExternalSession
-	parsed, err := ParseFile(path)
-	if err == nil && parsed != nil && hasHumanText(parsed.Events) {
-		session = &ExternalSession{
-			ID:           parsed.SessionID,
-			Title:        parsed.Title,
-			Cwd:          parsed.Cwd,
-			Model:        parsed.Model,
-			Preview:      previewText(parsed.Prompt, 140),
-			FilePath:     path,
-			MessageCount: countMessages(parsed.Events),
-			StartedAt:    parsed.StartedAt,
-			UpdatedAt:    parsed.UpdatedAt,
-			AgentRun:     isAgentRun(parsed),
-			Entrypoint:   parsed.Entrypoint,
-		}
+	session := describeLite(path, info)
+	if session == nil {
+		session = describeFull(path)
 	}
 	listCacheMu.Lock()
 	listCache[path] = cachedSession{size: info.Size(), modTime: info.ModTime(), session: session}
@@ -231,6 +220,7 @@ func ParseFile(path string) (*ParsedSession, error) {
 	if parsed.SessionID == "" {
 		parsed.SessionID = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	}
+	converter.attachSubagents(path, parsed)
 	parsed.Title = firstNonEmpty(converter.customTitle, converter.aiTitle, converter.summary, previewText(converter.titlePrompt, 40))
 	if parsed.Title == "" {
 		parsed.Title = "Imported Claude Code chat"
@@ -287,6 +277,10 @@ type fileRecord struct {
 	Entrypoint  string          `json:"entrypoint"`
 	Summary     string          `json:"summary"`
 	Message     json.RawMessage `json:"message"`
+
+	Operation     string          `json:"operation"`
+	QueueContent  json.RawMessage `json:"content"`
+	ToolUseResult json.RawMessage `json:"toolUseResult"`
 }
 
 type fileMessage struct {
@@ -325,6 +319,8 @@ type converter struct {
 	seq         int
 	turn        int
 	turnID      string
+	launched    map[string]int64
+	finished    map[string]bool
 }
 
 func (c *converter) visit(record fileRecord, parsed *ParsedSession) {
@@ -360,6 +356,8 @@ func (c *converter) visit(record fileRecord, parsed *ParsedSession) {
 		c.visitUser(record, at, parsed)
 	case "assistant":
 		c.visitAssistant(record, at, parsed)
+	case "queue-operation":
+		c.visitQueue(record, at, parsed)
 	}
 }
 
@@ -399,17 +397,19 @@ func (c *converter) visitUser(record fileRecord, at int64, parsed *ParsedSession
 	}
 	for _, result := range results {
 		parsed.UpdatedAt = at
+		tool := &domain.ToolCall{
+			ID:     result.id,
+			Name:   result.name,
+			Status: result.status,
+			Output: truncate(result.output, maxToolOutputChars),
+		}
+		c.applyToolUseResult(tool, record.ToolUseResult, at)
 		c.emit(parsed, domain.RuntimeEvent{
 			Kind:   domain.EventToolResult,
 			TurnID: c.turnID,
 			ItemID: result.id,
 			At:     at,
-			Tool: &domain.ToolCall{
-				ID:     result.id,
-				Name:   result.name,
-				Status: result.status,
-				Output: truncate(result.output, maxToolOutputChars),
-			},
+			Tool:   tool,
 		})
 	}
 }
@@ -501,6 +501,83 @@ func (c *converter) visitAssistant(record fileRecord, at int64, parsed *ParsedSe
 			},
 		})
 	}
+}
+
+type taskResultInfo struct {
+	Status            string `json:"status"`
+	TotalDurationMs   int64  `json:"totalDurationMs"`
+	TotalToolUseCount int    `json:"totalToolUseCount"`
+	TotalTokens       int64  `json:"totalTokens"`
+}
+
+func (c *converter) applyToolUseResult(tool *domain.ToolCall, raw json.RawMessage, at int64) {
+	if len(raw) == 0 || raw[0] != '{' {
+		return
+	}
+	var info taskResultInfo
+	if json.Unmarshal(raw, &info) != nil {
+		return
+	}
+	if info.Status == "async_launched" {
+		tool.Async = true
+		tool.Output = ""
+		if c.launched == nil {
+			c.launched = map[string]int64{}
+		}
+		c.launched[tool.ID] = at
+		return
+	}
+	tool.DurationMs = info.TotalDurationMs
+	tool.ToolCount = info.TotalToolUseCount
+	tool.Tokens = info.TotalTokens
+}
+
+func tagValue(text, tag string) string {
+	open := "<" + tag + ">"
+	start := strings.Index(text, open)
+	if start < 0 {
+		return ""
+	}
+	start += len(open)
+	end := strings.Index(text[start:], "</"+tag+">")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(text[start : start+end])
+}
+
+func (c *converter) visitQueue(record fileRecord, at int64, parsed *ParsedSession) {
+	if record.Operation != "enqueue" || len(record.QueueContent) == 0 {
+		return
+	}
+	var content string
+	if json.Unmarshal(record.QueueContent, &content) != nil || !strings.Contains(content, "<task-notification>") {
+		return
+	}
+	toolID := tagValue(content, "tool-use-id")
+	if toolID == "" {
+		return
+	}
+	status := domain.ToolCompleted
+	switch tagValue(content, "status") {
+	case "failed", "killed", "error", "stopped":
+		status = domain.ToolFailed
+	}
+	tool := &domain.ToolCall{ID: toolID, Status: status}
+	tool.ToolCount, _ = strconv.Atoi(tagValue(content, "tool_uses"))
+	tool.DurationMs, _ = strconv.ParseInt(tagValue(content, "duration_ms"), 10, 64)
+	tool.Tokens, _ = strconv.ParseInt(tagValue(content, "total_tokens"), 10, 64)
+	if c.finished == nil {
+		c.finished = map[string]bool{}
+	}
+	c.finished[toolID] = true
+	c.emit(parsed, domain.RuntimeEvent{
+		Kind:   domain.EventToolResult,
+		TurnID: c.turnID,
+		ItemID: toolID,
+		At:     at,
+		Tool:   tool,
+	})
 }
 
 func (c *converter) emit(parsed *ParsedSession, event domain.RuntimeEvent) {
@@ -710,4 +787,25 @@ func itoa(n int) string {
 		digits = append([]byte{'-'}, digits...)
 	}
 	return string(digits)
+}
+
+func describeFull(path string) *ExternalSession {
+	parsed, err := ParseFile(path)
+	if err != nil || parsed == nil || !hasHumanText(parsed.Events) {
+		return nil
+	}
+	return &ExternalSession{
+		ID:           parsed.SessionID,
+		Title:        parsed.Title,
+		Cwd:          parsed.Cwd,
+		Model:        parsed.Model,
+		Preview:      previewText(parsed.Prompt, 140),
+		FilePath:     path,
+		MessageCount: countMessages(parsed.Events),
+		StartedAt:    parsed.StartedAt,
+		UpdatedAt:    parsed.UpdatedAt,
+		AgentRun:     isAgentRun(parsed),
+		Entrypoint:   parsed.Entrypoint,
+		Provider:     ProviderClaude,
+	}
 }

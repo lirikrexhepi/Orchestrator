@@ -64,3 +64,20 @@ func TestOpus55DefaultWithFallback(t *testing.T) {
 		t.Fatalf("opus 5 should be the default fallback on CLI 2.1.219")
 	}
 }
+
+func TestHaiku55GatedOnCLIVersion(t *testing.T) {
+	current := Models("2.1.291")
+	found := modelByID(current, "claude-haiku-5-5")
+	if found == nil {
+		t.Fatalf("claude-haiku-5-5 missing on CLI 2.1.291: %+v", current)
+	}
+	if found.Default {
+		t.Fatalf("haiku 5.5 must not steal the default from opus 5.5")
+	}
+	if modelByID(Models("2.1.290"), "claude-haiku-5-5") != nil {
+		t.Fatalf("claude-haiku-5-5 must stay hidden on CLI 2.1.290")
+	}
+	if modelByID(Models("2.1.290"), "claude-haiku-4-5") == nil {
+		t.Fatalf("claude-haiku-4-5 must stay available on older CLIs")
+	}
+}

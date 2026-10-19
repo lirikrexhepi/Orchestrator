@@ -25,7 +25,11 @@ type CommandResult struct {
 
 // RunCommand executes a short-lived CLI probe with the resolved environment.
 func RunCommand(ctx context.Context, binary string, args []string, env map[string]string, cwd string) CommandResult {
-	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	return RunCommandWith(ctx, binary, args, env, cwd, "", probeTimeout)
+}
+
+func RunCommandWith(ctx context.Context, binary string, args []string, env map[string]string, cwd, stdin string, timeout time.Duration) CommandResult {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	if env == nil {
@@ -36,6 +40,9 @@ func RunCommand(ctx context.Context, binary string, args []string, env map[strin
 	cmd := exec.CommandContext(ctx, resolved.Command, resolved.Args...)
 	cmd.Dir = cwd
 	cmd.Env = shell.Slice(env)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	hideWindow(cmd)
 
 	var stdout, stderr bytes.Buffer

@@ -330,15 +330,11 @@ func (c *Constructor) EnsureLive(ctx context.Context, threadID string) error {
 	if !ok {
 		return fmt.Errorf("no task for thread %s", threadID)
 	}
-	cwd := ""
-	if task.Worktree != nil && task.Worktree.Path != "" {
-		cwd = task.Worktree.Path
+	workspaceCwd := ""
+	if ws := c.workspaces.Get(task.WorkspaceID); ws != nil {
+		workspaceCwd = ws.Cwd
 	}
-	if cwd == "" {
-		if ws := c.workspaces.Get(task.WorkspaceID); ws != nil {
-			cwd = ws.Cwd
-		}
-	}
+	cwd := task.Dir(workspaceCwd)
 	c.mu.Lock()
 	resolve := c.resumeID
 	c.mu.Unlock()
@@ -346,7 +342,7 @@ func (c *Constructor) EnsureLive(ctx context.Context, threadID string) error {
 	if resolve != nil {
 		resume = resolve(threadID)
 	}
-	_, err := c.manager.Start(ctx, task.Driver, domain.SessionStartInput{
+	_, err := c.manager.StartResumed(ctx, task.Driver, domain.SessionStartInput{
 		ThreadID:   threadID,
 		Account:    domain.NormalizeAccount(task.Account),
 		Cwd:        cwd,
@@ -354,7 +350,7 @@ func (c *Constructor) EnsureLive(ctx context.Context, threadID string) error {
 		Options:    task.Options,
 		Permission: TaskPermission(task.Permission),
 		Resume:     resume,
-	})
+	}, nil)
 	return err
 }
 
@@ -389,15 +385,12 @@ func (c *Constructor) ListAgents() []AgentView {
 				Model:       task.Model,
 				State:       task.State,
 				WorkspaceID: task.WorkspaceID,
-				Cwd:         workspace.Cwd,
+				Cwd:         task.Dir(workspace.Cwd),
 				ProjectCwd:  workspace.Cwd,
 				Summary:     task.Summary,
 			}
 			if task.Worktree != nil {
 				view.Branch = task.Worktree.Branch
-				if task.Worktree.Path != "" {
-					view.Cwd = task.Worktree.Path
-				}
 			}
 			if sess, ok := live[task.ThreadID]; ok {
 				view.Live = true

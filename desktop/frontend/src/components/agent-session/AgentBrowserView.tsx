@@ -1,7 +1,9 @@
 import { MaterialIcon } from '../common/icons';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { BrowserOpenURL } from '../../../wailsjs/runtime/runtime';
 import { servers } from '../../../wailsjs/go/models';
+import { Maximize } from '../common/icons';
 
 export interface AgentBrowserViewProps {
   threadId?: string;
@@ -9,6 +11,9 @@ export interface AgentBrowserViewProps {
   isFocused?: boolean;
   isAnimating?: boolean;
   onFocusCard?: () => void;
+  toolbarHost?: HTMLElement | null;
+  immersive?: boolean;
+  onEnterImmersive?: () => void;
   className?: string;
 }
 
@@ -55,6 +60,9 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
   isFocused = true,
   isAnimating = false,
   onFocusCard,
+  toolbarHost,
+  immersive = false,
+  onEnterImmersive,
   className = '',
 }) => {
   // Find primary web dev server port
@@ -69,8 +77,6 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
   const [isBlocked, setIsBlocked] = useState<boolean>(false);
   const [historyStack, setHistoryStack] = useState<string[]>([defaultUrl]);
   const [historyIndex, setHistoryIndex] = useState<number>(0);
-  // Auto-pause background WebGL to preserve 120 FPS across multiple cards
-  const [autoPauseBackground, setAutoPauseBackground] = useState<boolean>(true);
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const blockTimerRef = useRef<number | null>(null);
@@ -193,11 +199,10 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
   };
 
   const isLocalhost = currentUrl.includes('localhost') || currentUrl.includes('127.0.0.1');
-  const shouldPause = !isFocused && autoPauseBackground;
+  const shouldPause = !isFocused;
 
-  return (
-    <div className={`flex flex-col h-full w-full min-h-0 select-none ${className}`}>
-      <div className="flex items-center gap-3 pb-3 pt-0.5 px-0.5 shrink-0">
+  const toolbar = (
+      <div className="flex items-center gap-2 flex-1 min-w-0">
         <div className="flex items-center gap-0.5 shrink-0">
           {[
             { title: 'Back', icon: 'arrow_back', enabled: historyIndex > 0, run: handleBack, spin: false },
@@ -222,7 +227,7 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
           ))}
         </div>
 
-        <div className="flex-1 min-w-[160px] flex justify-center">
+        <div className="flex-1 min-w-[120px] flex justify-center">
           <div className="w-full max-w-[560px] h-[30px] px-3 rounded-full bg-white/[0.06] hover:bg-white/[0.085] focus-within:bg-white/[0.1] focus-within:shadow-[0_0_0_1.5px_rgba(10,132,255,0.65)] flex items-center gap-2 transition-all duration-200">
             <MaterialIcon name={isLocalhost ? 'computer' : currentUrl.startsWith('https') ? 'lock' : 'search'} className="text-[13px] text-white/40 shrink-0" />
             <input
@@ -261,17 +266,17 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
             </div>
           )}
 
-          <button
-            type="button"
-            title={autoPauseBackground ? 'Power Save on: the preview pauses while this card is in the background (click to keep it live)' : 'Live Always: the preview keeps rendering in the background (click to enable Power Save)'}
-            aria-pressed={autoPauseBackground}
-            onClick={() => setAutoPauseBackground((prev) => !prev)}
-            className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
-              autoPauseBackground ? 'bg-emerald-400/15 text-emerald-300 hover:bg-emerald-400/25' : 'bg-amber-400/15 text-amber-300 hover:bg-amber-400/25'
-            }`}
-          >
-            <MaterialIcon name={autoPauseBackground ? 'energy_savings_leaf' : 'bolt'} className="text-[15px]" />
-          </button>
+          {onEnterImmersive && (
+            <button
+              type="button"
+              title="Full screen browser"
+              aria-label="Full screen browser"
+              onClick={onEnterImmersive}
+              className="w-[28px] h-[28px] rounded-full flex items-center justify-center text-white/70 hover:text-white bg-white/[0.06] hover:bg-white/[0.12] active:scale-90 transition-all duration-150 cursor-pointer"
+            >
+              <Maximize size={13} strokeWidth={2} />
+            </button>
+          )}
 
           <button
             type="button"
@@ -284,10 +289,21 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
           </button>
         </div>
       </div>
+  );
 
-      {/* Browser Viewport */}
+  return (
+    <div className={`flex flex-col h-full w-full min-h-0 select-none ${className}`}>
+      {immersive ? null : toolbarHost ? (
+        createPortal(toolbar, toolbarHost)
+      ) : (
+        <div className="flex items-center pb-2 pt-0.5 px-0.5 shrink-0">{toolbar}</div>
+      )}
+
       <div
-        className="flex-1 min-h-0 relative rounded-[14px] overflow-hidden shadow-[0_0_0_1px_rgba(255,255,255,0.08),0_12px_32px_-12px_rgba(0,0,0,0.6)] bg-[#121316]"
+        data-browser-viewport
+        className={`flex-1 min-h-0 relative overflow-hidden bg-[#121316] ${
+          immersive ? '' : 'rounded-[14px] shadow-[0_0_0_1px_rgba(255,255,255,0.08),0_12px_32px_-12px_rgba(0,0,0,0.6)]'
+        }`}
         style={{
           contain: 'strict',
           transform: 'translate3d(0, 0, 0)',

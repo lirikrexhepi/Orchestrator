@@ -6,6 +6,7 @@ import {
   ListHistory,
   LoadHistory,
   NewChat,
+  ProjectSwitched,
   ResumeHistory,
 } from '../../../wailsjs/go/main/App';
 import { history, session } from '../../../wailsjs/go/models';
@@ -56,6 +57,8 @@ export interface HistoryState {
   setArchived: (workspaceId: string, threadId: string | undefined, archived: boolean) => Promise<void>;
   /** Ends every running agent and starts a fresh orchestrator conversation. */
   newChat: () => Promise<void>;
+  /** Resets the coordinator conversation for the new project, keeping agents alive. */
+  projectSwitched: () => Promise<void>;
   close: () => void;
 }
 
@@ -289,6 +292,18 @@ export function useHistory(isOpen: boolean, onCleared?: () => void): HistoryStat
     }
   }, [onCleared, refresh]);
 
+  const projectSwitched = useCallback(async () => {
+    try {
+      await ProjectSwitched();
+      liveThreads.current = new Set();
+      setRestored(null);
+      await refresh();
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [refresh]);
+
   return {
     entries,
     isLoading,
@@ -301,6 +316,7 @@ export function useHistory(isOpen: boolean, onCleared?: () => void): HistoryStat
     remove,
     setArchived,
     newChat,
+    projectSwitched,
     close,
   };
 }

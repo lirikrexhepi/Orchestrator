@@ -221,6 +221,8 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 		Args:    a.buildArgs(s, prompt),
 		Cwd:     s.cwd,
 		Env:     provider.LaunchEnv(a.settings),
+
+		DieWithParent: true,
 	})
 	if err != nil {
 		s.finishTurn()
@@ -418,11 +420,11 @@ func (a *Adapter) RespondToApproval(ctx context.Context, threadID, requestID str
 	}
 
 	a.emit.Emit(domain.RuntimeEvent{
-		Kind:      domain.EventApprovalResolved,
-		ThreadID:  threadID,
-		Driver:    domain.DriverAntigravity,
-		Approval:  &domain.ApprovalRequest{RequestID: requestID},
-		Text:      string(decision),
+		Kind:     domain.EventApprovalResolved,
+		ThreadID: threadID,
+		Driver:   domain.DriverAntigravity,
+		Approval: &domain.ApprovalRequest{RequestID: requestID},
+		Text:     string(decision),
 	})
 	return nil
 }

@@ -67,10 +67,9 @@ func (r *Recorder) notifyChanged() {
 // it, so both are recorded together from the first event.
 func (r *Recorder) OpenWorkspace(workspace domain.Workspace, coordinatorThreadID string) {
 	r.mu.Lock()
-	meta, ok := r.metas[workspace.ID]
-	if !ok {
-		meta = &Meta{Resume: make(map[string]string)}
-		r.metas[workspace.ID] = meta
+	meta := r.metaFor(workspace.ID)
+	if meta.Workspace.Cwd != "" {
+		workspace.Cwd = meta.Workspace.Cwd
 	}
 	meta.Workspace = workspace
 	if coordinatorThreadID != "" {
@@ -84,6 +83,58 @@ func (r *Recorder) OpenWorkspace(workspace domain.Workspace, coordinatorThreadID
 	r.notifyChanged()
 }
 
+func (r *Recorder) metaFor(workspaceID string) *Meta {
+	if meta, ok := r.metas[workspaceID]; ok {
+		return meta
+	}
+	meta := &Meta{Resume: make(map[string]string)}
+	if stored, err := r.store.LoadMeta(workspaceID); err == nil && stored.Workspace.ID == workspaceID {
+		*meta = stored
+		if meta.Resume == nil {
+			meta.Resume = make(map[string]string)
+		}
+	}
+	meta.Workspace.ID = workspaceID
+	r.metas[workspaceID] = meta
+	return meta
+}
+
+func keepKnown(existing, next domain.Task) domain.Task {
+	if next.Account == "" {
+		next.Account = existing.Account
+	}
+	if next.Model == "" {
+		next.Model = existing.Model
+	}
+	if len(next.Models) == 0 {
+		next.Models = existing.Models
+	}
+	if len(next.Drivers) == 0 {
+		next.Drivers = existing.Drivers
+	}
+	if next.Options == nil {
+		next.Options = existing.Options
+	}
+	if next.Permission == "" {
+		next.Permission = existing.Permission
+	}
+	if next.Worktree == nil {
+		next.Worktree = existing.Worktree
+	}
+	if next.Cwd == "" {
+		next.Cwd = existing.Cwd
+	}
+	if existing.TitleSource != "" && next.TitleSource == "" {
+		next.Title = existing.Title
+		next.TitleSource = existing.TitleSource
+		next.TitleTurn = existing.TitleTurn
+	}
+	if existing.UserTurns > next.UserTurns {
+		next.UserTurns = existing.UserTurns
+	}
+	return next
+}
+
 // TrackTask binds an agent thread to its workspace and records the task.
 func (r *Recorder) TrackTask(task domain.Task) {
 	if task.WorkspaceID == "" || task.ThreadID == "" {
@@ -91,18 +142,13 @@ func (r *Recorder) TrackTask(task domain.Task) {
 	}
 
 	r.mu.Lock()
-	meta, ok := r.metas[task.WorkspaceID]
-	if !ok {
-		meta = &Meta{Resume: make(map[string]string)}
-		meta.Workspace.ID = task.WorkspaceID
-		r.metas[task.WorkspaceID] = meta
-	}
+	meta := r.metaFor(task.WorkspaceID)
 	r.workspaceOf[task.ThreadID] = task.WorkspaceID
 
 	replaced := false
 	for i, existing := range meta.Tasks {
 		if existing.ThreadID == task.ThreadID {
-			meta.Tasks[i] = task
+			meta.Tasks[i] = keepKnown(existing, task)
 			replaced = true
 			break
 		}
@@ -254,6 +300,31 @@ func (r *Recorder) NoteProviderSession(threadID, providerSessionID string) {
 	}
 }
 
+func (r *Recorder) RemoveTurn(threadID, turnID string) error {
+	r.flushStream(threadID)
+	r.mu.RLock()
+	workspaceID, ok := r.workspaceOf[threadID]
+	r.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return r.store.RemoveTurn(workspaceID, threadID, turnID)
+}
+
+func (r *Recorder) ForgetProviderSession(threadID string) {
+	r.mu.Lock()
+	workspaceID, ok := r.workspaceOf[threadID]
+	meta := r.metas[workspaceID]
+	if !ok || meta == nil || meta.Resume[threadID] == "" {
+		r.mu.Unlock()
+		return
+	}
+	delete(meta.Resume, threadID)
+	snapshot := *meta
+	r.mu.Unlock()
+	_ = r.store.SaveMeta(snapshot)
+}
+
 // UpdateTaskState keeps the stored task list in step with the live one, so a
 // reopened session shows what finished rather than what merely started.
 func (r *Recorder) UpdateTaskState(threadID string, state domain.TaskState, summary string) {
@@ -366,6 +437,19 @@ func (r *Recorder) WorkspaceOf(threadID string) (string, bool) {
 	defer r.mu.RUnlock()
 	id, ok := r.workspaceOf[threadID]
 	return id, ok
+}
+
+func (r *Recorder) WorkspaceCwd(threadID string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	id, ok := r.workspaceOf[threadID]
+	if !ok {
+		return ""
+	}
+	if meta, ok := r.metas[id]; ok {
+		return meta.Workspace.Cwd
+	}
+	return ""
 }
 
 func (r *Recorder) flushMeta(workspaceID string) {
@@ -564,6 +648,24 @@ func (r *Recorder) SetChatArchived(workspaceID, threadID string, archived bool) 
 		if err := r.store.SaveMeta(meta); err != nil {
 			return err
 		}
+	}
+	r.notifyChanged()
+	return nil
+}
+
+func (r *Recorder) MoveWorkspace(workspaceID, cwd string) error {
+	r.mu.Lock()
+	meta := r.metaFor(workspaceID)
+	meta.Workspace.Cwd = cwd
+	for i := range meta.Tasks {
+		if meta.Tasks[i].Worktree == nil {
+			meta.Tasks[i].Cwd = cwd
+		}
+	}
+	snapshot := *meta
+	r.mu.Unlock()
+	if err := r.store.SaveMeta(snapshot); err != nil {
+		return err
 	}
 	r.notifyChanged()
 	return nil

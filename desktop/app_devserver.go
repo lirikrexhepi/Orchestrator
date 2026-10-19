@@ -176,13 +176,11 @@ func (a *App) threadCwd(threadID string) string {
 	if !ok {
 		return ""
 	}
-	if task.Worktree != nil && task.Worktree.Path != "" {
-		return task.Worktree.Path
-	}
+	workspaceCwd := ""
 	if ws := a.workspaces.Get(task.WorkspaceID); ws != nil {
-		return ws.Cwd
+		workspaceCwd = ws.Cwd
 	}
-	return ""
+	return task.Dir(workspaceCwd)
 }
 
 func (a *App) managedSnapshot(id string) (devserver.Snapshot, bool) {

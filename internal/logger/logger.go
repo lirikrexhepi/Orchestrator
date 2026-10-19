@@ -5,14 +5,31 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
+const rotateBytes = 20 * 1024 * 1024
+
 var (
 	mu      sync.Mutex
 	writers []io.Writer
+	debug   = os.Getenv("ORCHESTRATOR_DEBUG") != ""
 )
+
+func DebugEnabled() bool {
+	return debug
+}
+
+func rotate(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < rotateBytes {
+		return
+	}
+	ext := filepath.Ext(path)
+	_ = os.Rename(path, strings.TrimSuffix(path, ext)+".old"+ext)
+}
 
 func Init(logPaths ...string) {
 	mu.Lock()
@@ -25,6 +42,7 @@ func Init(logPaths ...string) {
 			continue
 		}
 		_ = os.MkdirAll(filepath.Dir(p), 0755)
+		rotate(p)
 		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err == nil {
 			writers = append(writers, f)
@@ -48,6 +66,9 @@ func logMessage(level, tag, format string, args ...any) {
 }
 
 func Debugf(tag, format string, args ...any) {
+	if !debug {
+		return
+	}
 	logMessage("DEBUG", tag, format, args...)
 }
 

@@ -10,18 +10,23 @@ import {
   ParseTasks,
   ResumeHistoryThread,
   SendTurn,
+  DeleteTurn,
+  MoveChat,
+  RenameChat,
   SpawnFromImported,
   SpawnTasks,
   StartSkillTest,
   StopSession,
-  SwitchTaskProviderWithOptions,
+  SwitchTaskAccountWithOptions,
   UpdateTaskModel,
 } from '../../../wailsjs/go/main/App';
 import { domain, history, main, session } from '../../../wailsjs/go/models';
 import { AgentStreamBlock } from '../agent-session';
+import type { ChatDragPayload } from '../common/chatDrag';
 import { reduceEvent, RuntimeEvent, userBlock } from '../agent-session/eventReducer';
 import { ContextUsage, latestContext, nextContext } from '../agent-session/contextUsage';
 import { useOrchestratorStore } from './useOrchestratorStore';
+import { EventsOn } from '../../../wailsjs/runtime/runtime';
 import { toModelOptions } from './orchestratorData';
 
 export interface PendingPlan {
@@ -31,16 +36,20 @@ export interface PendingPlan {
 
 export interface SpawnedTask {
   threadId: string;
+  cardKey: string;
   title: string;
   branch?: string;
   model?: string;
   driver?: string;
+  account?: string;
   drivers?: string[];
   models?: string[];
   blocks: AgentStreamBlock[];
   isBusy: boolean;
   workspaceId?: string;
   isLive?: boolean;
+  /** Frontend-only blank tab. No CLI is running until the first message sends. */
+  isDraft?: boolean;
   /** Set on tasks replayed from an imported outside chat (e.g. "claude-code"). */
   importedFrom?: string;
   projectName?: string;
@@ -90,7 +99,11 @@ export interface Spawner {
     title?: string,
     modelId?: string,
     project?: { name: string; path: string },
+    files?: domain.FileRef[],
+    replaceDraftId?: string,
   ) => Promise<string | undefined>;
+  /** Opens a blank local tab. Project/CLI are decided on first send. */
+  openDraft: () => string;
   spawnSkillTest: (
     prompt: string,
     files: domain.FileRef[],
@@ -102,6 +115,9 @@ export interface Spawner {
   openHistorySession: (workspaceId: string, threadId?: string) => Promise<number>;
   /** Drops every window after the backend has stopped their sessions. */
   clear: () => void;
+  deleteTurn: (threadId: string, turnId: string) => Promise<void>;
+  moveChat: (payload: ChatDragPayload, project: { name: string; path: string }) => Promise<void>;
+  renameChat: (threadId: string, title: string) => Promise<void>;
 }
 
 export interface UseSpawnerOptions {
@@ -260,6 +276,11 @@ export function planKey(titles: string[]): string {
  * hook adopts those into the deck; manual confirm remains only as an override
  * for launching the same plan with different models.
  */
+function rootThreadId(threadId: string): string {
+  const index = threadId.indexOf('-cont-');
+  return index === -1 ? threadId : threadId.slice(0, index);
+}
+
 export function useSpawner(options?: UseSpawnerOptions): Spawner {
   const [plan, setPlan] = useState<PendingPlan | null>(null);
   const [tasks, setTasks] = useState<SpawnedTask[]>([]);
@@ -293,6 +314,43 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
   useEffect(() => {
     IsGitRepo('').then(setCanUseWorktree).catch(() => false);
   }, []);
+
+  const retitle = useCallback((threadId: string, title: string) => {
+    const root = rootThreadId(threadId);
+    const apply = (previous: SpawnedTask[]) => {
+      let changed = false;
+      const next = previous.map((task) => {
+        if (rootThreadId(task.threadId) !== root || task.title === title) return task;
+        changed = true;
+        return { ...task, title };
+      });
+      return changed ? next : previous;
+    };
+    setTasks(apply);
+    setBackgroundTasks(apply);
+  }, []);
+
+  useEffect(
+    () =>
+      EventsOn('chat:title', (payload: { threadId?: string; title?: string }) => {
+        if (payload?.threadId && payload.title) retitle(payload.threadId, payload.title);
+      }),
+    [retitle],
+  );
+
+  const renameChat = useCallback(
+    async (threadId: string, title: string) => {
+      const clean = title.replace(/\s+/g, ' ').trim();
+      if (!clean || threadId.startsWith('draft-')) return;
+      retitle(threadId, clean);
+      try {
+        await RenameChat(threadId, clean);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    },
+    [retitle],
+  );
 
   const inspect = useCallback(async (text: string) => {
     try {
@@ -464,10 +522,12 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
             const initialPrompt = spawnTasks[index]?.prompt || task.prompt;
             return withEarlyEvents({
               threadId: task.threadId,
+              cardKey: task.threadId,
               title: task.title,
               branch: task.worktree?.branch,
               model: task.model,
               driver: task.driver,
+              account: task.account,
               blocks: initialPrompt
                 ? [userBlock(initialPrompt, `orch-prompt-${task.threadId}`, [], task.createdAt || Date.now())]
                 : ([] as AgentStreamBlock[]),
@@ -528,6 +588,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
 
       const store = useOrchestratorStore.getState();
       const currentTask = tasksRef.current.find((t) => t.threadId === threadId);
+      if (currentTask?.isDraft) return undefined;
 
       if (currentTask && currentTask.workspaceId && currentTask.isLive === false) {
         // Imported outside chats are read-only context: messaging one starts a
@@ -619,6 +680,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
               branch: (spawned as any).worktree?.branch ?? currentTask.branch,
               model: nextModel,
               driver: nextDriver,
+              account: spawned.account,
               drivers: nextDrivers,
               models: nextModels,
               blocks: newBlocks,
@@ -661,15 +723,33 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       const prevModelName =
         store.models.find((m) => m.id === prevModelId)?.name || prevModelId;
 
-      if (desired && currentTask && desired.providerId !== (prevDriver || desired.providerId)) {
+      const providerChanges = Boolean(desired && desired.providerId !== (prevDriver || desired.providerId));
+      const pendingAccount = desired ? store.pendingAccount(threadId, desired.providerId) : '';
+      const wantedAccount =
+        desired && providerChanges ? pendingAccount || store.shownAccount(desired.providerId) : pendingAccount;
+      const accountChanges =
+        Boolean(wantedAccount) && !providerChanges && wantedAccount !== (currentTask?.account || 'default');
+
+      if (desired && currentTask && (providerChanges || accountChanges)) {
         // Cross-provider switch reuses the same thread: the card, its size,
         // its transcript and its history all stay one continuous conversation.
         // The backend folds the handoff plus this message into a single turn.
         const options = toModelOptions(desired, store.getCurrentModelSettings(desired.id));
-        const prevProviderName = providerDisplayName(prevDriver);
+        const prevProvider = store.providers.find((p) => p.id === prevDriver);
         const nextProvider =
           store.providers.find((p) => p.id === desired.providerId);
-        const nextProviderName = nextProvider?.name || providerDisplayName(desired.providerId);
+        const withAccount = (name: string, provider: typeof nextProvider, id: string | undefined) => {
+          const accounts = provider?.accounts ?? [];
+          if (accounts.length < 2) return name;
+          const label = accounts.find((account) => account.id === (id || 'default'))?.name || id || 'default';
+          return `${name} (${label})`;
+        };
+        const prevProviderName = withAccount(providerDisplayName(prevDriver), prevProvider, currentTask.account);
+        const nextProviderName = withAccount(
+          nextProvider?.name || providerDisplayName(desired.providerId),
+          nextProvider,
+          wantedAccount,
+        );
         const notice = describeSwitch(prevProviderName, prevModelName, nextProviderName, desired.name);
         const icon = desired.icon || nextProvider?.icon || '';
         const stamp = Date.now();
@@ -695,9 +775,10 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
           ),
         );
         try {
-          const switched = await SwitchTaskProviderWithOptions(
+          const switched = await SwitchTaskAccountWithOptions(
             threadId,
             desired.providerId,
+            wantedAccount,
             desired.id,
             options,
             notice,
@@ -706,6 +787,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
             files,
           );
           lastSentOptions.current[threadId] = JSON.stringify(options);
+          store.clearPendingAccount(threadId);
           setTasks((previous) =>
             previous.map((task) => {
               if (task.threadId !== threadId) return task;
@@ -717,6 +799,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
                 ...task,
                 model: switched.model,
                 driver: switched.driver,
+                account: switched.account,
                 drivers: nextDrivers,
                 models: nextModels,
               };
@@ -735,7 +818,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       if (desired && currentTask && desired.id !== prevModelId) {
         const options = toModelOptions(desired, store.getCurrentModelSettings(desired.id));
         const providerName = providerDisplayName(desired.providerId);
-        const notice = describeSwitch(providerName, prevModelName, providerName, desired.name);
+        const notice = prevModelId ? describeSwitch(providerName, prevModelName, providerName, desired.name) : '';
         const icon = desired.icon || '';
         const stamp = Date.now();
         setTasks((previous) =>
@@ -747,12 +830,16 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
                   isLive: true,
                   blocks: [
                     ...task.blocks,
-                    {
-                      type: 'notice' as const,
-                      id: `notice-${stamp}`,
-                      label: notice,
-                      icon: icon || undefined,
-                    },
+                    ...(notice
+                      ? [
+                          {
+                            type: 'notice' as const,
+                            id: `notice-${stamp}`,
+                            label: notice,
+                            icon: icon || undefined,
+                          },
+                        ]
+                      : []),
                     userBlock(trimmed, `user-${stamp}`, files, stamp),
                   ],
                 }
@@ -914,10 +1001,32 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
     );
   }, []);
 
+  const openDraft = useCallback((): string => {
+    const id = `draft-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    setError(null);
+    setTasks((previous) => {
+      if (previous.some((t) => t.threadId === id)) return previous;
+      return [
+        ...previous,
+        {
+          threadId: id,
+          cardKey: id,
+          title: 'New chat',
+          blocks: [] as AgentStreamBlock[],
+          isBusy: false,
+          isDraft: true,
+        },
+      ];
+    });
+    return id;
+  }, []);
+
   const close = useCallback(async (threadId: string) => {
     threads.current.delete(threadId);
+    const isDraft = threadId.startsWith('draft-');
     setTasks((previous) => previous.filter((t) => t.threadId !== threadId));
     setBackgroundTasks((previous) => previous.filter((t) => t.threadId !== threadId));
+    if (isDraft) return;
     try {
       await StopSession(threadId);
     } catch {
@@ -935,9 +1044,11 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       title?: string,
       modelId?: string,
       project?: { name: string; path: string },
+      files: domain.FileRef[] = [],
+      replaceDraftId?: string,
     ) => {
       const trimmed = prompt.trim();
-      if (!trimmed) return;
+      if (!trimmed && files.length === 0) return;
 
       const store = useOrchestratorStore.getState();
       const chosen = store.models.find((m) => m.id === modelId) ?? store.getSelectedModel();
@@ -947,7 +1058,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       }
 
       setError(null);
-      const taskTitle = title || (trimmed.length > 28 ? `${trimmed.slice(0, 28)}…` : trimmed);
+      const taskTitle = title || (trimmed.length > 28 ? `${trimmed.slice(0, 28)}…` : trimmed) || 'New chat';
 
       try {
         const currentProj = project || (await ActiveProject().catch(() => null));
@@ -966,6 +1077,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
               account: store.accountFor(chosen.providerId, projCwd),
               model: chosen.id,
               options: toModelOptions(chosen, store.getCurrentModelSettings(chosen.id)),
+              files,
             }),
           ],
           {
@@ -991,20 +1103,32 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
           toModelOptions(chosen, store.getCurrentModelSettings(chosen.id)),
         );
 
-        const created = result.tasks.map((task) =>
+        const created = result.tasks.map((task, index) =>
           withEarlyEvents({
             threadId: task.threadId,
+            cardKey: replaceDraftId && index === 0 ? replaceDraftId : task.threadId,
             title: task.title,
             branch: task.worktree?.branch,
             model: task.model,
             driver: task.driver,
-            blocks: [userBlock(trimmed, `orch-prompt-${task.threadId}`, [], task.createdAt || Date.now())],
+            account: task.account,
+            blocks: [userBlock(trimmed, `orch-prompt-${task.threadId}`, files, task.createdAt || Date.now())],
             isBusy: true,
             projectName: currentProj?.name,
             projectPath: currentProj?.path,
           }),
         );
-        setTasks((previous) => [...previous, ...created]);
+        if (replaceDraftId) {
+          setTasks((previous) => {
+            const idx = previous.findIndex((t) => t.threadId === replaceDraftId);
+            if (idx === -1) return [...previous, ...created];
+            const next = [...previous];
+            next.splice(idx, 1, ...created);
+            return next;
+          });
+        } else {
+          setTasks((previous) => [...previous, ...created]);
+        }
 
         return result.tasks[0]?.threadId;
       } catch (cause) {
@@ -1062,10 +1186,12 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
           lastSentOptions.current[task.threadId] = JSON.stringify(options);
           return withEarlyEvents({
             threadId: task.threadId,
+            cardKey: task.threadId,
             title: task.title,
             branch: task.worktree?.branch,
             model: task.model,
             driver: task.driver,
+            account: task.account,
             blocks: [userBlock(trimmed, `orch-prompt-${task.threadId}`, files, task.createdAt || Date.now())],
             isBusy: true,
             projectName: currentProj?.name,
@@ -1187,12 +1313,15 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
             : replayed;
 
         const threadEvents = (transcripts[t.threadId] ?? []) as RuntimeEvent[];
+        const recorded = [...threadEvents].reverse().find((event) => event.model);
         const taskObj: SpawnedTask = {
           threadId: t.threadId,
+          cardKey: t.threadId,
           title: t.title || 'Agent',
           branch: t.worktree?.branch,
-          model: t.model,
-          driver: (t as any).driver,
+          model: t.model || recorded?.model,
+          driver: (t as any).driver || recorded?.driver,
+          account: t.account,
           blocks,
           lastTurnMs: lastTurnDuration(threadEvents),
           context: latestContext(threadEvents),
@@ -1219,6 +1348,45 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
     },
     [],
   );
+
+  const deleteTurn = useCallback(async (threadId: string, turnId: string) => {
+    try {
+      const events = ((await DeleteTurn(threadId, turnId)) ?? []) as RuntimeEvent[];
+      const replayed = replay(events);
+      setTasks((previous) =>
+        previous.map((task) => {
+          if (task.threadId !== threadId) return task;
+          const head = task.blocks[0];
+          const keepHead =
+            head?.type === 'user' && head.id.startsWith('orch-prompt-') && replayed.find((b) => b.type !== 'notice')?.type !== 'user';
+          return {
+            ...task,
+            blocks: keepHead ? [head, ...replayed] : replayed,
+            isBusy: false,
+            context: latestContext(events),
+            lastTurnMs: lastTurnDuration(events),
+          };
+        }),
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
+
+  const moveChat = useCallback(async (payload: ChatDragPayload, project: { name: string; path: string }) => {
+    try {
+      await MoveChat(payload.workspaceId, project.path);
+      setTasks((previous) =>
+        previous.map((task) =>
+          task.threadId === payload.threadId || (payload.workspaceId && task.workspaceId === payload.workspaceId)
+            ? { ...task, projectName: project.name, projectPath: project.path }
+            : task,
+        ),
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
 
   const clear = useCallback(() => {
     for (const id of threads.current) {
@@ -1273,10 +1441,12 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
         ...fresh.map((task) =>
           withEarlyEvents({
             threadId: task.threadId,
+            cardKey: task.threadId,
             title: task.title,
             branch: task.worktree?.branch,
             model: task.model,
             driver: task.driver,
+            account: task.account,
             blocks: task.prompt
               ? [userBlock(task.prompt, `orch-prompt-${task.threadId}`, [], task.createdAt || Date.now())]
               : ([] as AgentStreamBlock[]),
@@ -1312,14 +1482,18 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       close,
       terminate,
       spawnAgent,
+      openDraft,
       spawnSkillTest,
       openHistorySession,
       clear,
+      deleteTurn,
+      moveChat,
+      renameChat,
     }),
     [
       plan, tasks, backgroundTasks, allActiveTasks, error, workspaceId, canUseWorktree, launchedKeys,
       inspect, confirm, confirmTasks, adoptSpawned, dismiss, send, sendWithModel, interrupt, close,
-      terminate, spawnAgent, spawnSkillTest, openHistorySession, clear,
+      terminate, spawnAgent, openDraft, spawnSkillTest, openHistorySession, clear, deleteTurn, moveChat, renameChat,
     ],
   );
 }

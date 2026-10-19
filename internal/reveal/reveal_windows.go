@@ -29,3 +29,13 @@ func open(target string) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
 	return cmd.Start()
 }
+
+func launch(target string) error {
+	absolute, err := filepath.Abs(target)
+	if err != nil {
+		absolute = target
+	}
+	cmd := exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", absolute)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	return cmd.Start()
+}

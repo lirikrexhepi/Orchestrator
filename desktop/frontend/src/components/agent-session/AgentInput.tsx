@@ -9,6 +9,7 @@ import { SmoothTextarea } from '../common/SmoothTextarea';
 import { AttachmentStrip } from '../common/AttachmentStrip';
 import { AttachmentsState, filesFromTransfer, useAttachments } from '../common/useAttachments';
 import { readChatDrag } from '../common/chatDrag';
+import { leaveChatContextTarget, markChatContextTarget } from '../common/ChatDragLayer';
 import { domain } from '../../../wailsjs/go/models';
 import { ThinkingEffort, ThinkingMode } from '../orchestrator/types';
 
@@ -206,7 +207,11 @@ export const AgentInput: React.FC<AgentInputProps> = ({
       ref={containerRef}
       onPaste={handlePaste}
       onDrop={handleDrop}
-      onDragOver={(e) => e.preventDefault()}
+      onDragOver={(e) => {
+        e.preventDefault();
+        markChatContextTarget(e);
+      }}
+      onDragLeave={leaveChatContextTarget}
       className={`relative flex flex-col select-none ${className}`}
     >
       <AnimatePresence>

@@ -12,7 +12,7 @@ type jobObject struct {
 	handle windows.Handle
 }
 
-func attachJob(p *Process) {
+func attachJob(p *Process, ownProcessOnly bool) {
 	if p.cmd.Process == nil {
 		return
 	}
@@ -22,9 +22,13 @@ func attachJob(p *Process) {
 		return
 	}
 
+	flags := uint32(windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+	if ownProcessOnly {
+		flags |= windows.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
+	}
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
-			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+			LimitFlags: flags,
 		},
 	}
 	if _, err := windows.SetInformationJobObject(

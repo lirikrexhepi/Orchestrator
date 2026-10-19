@@ -78,6 +78,14 @@ func (a *App) CoordinatorReset() error {
 // Whatever they produced is already recorded, so the session stays in history.
 func (a *App) NewChat() error {
 	threads := a.manager.Sessions()
+	stopping := make([]string, 0, len(threads))
+	for _, live := range threads {
+		if live.ThreadID == session.CoordinatorThreadID {
+			continue
+		}
+		stopping = append(stopping, live.ThreadID)
+	}
+	logger.Infof("App", "NewChat: stopping %d agent threads %q (reason=explicit new chat)", len(stopping), strings.Join(stopping, ","))
 	for _, live := range threads {
 		if live.ThreadID == session.CoordinatorThreadID {
 			continue
@@ -86,9 +94,34 @@ func (a *App) NewChat() error {
 		a.workspaces.SetState(live.ThreadID, domain.TaskClosed)
 		a.recorder.UpdateTaskState(live.ThreadID, domain.TaskClosed, "")
 	}
+	logger.Infof("App", "NewChat: stopped %d threads, resetting coordinator", len(stopping))
 
 	// Flushed before the transcript is cut loose, so the session that just ended
 	// is complete on disk the moment it leaves the screen.
+	if a.recorder != nil {
+		_ = a.recorder.FlushAll()
+	}
+	return a.coordinator.Reset(a.ctx)
+}
+
+// ProjectSwitched resets the coordinator conversation for the newly active
+// project without stopping any agent. Worker CLIs keep running across
+// projects; ending them here would kill background subagents the user can
+// still reach from the deck. Confirmation before discarding work stays a
+// frontend concern; this path never discards.
+func (a *App) ProjectSwitched() error {
+	active := ""
+	if a.projects != nil {
+		active = a.projects.ActivePath()
+	}
+	preserved := 0
+	for _, live := range a.manager.Sessions() {
+		if live.ThreadID == session.CoordinatorThreadID {
+			continue
+		}
+		preserved++
+	}
+	logger.Infof("App", "ProjectSwitched: active=%q preserving %d agent threads (reason=project switch, no agents stopped)", active, preserved)
 	if a.recorder != nil {
 		_ = a.recorder.FlushAll()
 	}

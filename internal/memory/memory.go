@@ -101,3 +101,10 @@ func (s *Store) SaveRecap(workspaceID, content string) error {
 	}
 	return writeFile(filepath.Join(s.workspaceDir(workspaceID), workspaceRecapFile), content)
 }
+
+func (s *Store) ProjectMemoryPath(cwd string) string {
+	if strings.TrimSpace(cwd) == "" {
+		return ""
+	}
+	return filepath.Join(s.projectDir(cwd), projectMemoryFile)
+}

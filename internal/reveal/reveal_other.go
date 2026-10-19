@@ -16,3 +16,7 @@ func open(target string) error {
 	}
 	return exec.Command("xdg-open", target).Start()
 }
+
+func launch(target string) error {
+	return exec.Command("xdg-open", target).Start()
+}

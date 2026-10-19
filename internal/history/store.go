@@ -680,6 +680,58 @@ func (s *Store) DeleteTask(workspaceID, threadID string) error {
 	return s.SaveMeta(meta)
 }
 
+func (s *Store) RemoveTurn(workspaceID, threadID, turnID string) error {
+	if s.disabled || workspaceID == "" || threadID == "" || turnID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := workspaceID + "/" + threadID
+	if handle, ok := s.open[key]; ok {
+		_ = handle.writer.Flush()
+		_ = handle.file.Close()
+		delete(s.open, key)
+	}
+
+	path := filepath.Join(s.workspaceDir(workspaceID), safeName(threadID)+transcriptExt)
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var lines [][]byte
+	var events []domain.RuntimeEvent
+	for _, line := range bytes.Split(payload, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var event domain.RuntimeEvent
+		_ = json.Unmarshal(line, &event)
+		lines = append(lines, line)
+		events = append(events, event)
+	}
+	drop := domain.ExchangeMask(events, turnID)
+	var out bytes.Buffer
+	count := 0
+	for i, line := range lines {
+		if drop[i] {
+			continue
+		}
+		out.Write(line)
+		out.WriteByte('\n')
+		count++
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out.Bytes(), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	s.counts[key] = count
+	return nil
+}
+
 // Delete removes a workspace and everything recorded under it.
 func (s *Store) Delete(workspaceID string) error {
 	if s.disabled || workspaceID == "" {

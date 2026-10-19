@@ -28,6 +28,61 @@ func (a *App) ListClaudeCodeSessions() ([]claudeimport.ExternalSession, error) {
 	return sessions, nil
 }
 
+func (a *App) ListClaudeCodeSessionsPage(offset, limit int) (claudeimport.Page, error) {
+	return claudeimport.ListPage(offset, limit)
+}
+
+func (a *App) ListChatSourcePage(provider string, offset, limit int) (claudeimport.Page, error) {
+	return claudeimport.ListChatPage(provider, offset, limit)
+}
+
+func (a *App) ImportOpenCodeSession(sessionID string) (string, error) {
+	parsed, err := claudeimport.ParseOpenCodeSession(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if len(parsed.Events) == 0 {
+		return "", fmt.Errorf("session holds no conversation")
+	}
+	for _, meta := range a.ListHistory() {
+		if meta.Workspace.ImportedFrom == "opencode" && meta.Workspace.ImportedSession == parsed.SessionID {
+			return meta.Workspace.ID, nil
+		}
+	}
+	cwd := parsed.Cwd
+	if strings.TrimSpace(cwd) == "" {
+		cwd = a.resolveCwd("")
+	}
+	title := strings.TrimSpace(parsed.Title)
+	if title == "" {
+		title = "Imported OpenCode chat"
+	}
+	workspace := a.workspaces.Create(title, parsed.Prompt, cwd)
+	workspace.ImportedFrom = "opencode"
+	workspace.ImportedSession = parsed.SessionID
+	threadID := "import-" + compactID(parsed.SessionID) + "-" + strconv.FormatInt(time.Now().UnixMilli(), 36)
+	task, ok := a.workspaces.AddTask(workspace.ID, domain.Task{
+		ThreadID: threadID,
+		Title:    title,
+		Prompt:   parsed.Prompt,
+		Driver:   domain.DriverOpenCode,
+		Model:    parsed.Model,
+		State:    domain.TaskComplete,
+	})
+	if !ok {
+		return "", fmt.Errorf("workspace %s is gone", workspace.ID)
+	}
+	a.recorder.OpenWorkspace(*workspace, "")
+	a.recorder.TrackTask(*task)
+	for _, event := range parsed.Events {
+		event.ThreadID = threadID
+		_ = a.historyStore.Append(workspace.ID, threadID, event)
+	}
+	_ = a.historyStore.Flush(workspace.ID)
+	a.recorder.Touch(workspace.ID, parsed.UpdatedAt)
+	return workspace.ID, nil
+}
+
 // ImportClaudeCodeSession brings one outside Claude Code transcript into
 // history as a read-only workspace.
 //

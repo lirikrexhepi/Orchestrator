@@ -7,7 +7,8 @@ import { providerIcon } from '../orchestrator/providerIcons';
 import type { Project, ProjectsState } from '../orchestrator/useProjects';
 import { claudeimport } from '../../../wailsjs/go/models';
 import type { ChatHistoryItem } from './DynamicIsland';
-import { beginChatDrag } from './chatDrag';
+import { beginChatDrag, ChatDragPayload, isChatDrag, readChatDrag } from './chatDrag';
+import { setChatDragHint } from './ChatDragLayer';
 
 export interface IslandTone {
   isLight: boolean;
@@ -73,6 +74,8 @@ export function IconButton({
   );
 }
 
+const SPRING_OPEN_MS = 450;
+
 export function IslandHeader({
   tone,
   title,
@@ -80,6 +83,7 @@ export function IslandHeader({
   onBack,
   backLabel,
   actions,
+  springBack = false,
 }: {
   tone: IslandTone;
   title: string;
@@ -87,14 +91,49 @@ export function IslandHeader({
   onBack?: () => void;
   backLabel?: string;
   actions?: React.ReactNode;
+  springBack?: boolean;
 }) {
+  const timer = useRef<number | null>(null);
+  const [armed, setArmed] = useState(false);
+  const disarm = () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+    setArmed(false);
+  };
+  useEffect(() => disarm, []);
+  const spring = springBack && onBack
+    ? {
+        onDragEnter: (event: React.DragEvent) => {
+          if (!isChatDrag(event.dataTransfer) || timer.current !== null) return;
+          setArmed(true);
+          setChatDragHint(`Open ${backLabel ?? 'back'}…`);
+          timer.current = window.setTimeout(() => {
+            timer.current = null;
+            setArmed(false);
+            setChatDragHint(null);
+            onBack();
+          }, SPRING_OPEN_MS);
+        },
+        onDragOver: (event: React.DragEvent) => {
+          if (isChatDrag(event.dataTransfer)) event.preventDefault();
+        },
+        onDragLeave: () => {
+          disarm();
+          setChatDragHint(null);
+        },
+        onDrop: () => disarm(),
+      }
+    : {};
   return (
     <div className="relative flex items-center justify-between h-[30px] mb-1.5 px-0.5">
       {onBack ? (
         <button
           type="button"
           onClick={onBack}
-          className={`flex items-center gap-0.5 h-[26px] pl-0.5 pr-2 rounded-full text-[12px] font-medium ${tone.sub} ${tone.hover} transition-colors cursor-pointer z-[1]`}
+          {...spring}
+          className={`flex items-center gap-0.5 h-[26px] pl-0.5 pr-2 rounded-full text-[12px] font-medium ${tone.sub} ${tone.hover} ${
+            armed ? (tone.isLight ? 'bg-[#0A84FF]/15 text-[#0A84FF]' : 'bg-[#0A84FF]/25 text-white') : ''
+          } transition-colors cursor-pointer z-[1]`}
         >
           <ChevronLeft size={15} strokeWidth={2} />
           {backLabel}
@@ -129,6 +168,7 @@ const ProjectRow = React.memo(function ProjectRow({
   onOpenChats,
   onRemove,
   onDragEnd,
+  onChatDrop,
 }: {
   project: Project;
   tone: IslandTone;
@@ -139,10 +179,43 @@ const ProjectRow = React.memo(function ProjectRow({
   onOpenChats: () => void;
   onRemove: () => void;
   onDragEnd: () => void;
+  onChatDrop?: (payload: ChatDragPayload) => void;
 }) {
   const controls = useDragControls();
   const [confirming, setConfirming] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [dropping, setDropping] = useState(false);
+  const depth = useRef(0);
+  const dropTarget = onChatDrop
+    ? {
+        onDragEnter: (event: React.DragEvent) => {
+          if (!isChatDrag(event.dataTransfer)) return;
+          depth.current += 1;
+          setDropping(true);
+          setChatDragHint(`Move to ${project.name}`);
+        },
+        onDragOver: (event: React.DragEvent) => {
+          if (!isChatDrag(event.dataTransfer)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+        },
+        onDragLeave: () => {
+          depth.current = Math.max(0, depth.current - 1);
+          if (depth.current === 0) {
+            setDropping(false);
+            setChatDragHint(null);
+          }
+        },
+        onDrop: (event: React.DragEvent) => {
+          depth.current = 0;
+          setDropping(false);
+          const payload = readChatDrag(event.dataTransfer);
+          if (!payload) return;
+          event.preventDefault();
+          onChatDrop(payload);
+        },
+      }
+    : {};
 
   return (
     <Reorder.Item
@@ -157,9 +230,12 @@ const ProjectRow = React.memo(function ProjectRow({
       layout="position"
       transition={{ type: 'spring', stiffness: 520, damping: 40, mass: 0.7 }}
       whileDrag={{ scale: 1.025 }}
+      {...dropTarget}
       className={`group relative flex items-center h-[44px] rounded-[13px] select-none ${
         dragging ? (tone.isLight ? 'bg-white shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-[#1d1d20] shadow-[0_10px_30px_rgba(0,0,0,0.6)]') : ''
-      } ${!dragging && isActive ? tone.active : ''} ${!dragging ? tone.hover : ''} transition-colors duration-150`}
+      } ${dropping ? (tone.isLight ? 'bg-[#0A84FF]/12 ring-1 ring-[#0A84FF]/50' : 'bg-[#0A84FF]/20 ring-1 ring-[#0A84FF]/60') : ''} ${
+        !dragging && !dropping && isActive ? tone.active : ''
+      } ${!dragging ? tone.hover : ''} transition-colors duration-150`}
       style={{ zIndex: dragging ? 5 : 0 }}
     >
       <span
@@ -282,6 +358,7 @@ export function ProjectsView({
   onPicked,
   onOpenProjectChats,
   onOpenClaude,
+  onMoveChat,
 }: {
   tone: IslandTone;
   projects?: ProjectsState;
@@ -294,6 +371,7 @@ export function ProjectsView({
   onPicked: () => void;
   onOpenProjectChats: (project: Project) => void;
   onOpenClaude: () => void;
+  onMoveChat?: (payload: ChatDragPayload, project: Project) => void;
 }) {
   const list = projects?.projects ?? [];
   const [order, setOrder] = useState<string[]>(() => list.map((p) => p.id));
@@ -359,6 +437,7 @@ export function ProjectsView({
                   onOpenChats={() => onOpenProjectChats(project)}
                   onRemove={() => void projects?.remove(project.id)}
                   onDragEnd={() => commit(project.id)}
+                  onChatDrop={onMoveChat ? (payload) => onMoveChat(payload, project) : undefined}
                 />
               );
             })}
@@ -374,8 +453,8 @@ export function ProjectsView({
             <img src={providerIcon('claude', tone.isLight)} alt="" draggable={false} className="w-[16px] h-[16px] object-contain" />
           </span>
           <span className="flex flex-col min-w-0 flex-1 gap-[1px]">
-            <span className={`text-[12.5px] font-medium tracking-tight leading-[15px] ${tone.fg}`}>Claude Code</span>
-            <span className={`text-[10.5px] leading-[13px] truncate ${tone.sub}`}>Desktop and CLI chats</span>
+            <span className={`text-[12.5px] font-medium tracking-tight leading-[15px] ${tone.fg}`}>CLI chats</span>
+            <span className={`text-[10.5px] leading-[13px] truncate ${tone.sub}`}>Claude Code, Antigravity, OpenCode</span>
           </span>
           <span className={`h-[30px] pl-2.5 pr-0 flex items-center gap-1 ${tone.sub} shrink-0`}>
             {claudeCount > 0 && <span className="text-[11.5px] tabular-nums font-medium">{claudeCount}</span>}
@@ -446,9 +525,17 @@ export function ProjectChatsView({
         key={chat.id}
         draggable
         onDragStartCapture={(event: React.DragEvent) =>
-          beginChatDrag(event, { workspaceId: chat.workspaceId, threadId: chat.threadId, title: chat.title })
+          beginChatDrag(event, {
+            workspaceId: chat.workspaceId,
+            threadId: chat.threadId,
+            title: chat.title,
+            subtitle: subtitle(chat),
+            driver: chat.driver,
+            model: chat.model,
+            projectPath: project.path,
+          })
         }
-        title="Drag into a message to give an agent this chat"
+        title="Drag into a message to give an agent this chat, or onto another project to move it"
         layout="position"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
@@ -492,6 +579,7 @@ export function ProjectChatsView({
         title={project.name}
         onBack={onBack}
         backLabel="Projects"
+        springBack
         actions={
           <>
             <IconButton tone={tone} title={`New chat in ${project.name}`} onClick={onNewChat}>
@@ -555,20 +643,51 @@ const ENTRYPOINT_LABEL: Record<string, string> = {
   'claude-vscode': 'VS Code',
 };
 
+function LoadMoreSentinel({ busy, onVisible }: { busy: boolean; onVisible: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || busy) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) onVisible();
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [busy, onVisible]);
+  return <div ref={ref} className="h-6 flex items-center justify-center" aria-hidden="true" />;
+}
+
+type ChatSourceId = 'claude' | 'antigravity' | 'opencode';
+
+const CHAT_SOURCES: Array<{ id: ChatSourceId; label: string }> = [
+  { id: 'claude', label: 'Claude Code' },
+  { id: 'antigravity', label: 'Antigravity' },
+  { id: 'opencode', label: 'OpenCode' },
+];
+
+const FIRST_VISIBLE = 5;
+const VISIBLE_STEP = 8;
+
 export function ClaudeChatsView({
   tone,
   sessions,
   loading,
+  loadingMore,
+  exhausted,
   importing,
   error,
   relativeTime,
   onBack,
   onClose,
   onOpen,
+  onLoadMore,
 }: {
   tone: IslandTone;
   sessions: claudeimport.ExternalSession[];
   loading?: boolean;
+  loadingMore?: boolean;
+  exhausted?: Record<ChatSourceId, boolean>;
+  onLoadMore?: (providers: ChatSourceId[]) => void;
   importing?: boolean;
   error?: string | null;
   relativeTime: (at: number) => string;
@@ -577,20 +696,33 @@ export function ClaudeChatsView({
   onOpen: (session: claudeimport.ExternalSession) => void;
 }) {
   const [query, setQuery] = useState('');
-  const rows = useMemo(() => {
+  const [source, setSource] = useState<ChatSourceId | null>(null);
+  const [shown, setShown] = useState(FIRST_VISIBLE);
+
+  const matching = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter(
-      (s) => (s.title || '').toLowerCase().includes(q) || (s.cwd || '').toLowerCase().includes(q),
-    );
-  }, [sessions, query]);
+    return sessions.filter((s) => {
+      if (source && (s.provider || 'claude') !== source) return false;
+      if (!q) return true;
+      return (s.title || '').toLowerCase().includes(q) || (s.cwd || '').toLowerCase().includes(q);
+    });
+  }, [sessions, query, source]);
+
+  const rows = matching.slice(0, shown);
+  const targets: ChatSourceId[] = source ? [source] : CHAT_SOURCES.map((entry) => entry.id);
+  const fetchable = targets.some((id) => !exhausted?.[id]);
+  const hasMore = matching.length > shown || fetchable;
+
+  const revealMore = () => {
+    setShown((current) => current + VISIBLE_STEP);
+    if (matching.length - shown < VISIBLE_STEP * 2) onLoadMore?.(targets);
+  };
 
   return (
     <div className="flex flex-col p-2.5 pt-2">
       <IslandHeader
         tone={tone}
-        title="Claude Code"
-        icon={<img src={providerIcon('claude', tone.isLight)} alt="" draggable={false} className="w-[14px] h-[14px] object-contain" />}
+        title="CLI chats"
         onBack={onBack}
         backLabel="Projects"
         actions={
@@ -599,46 +731,91 @@ export function ClaudeChatsView({
           </IconButton>
         }
       />
-      <label
-        className={`flex items-center gap-2 h-[32px] px-2.5 mb-1.5 rounded-[11px] ${
-          tone.isLight ? 'bg-black/[0.045]' : 'bg-white/[0.06]'
-        }`}
-      >
-        <Search size={13} strokeWidth={2} className={tone.sub} />
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search chats"
-          className={`flex-1 min-w-0 bg-transparent outline-none border-0 text-[12px] ${tone.fg} ${
-            tone.isLight ? 'placeholder:text-black/35' : 'placeholder:text-white/35'
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <label
+          className={`flex flex-1 min-w-0 items-center gap-2 h-[32px] px-2.5 rounded-[11px] ${
+            tone.isLight ? 'bg-black/[0.045]' : 'bg-white/[0.06]'
           }`}
-        />
-      </label>
+        >
+          <Search size={13} strokeWidth={2} className={tone.sub} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search chats"
+            className={`flex-1 min-w-0 bg-transparent outline-none border-0 text-[12px] ${tone.fg} ${
+              tone.isLight ? 'placeholder:text-black/35' : 'placeholder:text-white/35'
+            }`}
+          />
+        </label>
+        <div
+          className={`flex items-center gap-0.5 h-[32px] p-[3px] rounded-[11px] shrink-0 ${
+            tone.isLight ? 'bg-black/[0.045]' : 'bg-white/[0.06]'
+          }`}
+        >
+          {CHAT_SOURCES.map((entry) => {
+            const active = source === entry.id;
+            return (
+              <button
+                key={entry.id}
+                type="button"
+                title={active ? `Showing ${entry.label} only` : entry.label}
+                aria-pressed={active}
+                onClick={() => {
+                  setSource(active ? null : entry.id);
+                  setShown(FIRST_VISIBLE);
+                }}
+                className={`w-[30px] h-[26px] rounded-[8px] flex items-center justify-center transition-all duration-150 cursor-pointer ${
+                  active
+                    ? tone.isLight
+                      ? 'bg-white shadow-sm'
+                      : 'bg-white/[0.16]'
+                    : `${tone.hover} ${source ? 'opacity-45' : ''}`
+                }`}
+              >
+                <img
+                  src={providerIcon(entry.id, tone.isLight)}
+                  alt=""
+                  draggable={false}
+                  className="w-[14px] h-[14px] object-contain"
+                />
+              </button>
+            );
+          })}
+        </div>
+      </div>
       {error ? <div className="mx-1 mb-1.5 px-3 py-2 rounded-[10px] bg-rose-500/10 text-[11.5px] text-rose-300">{error}</div> : null}
       <ScrollArea maxHeight={300} className="-mr-1 pr-1">
         {loading && sessions.length === 0 ? (
-          <EmptyState tone={tone}>Reading Claude chats…</EmptyState>
-        ) : rows.length === 0 ? (
-          <EmptyState tone={tone}>{query ? 'No matching chats' : 'No Claude Code chats yet'}</EmptyState>
+          <EmptyState tone={tone}>Reading chats…</EmptyState>
+        ) : rows.length === 0 && !hasMore ? (
+          <EmptyState tone={tone}>{query ? 'No matching chats' : 'No chats yet'}</EmptyState>
         ) : (
           <div className="flex flex-col">
             {rows.map((s) => {
               const folder = (s.cwd || '').replace(/\\/g, '/').split('/').filter(Boolean).pop();
-              const source = ENTRYPOINT_LABEL[s.entrypoint || ''];
+              const provider = (s.provider || 'claude') as ChatSourceId;
+              const sourceLabel = ENTRYPOINT_LABEL[s.entrypoint || ''];
               return (
                 <button
                   key={s.filePath}
                   type="button"
                   disabled={importing}
+                  title={provider === 'antigravity' ? "Opening Antigravity chats isn't supported yet" : undefined}
                   onClick={() => onOpen(s)}
                   className={`w-full flex items-center gap-2.5 h-[42px] px-2 rounded-[12px] text-left transition-colors duration-150 cursor-pointer disabled:opacity-60 disabled:cursor-default ${tone.hover}`}
                 >
+                  <img
+                    src={providerIcon(provider, tone.isLight)}
+                    alt=""
+                    draggable={false}
+                    className="w-[14px] h-[14px] object-contain shrink-0 opacity-80"
+                  />
                   <span className="flex flex-col min-w-0 flex-1 gap-[1px]">
                     <span className={`text-[12.5px] font-medium tracking-tight truncate leading-[15px] ${tone.fg}`}>
                       {s.title || 'Untitled chat'}
                     </span>
                     <span className={`text-[10.5px] truncate leading-[13px] ${tone.sub}`}>
-                      {[relativeTime(s.updatedAt), folder, source].filter(Boolean).join(' · ')}
+                      {[relativeTime(s.updatedAt), folder, sourceLabel].filter(Boolean).join(' · ')}
                     </span>
                   </span>
                   <ChevronRight size={14} strokeWidth={2} className={`${tone.faint} shrink-0`} />
@@ -647,8 +824,13 @@ export function ClaudeChatsView({
             })}
           </div>
         )}
+        {hasMore && !loading ? (
+          <>
+            <LoadMoreSentinel busy={Boolean(loadingMore)} onVisible={revealMore} />
+            {loadingMore ? <EmptyState tone={tone}>Loading more…</EmptyState> : null}
+          </>
+        ) : null}
       </ScrollArea>
     </div>
   );
 }
-

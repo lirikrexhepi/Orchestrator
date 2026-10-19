@@ -49,6 +49,47 @@ const AccountRow: React.FC<AccountRowProps> = ({ accounts, selectedId, onSelect,
   </div>
 );
 
+interface AccountSwitchConfirmProps {
+  current: string;
+  next: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+const AccountSwitchConfirm: React.FC<AccountSwitchConfirmProps> = ({ current, next, onCancel, onConfirm }) => (
+  <div
+    onClick={(event) => event.stopPropagation()}
+    className="flex flex-col gap-2 rounded-[10px] border border-amber-400/25 bg-amber-400/[0.07] p-2"
+  >
+    <div className="flex gap-1.5 text-[11.5px] leading-snug font-(family-name:--app-font) text-white/80">
+      <span className="mt-[1px] inline-flex shrink-0 text-amber-400">
+        <MaterialIcon name="warning" size={14} />
+      </span>
+      <span>
+        This chat is using <span className="font-semibold text-white">{current}</span>. Switch it to{' '}
+        <span className="font-semibold text-white">{next}</span>? It restarts on {next} with the conversation handed
+        over.
+      </span>
+    </div>
+    <div className="flex justify-end gap-1">
+      <button
+        type="button"
+        onClick={onCancel}
+        className="h-[24px] px-2.5 rounded-[7px] text-[11.5px] font-medium font-(family-name:--app-font) text-white/60 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        onClick={onConfirm}
+        className="h-[24px] px-2.5 rounded-[7px] text-[11.5px] font-semibold font-(family-name:--app-font) bg-amber-400/90 text-black hover:bg-amber-300 transition-colors cursor-pointer active:scale-[0.97]"
+      >
+        Switch to {next}
+      </button>
+    </div>
+  </div>
+);
+
 export interface ModelPickerProps {
   selectedModelId?: string;
   selectedProviderId?: string;
@@ -138,6 +179,20 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
   const choosesAccount = propModelId === undefined && propProviderId === undefined;
   const accounts = store.providers.find((p) => p.id === selectedProviderId)?.accounts ?? [];
   const setAccountProject = store.setAccountProject;
+  const [confirmAccount, setConfirmAccount] = useState<string | null>(null);
+  const focusedSession = store.focusedSession;
+  const sessionAccount =
+    focusedSession && focusedSession.providerId === selectedProviderId ? focusedSession.account || 'default' : null;
+  const accountLabel = (id: string) => accounts.find((account) => account.id === id)?.name || id;
+
+  const handleSelectAccount = (accountId: string) => {
+    if (sessionAccount && accountId !== sessionAccount && accountId !== store.shownAccount(selectedProviderId)) {
+      setConfirmAccount(accountId);
+      return;
+    }
+    setConfirmAccount(null);
+    store.selectAccount(selectedProviderId, accountId);
+  };
 
   useEffect(() => {
     if (!choosesAccount) return;
@@ -209,12 +264,24 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
       {choosesAccount && accounts.length > 1 && (
         <>
           <div className="h-[1px] bg-white/[0.08] my-1.5 mx-1" />
-          <AccountRow
-            accounts={accounts}
-            selectedId={store.shownAccount(selectedProviderId)}
-            onSelect={(accountId) => store.selectAccount(selectedProviderId, accountId)}
-            isLight={isLight}
-          />
+          {confirmAccount && sessionAccount ? (
+            <AccountSwitchConfirm
+              current={accountLabel(sessionAccount)}
+              next={accountLabel(confirmAccount)}
+              onCancel={() => setConfirmAccount(null)}
+              onConfirm={() => {
+                store.selectAccount(selectedProviderId, confirmAccount);
+                setConfirmAccount(null);
+              }}
+            />
+          ) : (
+            <AccountRow
+              accounts={accounts}
+              selectedId={store.shownAccount(selectedProviderId)}
+              onSelect={handleSelectAccount}
+              isLight={isLight}
+            />
+          )}
         </>
       )}
 

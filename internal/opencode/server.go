@@ -82,6 +82,8 @@ func startServer(ctx context.Context, settings domain.ProviderSettings, client *
 		Args:    args,
 		Env:     env,
 		Cwd:     procCwd,
+
+		DieWithParent: true,
 		Stderr: func(line string) {
 			logger.Debugf("OpenCode:err", "%s", line)
 		},
@@ -210,9 +212,10 @@ func subscribe(ctx context.Context, client *http.Client, baseURL string, onEvent
 }
 
 type httpClient struct {
-	base   string
-	client *http.Client
-	mu     sync.Mutex
+	base     string
+	client   *http.Client
+	password string
+	mu       sync.Mutex
 }
 
 func (h *httpClient) do(ctx context.Context, method, path string, body, out any) error {
@@ -231,6 +234,9 @@ func (h *httpClient) do(ctx context.Context, method, path string, body, out any)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if h.password != "" {
+		req.SetBasicAuth(v2Username, h.password)
 	}
 
 	resp, err := h.client.Do(req)

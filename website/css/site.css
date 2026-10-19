@@ -15,19 +15,21 @@
   --font: 'Geist Variable', 'Geist', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
-  --ink: 255, 255, 255;
+  --ink: 0, 0, 0;
   --rim: #ffffff;
-  --bg: #000000;
-  --fg: #ffffff;
-  --fg-2: #cfcfcf;
-  --fg-3: #828282;
-  --fg-4: #565656;
-  --glass-control: #414141;
-  --accent: #21629f;
-  --accent-deep: #00417f;
+  --bg: #f4f7fb;
+  --fg: #0b0d12;
+  --fg-2: #3a404c;
+  --fg-3: #667085;
+  --fg-4: #98a0ae;
+  --glass-control: #e6ebf2;
+  --accent: #1f6fd1;
+  --accent-deep: #0b0d12;
+  --sky: #a9cdf2;
 
-  --text-display: clamp(3.25rem, 9vw, 8.25rem);
+  --text-display: clamp(2.75rem, 6.6vw, 6rem);
   --text-h2: clamp(2.25rem, 5vw, 4.5rem);
+  --text-h2-feature: clamp(1.75rem, 3.2vw, 2.875rem);
   --text-h2-split: clamp(2rem, 3.5vw, 3.25rem);
   --text-lead: clamp(1.125rem, 1.35vw, 1.3125rem);
   --text-body: 1.0625rem;
@@ -37,11 +39,12 @@
   --content: 1240px;
   --pad-x: max(var(--gutter), calc((100% - var(--content)) / 2));
   --pad-y: clamp(5rem, 13vh, 9rem);
+  --fit: max(26rem, calc((100svh - 2 * var(--pad-y) - 16rem) * 1.6));
 
   --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
   --spring: linear(0, 0.019, 0.0678, 0.1365, 0.217, 0.303, 0.3899, 0.4744, 0.5541, 0.6274, 0.6936, 0.7522, 0.8033, 0.8471, 0.8842, 0.915, 0.9402, 0.9605, 0.9765, 0.9889, 0.9982, 1.0049, 1.0096, 1.0127, 1.0144, 1.0151, 1.0151, 1.0145, 1.0136, 1.0124, 1.0112, 1.0098, 1.0085, 1.0073, 1.0061, 1.0051, 1.0041, 1.0033, 1.0026, 1.002, 1);
 
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -68,7 +71,13 @@ a { color: inherit; text-decoration: none; }
 figure { margin: 0; }
 
 h1, h2, .display { font-weight: 500; text-wrap: balance; color: var(--fg); }
-.display { font-size: var(--text-display); line-height: 0.96; letter-spacing: -0.055em; }
+.display { font-size: var(--text-display); line-height: 0.98; letter-spacing: -0.05em; }
+.display em {
+  font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.035em;
+}
 h2 { font-size: var(--text-h2); line-height: 1.02; letter-spacing: -0.045em; max-width: 14ch; }
 .lead { font-size: var(--text-lead); line-height: 1.45; letter-spacing: -0.01em; color: var(--fg-3); max-width: 34ch; text-wrap: pretty; }
 .mono { font-family: var(--font-mono); font-size: var(--text-label); color: var(--fg-3); }
@@ -89,14 +98,28 @@ h2 { font-size: var(--text-h2); line-height: 1.02; letter-spacing: -0.045em; max
   padding: 7px 7px 7px 16px;
   white-space: nowrap;
   opacity: 0;
+  box-shadow: 0 10px 34px -12px rgba(40, 80, 140, 0.4);
   transition: opacity 0.8s var(--ease-out) 0.3s;
 }
 .ready .island { opacity: 1; }
 .island .brand { display: flex; align-items: center; gap: 10px; margin-right: 10px; font-size: 15px; font-weight: 500; letter-spacing: -0.015em; }
 .island .brand img { width: 28px; height: 28px; border-radius: 8px; }
+.island { color: #fff; border-radius: 9999px; box-shadow: 0 14px 40px -14px rgba(10, 20, 40, 0.55); }
+.island .ring {
+  display: block;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: conic-gradient(#ff8a5b 0 13%, rgba(255, 255, 255, 0.16) 0);
+  -webkit-mask: radial-gradient(circle, transparent 5px, #000 5.5px);
+  mask: radial-gradient(circle, transparent 5px, #000 5.5px);
+}
+.nav-clip { overflow: hidden; }
 .island nav { display: flex; }
-.island nav a { padding: 9px 15px; border-radius: 999px; color: var(--fg-2); font-size: 14.5px; font-weight: 500; transition: color 0.2s; }
-.island nav a:hover { color: var(--fg); }
+.island nav a { padding: 9px 15px; border-radius: 999px; color: rgba(255, 255, 255, 0.66); font-size: 14.5px; font-weight: 500; transition: color 0.2s; }
+.island nav a:hover { color: #fff; }
 
 .btn {
   position: relative;
@@ -107,13 +130,14 @@ h2 { font-size: var(--text-h2); line-height: 1.02; letter-spacing: -0.045em; max
   height: 54px;
   padding: 0 30px;
   border-radius: 9999px;
-  color: #fff;
+  color: var(--fg);
   font: 500 16px/1 var(--font);
   letter-spacing: -0.01em;
   cursor: pointer;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
+.btn.accent { color: #fff; }
 .btn.small { height: 42px; padding: 0 20px; font-size: 14.5px; }
 .btn.big { height: 64px; padding: 0 40px; font-size: 18px; }
 
@@ -122,16 +146,13 @@ h2 { font-size: var(--text-h2); line-height: 1.02; letter-spacing: -0.045em; max
 
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1.75rem; margin-top: clamp(2rem, 4vw, 3rem); }
 
-.js [data-reveal] {
-  opacity: 0;
-  transform: translateY(36px) scale(0.985);
-  transition: opacity 0.8s var(--ease-out) var(--d, 0ms), transform 1.2s var(--spring) var(--d, 0ms);
-}
-.js [data-reveal].in { opacity: 1; transform: none; }
+.js [data-reveal], .js [data-pop] { opacity: 0; will-change: transform, opacity; }
+.js [data-reveal].in, .js [data-pop].in { opacity: 1; transform: none; will-change: auto; }
 
 .frame {
   position: relative;
-  width: 100%;
+  width: min(100%, var(--fit));
+  margin-inline: auto;
   aspect-ratio: 8 / 5;
   background: #050505;
   border-radius: 30px;
@@ -160,10 +181,19 @@ h2 { font-size: var(--text-h2); line-height: 1.02; letter-spacing: -0.045em; max
   position: relative;
   display: flex;
   flex-direction: column;
-  padding: clamp(7.5rem, 17svh, 11rem) var(--pad-x) clamp(4rem, 9vh, 7rem);
-  background: radial-gradient(70% 40% at 50% 100%, rgba(33, 98, 159, 0.26), transparent 70%);
+  align-items: center;
+  text-align: center;
+  padding: clamp(7.5rem, 17svh, 10rem) var(--pad-x) clamp(4rem, 9vh, 7rem);
+  background:
+    radial-gradient(46% 38% at 86% 6%, rgba(255, 238, 205, 0.95), rgba(255, 238, 205, 0) 70%),
+    radial-gradient(60% 46% at 12% 14%, rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0) 70%),
+    linear-gradient(180deg, var(--sky) 0%, #cfe2f6 46%, var(--bg) 100%);
 }
-.hero .lead { margin-top: clamp(1.25rem, 2.2vw, 2rem); }
+.hero h1, .hero .lead { margin-inline: auto; }
+.hero h1 { max-width: none; }
+.hero .lead { margin-top: clamp(1.25rem, 2.2vw, 2rem); max-width: 38ch; }
+.hero .actions { justify-content: center; }
+.hero-desk { width: 100%; }
 .hero-art { position: relative; width: 100%; margin-top: clamp(3rem, 8vh, 5.5rem); }
 .hero-phone { --pw: clamp(150px, 19%, 250px); position: absolute; right: -1.5%; bottom: -9%; width: var(--pw); }
 
@@ -173,7 +203,15 @@ h2 { font-size: var(--text-h2); line-height: 1.02; letter-spacing: -0.045em; max
   gap: clamp(2.5rem, 6vh, 4.5rem);
   padding: var(--pad-y) var(--pad-x);
 }
-.feature .lead { margin-top: clamp(1rem, 1.6vw, 1.5rem); }
+.feature .lead { margin-top: clamp(0.5rem, 1vw, 0.875rem); font-size: clamp(1rem, 1.1vw, 1.125rem); }
+.feature h2 { font-size: var(--text-h2-feature); max-width: 20ch; }
+.feature:not(.split):not(.look) {
+  --pad-y: clamp(2.5rem, 6vh, 4rem);
+  --fit: max(30rem, calc((100svh - 2 * var(--pad-y) - 11rem) * 1.6));
+  gap: clamp(1rem, 3vh, 2rem);
+  padding-inline: max(var(--gutter), calc((100% - var(--fit)) / 2));
+}
+.feature:not(.split):not(.look) .frame { margin-inline: 0; }
 .feature.split {
   display: grid;
   grid-template-columns: minmax(0, 0.8fr) minmax(0, 2fr);
@@ -186,7 +224,28 @@ h2 { font-size: var(--text-h2); line-height: 1.02; letter-spacing: -0.045em; max
 .feature.split h2 { font-size: var(--text-h2-split); max-width: 11ch; }
 
 .look { gap: clamp(2rem, 5vh, 4rem); }
-.fan { position: relative; width: 100%; aspect-ratio: 2.3 / 1; }
+.wall { position: relative; height: calc(100svh + 260px); }
+.wall .stage {
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(4.5rem, 10vh, 7rem) 0 clamp(1.25rem, 3vh, 2.5rem);
+}
+.wall .copy { padding-inline: var(--pad-x); }
+.wall .lead { margin-top: clamp(0.5rem, 1vw, 1rem); }
+.wall-track { position: relative; flex: 1; min-height: 0; margin-top: clamp(1rem, 3vh, 2rem); }
+.wall-track .frame {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  margin: 0;
+  width: 60%;
+  will-change: transform, opacity;
+}
+.fan { position: relative; width: min(100%, calc((100svh - 16rem) * 2.3)); margin-inline: auto; aspect-ratio: 2.3 / 1; }
 .fan .frame { position: absolute; }
 .fan .mid { left: 20.5%; top: 0; width: 59%; z-index: 2; }
 .fan .side { top: 11%; width: 45%; z-index: 1; }
@@ -197,8 +256,10 @@ h2 { font-size: var(--text-h2); line-height: 1.02; letter-spacing: -0.045em; max
   position: relative;
   display: flex;
   align-items: flex-end;
-  min-height: 100svh;
-  padding: var(--pad-y) var(--pad-x);
+  min-height: min(100svh, 880px);
+  margin: 0 var(--gutter);
+  padding: clamp(2.5rem, 6vw, 5rem);
+  border-radius: clamp(28px, 4vw, 48px);
   overflow: hidden;
 }
 .dusk-bg {
@@ -210,11 +271,9 @@ h2 { font-size: var(--text-h2); line-height: 1.02; letter-spacing: -0.045em; max
   content: '';
   position: absolute;
   inset: 0;
-  background:
-    linear-gradient(to bottom, #000 0, rgba(0, 0, 0, 0) 32%, rgba(0, 0, 0, 0) 52%, #000 100%),
-    linear-gradient(to right, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0) 60%);
+  background: linear-gradient(to right, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0) 62%);
 }
-.dusk .display { position: relative; }
+.dusk .display { position: relative; color: #fff; }
 
 .phones { position: relative; height: calc(100svh + var(--n, 9) * 58svh); }
 .phones .stage { position: sticky; top: 0; height: 100svh; overflow: hidden; }
@@ -253,7 +312,7 @@ h2 { font-size: var(--text-h2); line-height: 1.02; letter-spacing: -0.045em; max
 .pair-art .frame { width: 82%; }
 .pair-art .phone { --pw: clamp(170px, 24%, 290px); position: absolute; right: 0; bottom: 0; width: var(--pw); }
 
-.finale { background: radial-gradient(80% 36% at 50% 100%, rgba(33, 98, 159, 0.4), transparent 72%); }
+.finale { background: radial-gradient(90% 40% at 50% 100%, rgba(169, 205, 242, 0.85), rgba(169, 205, 242, 0) 74%); }
 .end {
   display: flex;
   align-items: flex-end;
@@ -273,10 +332,11 @@ h2 { font-size: var(--text-h2); line-height: 1.02; letter-spacing: -0.045em; max
 .foot a:hover { color: var(--fg); }
 
 @media (max-width: 900px) {
-  .island nav { display: none; }
+  .nav-clip { display: none; }
   .island { padding-left: 14px; }
   .island .brand { margin-right: 14px; }
   .hero-phone { right: 0; bottom: -7%; }
+  .dusk { margin: 0 var(--gutter); }
   .feature.split, .feature.split.flip { display: flex; min-height: 0; }
   .feature.split.flip .copy { order: 0; }
   .feature.split h2 { font-size: var(--text-h2); }

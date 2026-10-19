@@ -53,6 +53,14 @@ type ModelUpdater interface {
 	UpdateModel(threadID, model string, options domain.ModelOptions) bool
 }
 
+type TurnRemover interface {
+	RemoveTurn(sessionID, text string, occurrence int) error
+}
+
+type SessionMover interface {
+	MoveSession(sessionID, cwd string) error
+}
+
 // Emitter is how adapters publish canonical events. The session manager
 // supplies one that stamps sequence numbers and fans out to subscribers.
 type Emitter interface {

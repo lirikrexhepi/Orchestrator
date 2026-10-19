@@ -2,6 +2,7 @@ import { MaterialIcon } from '../common/icons';
 import React, { useState } from 'react';
 import ReactMarkdown, { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { BrowserOpenURL } from '../../../wailsjs/runtime/runtime';
 
 export interface MarkdownTextProps {
   content: string;
@@ -76,6 +77,11 @@ const COMPONENTS: Components = {
       href={href}
       target="_blank"
       rel="noreferrer"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (href && /^(https?:|mailto:)/i.test(href)) void BrowserOpenURL(href);
+      }}
       className="text-sky-400 hover:text-sky-300 underline underline-offset-2 decoration-current/25"
     >
       {children}

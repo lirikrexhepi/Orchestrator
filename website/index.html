@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Orchestrator</title>
 <meta name="description" content="Run Claude Code, Codex, OpenCode and Antigravity side by side on your desktop, and steer them from your phone.">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#f4f7fb">
 <meta property="og:title" content="Orchestrator">
 <meta property="og:description" content="Many agents. One deck.">
 <meta property="og:type" content="website">
@@ -24,10 +24,13 @@
     <img src="assets/icon-256.png" alt="" width="28" height="28">
     <span>Orchestrator</span>
   </a>
-  <nav aria-label="Sections">
-    <a href="#desktop">Desktop</a>
-    <a href="#phone">Phone</a>
-  </nav>
+  <span class="ring" aria-hidden="true"></span>
+  <div class="nav-clip">
+    <nav aria-label="Sections">
+      <a href="#desktop">Desktop</a>
+      <a href="#phone">Phone</a>
+    </nav>
+  </div>
   <a class="btn accent small" href="#download" data-download>Download</a>
 </header>
 
@@ -35,7 +38,7 @@
 
 <section class="hero" id="top">
   <div class="hero-copy">
-    <h1 class="display" data-reveal>Many agents.<br>One deck.</h1>
+    <h1 class="display" data-reveal>Many <em>agents.</em><br>One deck.</h1>
     <p class="lead" data-reveal style="--d:80ms">Claude Code, Codex, OpenCode and Antigravity, side by side. Steered from your phone.</p>
     <div class="actions" data-reveal style="--d:160ms">
       <a class="btn accent" href="#download" data-download>Download</a>
@@ -119,30 +122,44 @@
   </figure>
 </section>
 
-<section class="feature look">
-  <div class="copy" data-reveal>
-    <h2>Dark, light or glass.</h2>
-    <p class="lead">Pick a wallpaper and make it yours.</p>
-  </div>
-  <div class="fan">
-    <figure class="frame side l" data-shape="28" data-reveal>
-      <img src="assets/shots/desktop-deck-light-2000.webp" srcset="assets/shots/desktop-deck-light-1000.webp 1000w, assets/shots/desktop-deck-light-2000.webp 2000w" sizes="(min-width: 1300px) 640px, 60vw" width="2000" height="1250" loading="lazy" decoding="async" alt="The light theme over a pink mountain wallpaper">
-      <span class="rim" aria-hidden="true"></span>
-    </figure>
-    <figure class="frame side r" data-shape="28" data-reveal style="--d:120ms">
-      <img src="assets/shots/desktop-deck-glass-2000.webp" srcset="assets/shots/desktop-deck-glass-1000.webp 1000w, assets/shots/desktop-deck-glass-2000.webp 2000w" sizes="(min-width: 1300px) 640px, 60vw" width="2000" height="1250" loading="lazy" decoding="async" alt="The glass theme over a night desert wallpaper">
-      <span class="rim" aria-hidden="true"></span>
-    </figure>
-    <figure class="frame mid" data-shape="32" data-reveal style="--d:60ms">
-      <img src="assets/shots/desktop-wall-pink-2000.webp" srcset="assets/shots/desktop-wall-pink-1000.webp 1000w, assets/shots/desktop-wall-pink-2000.webp 2000w" sizes="(min-width: 1300px) 900px, 80vw" width="2000" height="1250" loading="lazy" decoding="async" alt="The dark theme over a pink mountain wallpaper">
-      <span class="rim" aria-hidden="true"></span>
-    </figure>
+<section class="wall" id="look" data-count="6">
+  <div class="stage">
+    <div class="copy" data-reveal>
+      <h2>Dark, light or glass.</h2>
+      <p class="lead">Pick a wallpaper and make it yours.</p>
+    </div>
+    <div class="wall-track">
+      <figure class="frame" data-shape="32">
+        <img src="assets/shots/desktop-wall-sierra-2000.webp" srcset="assets/shots/desktop-wall-sierra-1000.webp 1000w, assets/shots/desktop-wall-sierra-2000.webp 2000w" sizes="(min-width: 1300px) 800px, 80vw" width="2000" height="1250" alt="The dark theme over a mountain ridge at sunset">
+        <span class="rim" aria-hidden="true"></span>
+      </figure>
+      <figure class="frame" data-shape="32">
+        <img src="assets/shots/desktop-wall-day-2000.webp" srcset="assets/shots/desktop-wall-day-1000.webp 1000w, assets/shots/desktop-wall-day-2000.webp 2000w" sizes="(min-width: 1300px) 800px, 80vw" width="2000" height="1250" loading="lazy" decoding="async" alt="The light theme over sunlit desert dunes">
+        <span class="rim" aria-hidden="true"></span>
+      </figure>
+      <figure class="frame" data-shape="32">
+        <img src="assets/shots/desktop-deck-glass-2000.webp" srcset="assets/shots/desktop-deck-glass-1000.webp 1000w, assets/shots/desktop-deck-glass-2000.webp 2000w" sizes="(min-width: 1300px) 800px, 80vw" width="2000" height="1250" loading="lazy" decoding="async" alt="The glass theme over a night desert wallpaper">
+        <span class="rim" aria-hidden="true"></span>
+      </figure>
+      <figure class="frame" data-shape="32">
+        <img src="assets/shots/desktop-deck-simple-2000.webp" srcset="assets/shots/desktop-deck-simple-1000.webp 1000w, assets/shots/desktop-deck-simple-2000.webp 2000w" sizes="(min-width: 1300px) 800px, 80vw" width="2000" height="1250" loading="lazy" decoding="async" alt="The dark theme over moonlit dunes">
+        <span class="rim" aria-hidden="true"></span>
+      </figure>
+      <figure class="frame" data-shape="32">
+        <img src="assets/shots/desktop-wall-silk-2000.webp" srcset="assets/shots/desktop-wall-silk-1000.webp 1000w, assets/shots/desktop-wall-silk-2000.webp 2000w" sizes="(min-width: 1300px) 800px, 80vw" width="2000" height="1250" loading="lazy" decoding="async" alt="The glass theme over a dark silk wallpaper">
+        <span class="rim" aria-hidden="true"></span>
+      </figure>
+      <figure class="frame" data-shape="32">
+        <img src="assets/shots/desktop-deck-light-2000.webp" srcset="assets/shots/desktop-deck-light-1000.webp 1000w, assets/shots/desktop-deck-light-2000.webp 2000w" sizes="(min-width: 1300px) 800px, 80vw" width="2000" height="1250" loading="lazy" decoding="async" alt="The light theme over a pink mountain wallpaper">
+        <span class="rim" aria-hidden="true"></span>
+      </figure>
+    </div>
   </div>
 </section>
 
 <section class="dusk" aria-label="Phone">
   <div class="dusk-bg" aria-hidden="true"></div>
-  <h2 class="display" data-reveal>Now take it<br>with you.</h2>
+  <h2 class="display" data-reveal>Now take it<br><em>with you.</em></h2>
 </section>
 
 <section class="phones" id="phone" data-count="9">
@@ -205,7 +222,7 @@
 <div class="finale">
 <section class="end" id="download">
   <div class="end-copy">
-    <h2 class="display" data-reveal>Start with<br>one agent.</h2>
+    <h2 class="display" data-reveal>Start with<br>one <em>agent.</em></h2>
     <div class="actions" data-reveal style="--d:120ms">
       <a class="btn accent big" href="#download" data-download>Download for Windows</a>
       <a class="link" href="#phone">Phone app</a>

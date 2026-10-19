@@ -12,13 +12,14 @@ import { SmoothTextarea } from '../common/SmoothTextarea';
 import { AttachmentStrip } from '../common/AttachmentStrip';
 import { AttachmentsState, filesFromTransfer } from '../common/useAttachments';
 import { readChatDrag } from '../common/chatDrag';
+import { leaveChatContextTarget, markChatContextTarget } from '../common/ChatDragLayer';
 import { providerIcon } from './providerIcons';
 import { SkillTestPicker } from './SkillTestPicker';
 import type { QueuedMessage } from '../scene/QueuedMessages';
 import { SlashMenu } from './SlashMenu';
 import { ListSlashCommands } from '../../../wailsjs/go/main/App';
 import { slashcmd } from '../../../wailsjs/go/models';
-import { ArrowUp, ChevronDown, Loader2, Paperclip, Plus, X, MaterialIcon } from '../common/icons';
+import { ArrowUp, ChevronDown, Loader2, Paperclip, Plus, MaterialIcon } from '../common/icons';
 
 export interface OrchestratorInputProps {
   onSubmit?: (message: string, modelId: string) => void;
@@ -37,11 +38,7 @@ export interface OrchestratorInputProps {
   commandDriver?: string;
   hasActiveAgent?: boolean;
   onNewAgent?: () => void;
-  isCreatingNewAgent?: boolean;
-  onCancelNewAgent?: () => void;
-  /** Folder override for the armed new-agent spawn only; null is the active project. */
-  newAgentProject?: { id: string; name: string; path: string } | null;
-  onNewAgentProjectChange?: (project: { id: string; name: string; path: string } | null) => void;
+  isDraft?: boolean;
   viewMode?: 'deck' | 'grid' | 'orchestrator';
   onToggleViewMode?: () => void;
   className?: string;
@@ -74,10 +71,7 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
   commandDriver,
   hasActiveAgent = false,
   onNewAgent,
-  isCreatingNewAgent = false,
-  onCancelNewAgent,
-  newAgentProject = null,
-  onNewAgentProjectChange,
+  isDraft = false,
   viewMode = 'deck',
   onToggleViewMode,
   className = '',
@@ -112,7 +106,6 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
   // Transition mount coordination for guaranteed entrance AND exit
   const modelPickerMount = useTransitionMount(isModelPickerOpen, 200);
   const effortPickerMount = useTransitionMount(isEffortPickerOpen, 200);
-  const [isAgentProjectOpen, setAgentProjectOpen] = useState(false);
 
   const currentModel = getSelectedModel();
   const accountName = useOrchestratorStore((state) => {
@@ -151,17 +144,16 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
     const handleOutsideClick = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         closeAllPickers();
-        setAgentProjectOpen(false);
       }
     };
 
-    if (isModelPickerOpen || isEffortPickerOpen || isAgentProjectOpen) {
+    if (isModelPickerOpen || isEffortPickerOpen) {
       document.addEventListener('mousedown', handleOutsideClick);
     }
     return () => {
       document.removeEventListener('mousedown', handleOutsideClick);
     };
-  }, [isModelPickerOpen, isEffortPickerOpen, isAgentProjectOpen, closeAllPickers]);
+  }, [isModelPickerOpen, isEffortPickerOpen, closeAllPickers]);
 
   // An attachment on its own is a complete message, so a turn is sendable when
   // there is either text or a staged file.
@@ -289,8 +281,6 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
     }
     if (e.key === 'Escape') {
       closeAllPickers();
-      setAgentProjectOpen(false);
-      onCancelNewAgent?.();
       // Esc stops the running turn, as in Claude Code.
       if (isBusy) {
         e.preventDefault();
@@ -311,7 +301,6 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
   const capsuleHeight = Math.max(textZoneHeight + TOOLBAR_HEIGHT + CAPSULE_CHROME, 98) + queueHeight;
   if (hasAttachments && attachments) railRef.current = attachments.items;
   const railItems = hasAttachments && attachments ? attachments.items : railRef.current;
-  const isSpawning = hasActiveAgent && viewMode === 'deck' && isCreatingNewAgent;
 
   const capsuleContent = (
     <div className="flex flex-col w-full h-full">
@@ -368,47 +357,6 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
       )}
       {/* Message field: the full top row. */}
       <div className="flex-1 min-w-0 flex items-start gap-2 px-[14px] pt-[8px] overflow-hidden">
-        {isSpawning && (
-          <div
-            className={`flex items-center gap-1 pl-2.5 pr-1 py-0.5 mt-[1px] rounded-full border text-[11px] font-medium tracking-tight shrink-0 select-none animate-in fade-in duration-150 ${
-              isLight
-                ? 'bg-black/[0.06] border-black/15 text-black'
-                : 'bg-white/[0.10] border-white/20 text-white'
-            }`}
-          >
-            <Plus size={12} strokeWidth={2} />
-            <span>New Agent</span>
-            <span className={isLight ? 'text-black/30' : 'text-white/30'}>·</span>
-            <button
-              type="button"
-              title="Spawn folder, this agent only"
-              onClick={(e) => {
-                e.stopPropagation();
-                setAgentProjectOpen((open) => !open);
-              }}
-              className={`flex items-center gap-0.5 max-w-[110px] rounded-full px-1.5 py-px -my-px cursor-pointer transition-colors ${
-                isLight ? 'hover:bg-black/[0.08] text-black/70' : 'hover:bg-white/[0.12] text-white/70'
-              }`}
-            >
-              <span className="truncate leading-none py-[3px]">
-                {newAgentProject?.name ?? projects?.active?.name ?? '…'}
-              </span>
-              <ChevronDown size={11} strokeWidth={2} className="shrink-0 opacity-70" />
-            </button>
-            <button
-              type="button"
-              title="Cancel new agent"
-              onClick={(e) => {
-                e.stopPropagation();
-                setAgentProjectOpen(false);
-                onCancelNewAgent?.();
-              }}
-              className="ml-0.5 opacity-60 hover:opacity-100 cursor-pointer flex items-center"
-            >
-              <X size={11} strokeWidth={2} />
-            </button>
-          </div>
-        )}
         <SmoothTextarea
           ref={textareaRef}
           rows={1}
@@ -416,10 +364,10 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
           onValueChange={setMessageText}
           onKeyDown={handleKeyDown}
           placeholder={
-            isSpawning
-              ? 'Task for new agent…'
-              : viewMode === 'grid' || viewMode === 'orchestrator'
-                ? 'Ask orchestrator…'
+            viewMode === 'grid' || viewMode === 'orchestrator'
+              ? 'Ask orchestrator…'
+              : isDraft
+                ? 'Type to start this chat…'
                 : !hasActiveAgent
                   ? 'Ask me anything…'
                   : 'Ask a follow up…'
@@ -476,12 +424,12 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
             <ChevronDown size={14} strokeWidth={1.75} className={`transition-transform duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] flex items-center opacity-60 ${ isModelPickerOpen ? 'rotate-180' : '' }`} />
           </button>
 
-          {/* New Agent Quick Trigger Button - ONLY in Deck mode */}
-          {hasActiveAgent && viewMode === 'deck' && (
+          {/* New chat tab - deck mode, same as the top + */}
+          {viewMode === 'deck' && (
             <button
               type="button"
-              title="New agent (Ctrl + N)"
-              aria-label="New agent"
+              title="New chat (Ctrl + N)"
+              aria-label="New chat"
               onClick={(e) => {
                 e.stopPropagation();
                 onNewAgent?.();
@@ -540,7 +488,7 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
                   e.stopPropagation();
                   onInterrupt?.();
                 }}
-                className="glass-orb glass-orb-stop relative w-[34px] h-[34px] rounded-[12px] flex items-center justify-center shrink-0 cursor-pointer group"
+                className="glass-orb glass-orb-stop relative w-[34px] h-[34px] rounded-full flex items-center justify-center shrink-0 cursor-pointer group"
               >
                 <span className="w-[10px] h-[10px] rounded-[3px] bg-white shadow-[0_1px_2px_rgba(150,40,60,0.45)] transition-transform duration-150 group-hover:scale-90" />
               </motion.button>
@@ -562,9 +510,9 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
                   e.stopPropagation();
                   submitMessage();
                 }}
-                className={`relative w-[34px] h-[34px] rounded-[12px] flex items-center justify-center shrink-0 group transition-all duration-200 ${
+                className={`relative w-[34px] h-[34px] rounded-full flex items-center justify-center shrink-0 group transition-all duration-200 ${
                   canSubmit
-                    ? 'glass-orb !rounded-full text-white cursor-pointer'
+                    ? 'glass-orb text-white cursor-pointer'
                     : isLight
                       ? 'bg-black/[0.05] text-black/25 cursor-default shadow-[inset_0_0_0_1px_rgba(0,0,0,0.06)]'
                       : 'bg-white/[0.05] text-white/25 cursor-default shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]'
@@ -585,8 +533,11 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
       onPaste={handlePaste}
       onDrop={handleDrop}
       onDragOver={(e) => {
-        if (attachments) e.preventDefault();
+        if (!attachments) return;
+        e.preventDefault();
+        markChatContextTarget(e);
       }}
+      onDragLeave={leaveChatContextTarget}
       className={`relative flex flex-col items-center select-none ${className}`}
     >
       <AnimatePresence>
@@ -721,72 +672,6 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
               className="origin-bottom-left pointer-events-auto"
             >
               <EffortPicker />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Spawn folder for the armed new agent only. Picking here never
-            switches the top-level project. */}
-        <AnimatePresence>
-          {isAgentProjectOpen && isSpawning && (
-            <motion.div
-              key="new-agent-project"
-              initial={{ opacity: 0, scale: 0.95, y: 8 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: 4, transition: { duration: 0.12, ease: 'easeIn' } }}
-              transition={{
-                type: 'spring',
-                stiffness: 440,
-                damping: 30,
-                mass: 0.8,
-              }}
-              style={{ transformOrigin: 'bottom left' }}
-              className="origin-bottom-left pointer-events-auto"
-            >
-              <div
-                className={`w-[210px] rounded-[16px] border p-1.5 backdrop-blur-xl ${
-                  isLight
-                    ? 'bg-white/[0.96] border-black/[0.08] shadow-[0_16px_40px_rgba(0,0,0,0.14)]'
-                    : 'bg-[#161617]/[0.96] border-white/[0.10] shadow-[0_16px_40px_rgba(0,0,0,0.6)]'
-                }`}
-              >
-                {(projects?.projects ?? []).length === 0 && (
-                  <div className={`px-2.5 py-2 text-[12px] font-(family-name:--app-font) ${isLight ? 'text-black/50' : 'text-white/50'}`}>
-                    No projects yet
-                  </div>
-                )}
-                {(projects?.projects ?? []).map((project) => {
-                  const selected = (newAgentProject?.id ?? projects?.active?.id) === project.id;
-                  return (
-                    <button
-                      key={project.id}
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onNewAgentProjectChange?.(
-                          project.id === projects?.active?.id
-                            ? null
-                            : { id: project.id, name: project.name, path: project.path },
-                        );
-                        setAgentProjectOpen(false);
-                      }}
-                      className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[10px] text-left cursor-pointer transition-colors ${
-                        isLight
-                          ? 'hover:bg-black/[0.05] text-black/85'
-                          : 'hover:bg-white/[0.07] text-white/85'
-                      }`}
-                    >
-                      <MaterialIcon name="folder" className="text-[15px] shrink-0 opacity-60"/>
-                      <span className="flex-1 min-w-0 text-[12.5px] font-medium font-(family-name:--app-font) tracking-tight truncate">
-                        {project.name}
-                      </span>
-                      {selected && (
-                        <MaterialIcon name="check" className={`text-[15px] shrink-0 ${isLight ? 'text-black/70' : 'text-white/70'}`}/>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
             </motion.div>
           )}
         </AnimatePresence>

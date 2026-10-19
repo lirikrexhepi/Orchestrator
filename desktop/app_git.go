@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"composer/internal/domain"
@@ -30,21 +31,57 @@ func (a *App) GitOverview() ([]domain.WorktreeChanges, error) {
 // gitOverviewAt is GitOverview for any project, not just the active one; the
 // phone browses projects without switching the desktop's selection.
 func (a *App) gitOverviewAt(ctx context.Context, root string) ([]domain.WorktreeChanges, error) {
-	repo, ok := git.Open(ctx, root)
-	if !ok {
-		return nil, fmt.Errorf("%s is not a git repository", root)
+	key := normalisePath(root)
+
+	overviewMu.Lock()
+	call, running := overviewCalls[key]
+	if !running {
+		call = &overviewCall{done: make(chan struct{})}
+		overviewCalls[key] = call
+	}
+	overviewMu.Unlock()
+
+	if !running {
+		call.lanes, call.err = a.buildGitOverview(ctx, root)
+		overviewMu.Lock()
+		delete(overviewCalls, key)
+		overviewMu.Unlock()
+		close(call.done)
+		return call.lanes, call.err
 	}
 
-	checkouts, err := repo.Worktrees(ctx)
+	select {
+	case <-call.done:
+		return call.lanes, call.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+type overviewCall struct {
+	done  chan struct{}
+	lanes []domain.WorktreeChanges
+	err   error
+}
+
+var (
+	overviewMu    sync.Mutex
+	overviewCalls = map[string]*overviewCall{}
+)
+
+const overviewParallelism = 4
+
+func (a *App) buildGitOverview(ctx context.Context, root string) ([]domain.WorktreeChanges, error) {
+	checkouts, mainBranch, err := gitWatch.layout(ctx, root)
 	if err != nil {
 		return nil, err
 	}
 
 	owners := a.worktreeOwners()
-	mainBranch, _ := repo.CurrentBranch(ctx)
 
 	lanes := make([]domain.WorktreeChanges, len(checkouts))
 	var wait sync.WaitGroup
+	slots := make(chan struct{}, overviewParallelism)
 
 	// One checkout's git calls do not depend on any other's, and a project with
 	// several agents would otherwise pay for them in series every refresh.
@@ -52,7 +89,17 @@ func (a *App) gitOverviewAt(ctx context.Context, root string) ([]domain.Worktree
 		wait.Add(1)
 		go func(index int, checkout git.Checkout) {
 			defer wait.Done()
-			lanes[index] = a.laneFor(ctx, checkout, owners, mainBranch)
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			lane := a.laneIdentity(checkout, owners, mainBranch)
+			if scan, ok := gitWatch.cached(checkout, lane.Base); ok {
+				scan.apply(&lane)
+			} else {
+				tracked := gitWatch.begin(checkout, lane.Base)
+				scanLane(ctx, checkout, &lane)
+				gitWatch.finish(tracked, lane)
+			}
+			lanes[index] = lane
 		}(i, checkout)
 	}
 	wait.Wait()
@@ -74,6 +121,12 @@ func (a *App) gitOverviewAt(ctx context.Context, root string) ([]domain.Worktree
 // worktree must not blank the whole window, and the reason belongs next to the
 // lane it applies to.
 func (a *App) laneFor(ctx context.Context, checkout git.Checkout, owners map[string]domain.Task, mainBranch string) domain.WorktreeChanges {
+	lane := a.laneIdentity(checkout, owners, mainBranch)
+	scanLane(ctx, checkout, &lane)
+	return lane
+}
+
+func (a *App) laneIdentity(checkout git.Checkout, owners map[string]domain.Task, mainBranch string) domain.WorktreeChanges {
 	lane := domain.WorktreeChanges{
 		Path:   checkout.Path,
 		Branch: checkout.Branch,
@@ -102,23 +155,35 @@ func (a *App) laneFor(ctx context.Context, checkout git.Checkout, owners map[str
 	if lane.Base == "" && !checkout.IsMain {
 		lane.Base = mainBranch
 	}
+	return lane
+}
 
+func scanLane(ctx context.Context, checkout git.Checkout, lane *domain.WorktreeChanges) {
 	working := &git.Repo{Root: checkout.Path}
 
-	lane.Upstream, lane.Unpushed, lane.Unpulled = working.Sync(ctx)
+	var tips git.Tips
+	tipsKnown := false
+	if !checkout.Detached {
+		tips, tipsKnown = working.BranchTips(ctx, checkout.Branch, lane.Base)
+	}
+	if tipsKnown {
+		lane.Upstream, lane.Unpushed, lane.Unpulled = tips.Upstream, tips.Unpushed, tips.Unpulled
+	} else {
+		lane.Upstream, lane.Unpushed, lane.Unpulled = working.Sync(ctx)
+	}
 
 	files, err := working.Status(ctx)
 	if err != nil {
 		lane.Error = err.Error()
-		return lane
+		return
 	}
 	lane.Files = files
 
-	commits, ahead, err := working.Commits(ctx, lane.Base)
+	commits, ahead, err := laneCommits(ctx, working, checkout, lane.Base, tips, tipsKnown)
 	if err != nil {
 		// History is secondary to the changed files, so a repository with no
 		// commits yet still shows its working tree instead of an error.
-		return lane
+		return
 	}
 	lane.Commits = commits
 	// Ahead answers "what has this agent added on top of its base", which the
@@ -127,7 +192,33 @@ func (a *App) laneFor(ctx context.Context, checkout git.Checkout, owners map[str
 	if !checkout.IsMain {
 		lane.Ahead = ahead
 	}
-	return lane
+}
+
+type laneHistory struct {
+	key     string
+	commits []domain.Commit
+	ahead   int
+}
+
+var laneHistories sync.Map
+
+func laneCommits(ctx context.Context, working *git.Repo, checkout git.Checkout, base string, tips git.Tips, tipsKnown bool) ([]domain.Commit, int, error) {
+	if !tipsKnown || (base != "" && tips.Base == "") {
+		return working.Commits(ctx, base)
+	}
+	path := normalisePath(checkout.Path)
+	key := strings.Join([]string{checkout.Branch, tips.Head, base, tips.Base}, "\x00")
+	if cached, ok := laneHistories.Load(path); ok {
+		if history := cached.(laneHistory); history.key == key {
+			return history.commits, history.ahead, nil
+		}
+	}
+	commits, ahead, err := working.Commits(ctx, base)
+	if err != nil {
+		return nil, 0, err
+	}
+	laneHistories.Store(path, laneHistory{key: key, commits: commits, ahead: ahead})
+	return commits, ahead, nil
 }
 
 // worktreeOwners maps a worktree path to the task that was given it.

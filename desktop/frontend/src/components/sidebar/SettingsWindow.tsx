@@ -1,20 +1,22 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, SlidersHorizontal, Cpu, Palette, Smartphone } from '../common/icons';
+import { X, SlidersHorizontal, Cpu, Palette, Smartphone, ScrollText } from '../common/icons';
 import { WallpaperState } from './useWallpaper';
 import { DefaultModels } from './useDefaultModels';
 import { useTheme } from '../../themes';
 import { ProvidersSection } from './ProvidersSection';
 import { RemoteAccessSection } from './RemoteAccessSection';
+import { InstructionsSection } from './InstructionsSection';
 import { useClaudeUpdate } from '../orchestrator/useClaudeUpdate';
 import { ScrollArea } from '../common/ScrollArea';
 import { AppIconPicker, FontPicker, GeneralSettings, SectionLabel, ThemePicker, WallpaperPicker } from './SettingsParts';
 
-type SectionId = 'general' | 'providers' | 'appearance' | 'remote';
+type SectionId = 'general' | 'providers' | 'instructions' | 'appearance' | 'remote';
 
 const SECTIONS: { id: SectionId; label: string; icon: React.ReactNode }[] = [
   { id: 'general', label: 'General', icon: <SlidersHorizontal size={15} strokeWidth={1.9} /> },
   { id: 'providers', label: 'Providers', icon: <Cpu size={15} strokeWidth={1.9} /> },
+  { id: 'instructions', label: 'Instructions & memory', icon: <ScrollText size={15} strokeWidth={1.9} /> },
   { id: 'appearance', label: 'Appearance', icon: <Palette size={15} strokeWidth={1.9} /> },
   { id: 'remote', label: 'Phone access', icon: <Smartphone size={15} strokeWidth={1.9} /> },
 ];
@@ -145,6 +147,7 @@ export function SettingsWindow({
                         <WallpaperPicker wallpaper={wallpaper} isLight={isLight} columns={4} />
                       </>
                     )}
+                    {section === 'instructions' && <InstructionsSection isLight={isLight} />}
                     {section === 'remote' && <RemoteAccessSection />}
                   </motion.div>
                 </AnimatePresence>

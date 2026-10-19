@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"composer/internal/activity"
 	"composer/internal/attachments"
 	"composer/internal/claude"
 	"composer/internal/devserver"
@@ -87,6 +88,10 @@ type App struct {
 	sessionService *service.SessionService
 	taskService    *service.TaskService
 	prefService    *service.PreferenceService
+	activityRepo   *sqlite.ActivityRepo
+	prefRepo       *sqlite.PreferenceRepo
+	activity       *activity.Tracker
+	titles         chatTitles
 }
 
 func NewApp() *App {
@@ -117,13 +122,16 @@ func NewApp() *App {
 	var sessionService *service.SessionService
 	var taskService *service.TaskService
 	var prefService *service.PreferenceService
+	var activityRepo *sqlite.ActivityRepo
+	var prefRepo *sqlite.PreferenceRepo
 
 	if d, err := sqlite.Open(filepath.Join(configRoot(), "composer.db")); err == nil {
 		db = d
 		sRepo := sqlite.NewSessionRepo(d)
 		tRepo := sqlite.NewTaskRepo(d)
 		provRepo := sqlite.NewProviderRepo(d)
-		prefRepo := sqlite.NewPreferenceRepo(d)
+		prefRepo = sqlite.NewPreferenceRepo(d)
+		activityRepo = sqlite.NewActivityRepo(d)
 
 		sessionService = service.NewSessionService(sRepo)
 		taskService = service.NewTaskService(tRepo)
@@ -174,6 +182,11 @@ func NewApp() *App {
 		sessionService: sessionService,
 		taskService:    taskService,
 		prefService:    prefService,
+		activityRepo:   activityRepo,
+		prefRepo:       prefRepo,
+	}
+	if activityRepo != nil {
+		app.activity = activity.NewTracker(activityRepo, app.activityThread)
 	}
 	app.wireRemote()
 	manager.SetRefExpander(app.expandChatRefs)
@@ -205,6 +218,7 @@ func (a *App) startup(ctx context.Context) {
 func (a *App) startCore(ctx context.Context) {
 	a.enableManagedServers()
 	a.rehydrateFromHistory()
+	a.startActivity()
 	go a.watchClaudeUpdates(ctx)
 	if a.remoteServer != nil {
 		a.wireRemote()
@@ -214,14 +228,10 @@ func (a *App) startCore(ctx context.Context) {
 		if a.sessionService != nil {
 			for _, task := range result.Tasks {
 				branch := ""
-				cwd := result.Workspace.Cwd
 				if task.Worktree != nil {
 					branch = task.Worktree.Branch
-					if task.Worktree.Path != "" {
-						cwd = task.Worktree.Path
-					}
 				}
-				_ = a.sessionService.CreateSession(a.ctx, task.ThreadID, task.Title, cwd, string(task.Driver), task.Model, branch)
+				_ = a.sessionService.CreateSession(a.ctx, task.ThreadID, task.Title, task.Dir(result.Workspace.Cwd), string(task.Driver), task.Model, branch)
 			}
 		}
 		a.emit(orchestratorSpawnedChannel, result)
@@ -312,6 +322,7 @@ func (a *App) observe(event domain.RuntimeEvent) {
 	}
 
 	a.usage.Observe(event)
+	a.activity.Observe(event)
 	// Held until a spawn claims it, so the discussion that produced a
 	// plan is stored with the agents that plan created.
 	a.coordinator.Observe(event)
@@ -319,6 +330,9 @@ func (a *App) observe(event domain.RuntimeEvent) {
 	// rather than returning JSON for the frontend to format.
 	a.orchestrator.Observe(event)
 	a.trackTaskState(event)
+	if event.Kind == domain.EventUserMessage {
+		a.noteChatMessage(event)
+	}
 }
 
 func (a *App) domReady(ctx context.Context) {
@@ -371,7 +385,9 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.recorder != nil {
 		_ = a.recorder.Close()
 	}
+	a.closeTitles()
 	a.attachments.Cleanup()
+	_ = a.activity.Close()
 	if a.db != nil {
 		_ = a.db.Close()
 	}

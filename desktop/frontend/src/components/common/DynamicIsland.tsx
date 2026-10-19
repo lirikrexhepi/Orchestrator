@@ -5,6 +5,7 @@ import { ProjectsState, Project } from '../orchestrator/useProjects';
 import { DynamicIslandWaveform } from './DynamicIslandWaveform';
 import { ClaudeChatsView, ProjectChatsView, ProjectsView, islandTone } from './IslandLists';
 import { history, session, claudeimport } from '../../../wailsjs/go/models';
+import type { ChatDragPayload } from './chatDrag';
 import claudeLogo from '../../assets/logo/claude-icon-logo.png';
 import antigravityLogo from '../../assets/logo/antigravity-icon-logo.png';
 import { useTheme } from '../../themes';
@@ -46,12 +47,16 @@ export interface DynamicIslandProps {
   onOpenHistory?: (workspaceId: string, threadId?: string) => void;
   onDeleteHistory?: (workspaceId: string, threadId?: string) => void;
   onSetChatArchived?: (workspaceId: string, threadId: string, archived: boolean) => void;
+  onMoveChat?: (payload: ChatDragPayload, project: Project) => void;
   onTerminateAgent?: (threadId: string) => void;
   onRefreshHistory?: () => void;
   onNewChat?: () => void;
   /** Native Claude Code sessions for the inline list. */
   claudeSessions?: claudeimport.ExternalSession[];
   claudeLoading?: boolean;
+  claudeLoadingMore?: boolean;
+  claudeExhausted?: Record<'claude' | 'antigravity' | 'opencode', boolean>;
+  onLoadMoreClaude?: (providers: Array<'claude' | 'antigravity' | 'opencode'>) => void;
   claudeImporting?: boolean;
   claudeError?: string | null;
   onRefreshClaude?: () => void;
@@ -297,13 +302,15 @@ export function extractChatHistoryItems(
 
 export function formatModelBadge(model?: string, driver?: string): string {
   if (!model && !driver) return 'Agent';
+  const known = model ? useOrchestratorStore.getState().models.find((entry) => entry.id === model)?.name : undefined;
+  if (known) return known;
   const m = (model || '').toLowerCase();
   if (m.includes('gemini-3.8-flash')) return 'Gemini 3.8 Flash';
   if (m.includes('gemini-2.5-flash')) return 'Gemini 2.5 Flash';
   if (m.includes('gemini-2.5-pro')) return 'Gemini 2.5 Pro';
   if (m.includes('claude-3-5-sonnet') || m.includes('claude-3.5-sonnet')) return 'Claude 3.5 Sonnet';
   if (m.includes('claude-3-7-sonnet') || m.includes('claude-3.7-sonnet')) return 'Claude 3.7 Sonnet';
-  if (m.includes('claude-3-opus') || m.includes('claude-opus')) return 'Claude 3 Opus';
+  if (m.includes('claude-3-opus')) return 'Claude 3 Opus';
   if (m.includes('muse-spark')) return 'Muse Spark 1.3';
   if (m.includes('gpt-4o')) return 'GPT-4o';
   if (m.includes('o3-mini')) return 'o3-mini';
@@ -449,10 +456,14 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   activeWorkspaceId,
   onOpenHistory,
   onSetChatArchived,
+  onMoveChat,
   onRefreshHistory,
   onNewChat,
   claudeSessions = [],
   claudeLoading,
+  claudeLoadingMore,
+  claudeExhausted,
+  onLoadMoreClaude,
   claudeImporting,
   claudeError,
   onRefreshClaude,
@@ -920,7 +931,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               tone={tone}
               projects={projects}
               chatCounts={chatCounts}
-              claudeCount={handClaudeChats.length}
+              claudeCount={claudeExhausted && Object.values(claudeExhausted).every(Boolean) ? handClaudeChats.length : 0}
               recentClaude={recentClaudeChats}
               relativeTime={relativeTime}
               onOpenClaudeSession={(chat) => {
@@ -937,6 +948,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 onRefreshClaude?.();
                 setMode('claude-chats');
               }}
+              onMoveChat={onMoveChat}
             />
           </motion.div>
         )}
@@ -981,6 +993,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               tone={tone}
               sessions={handClaudeChats}
               loading={claudeLoading}
+              loadingMore={claudeLoadingMore}
+              exhausted={claudeExhausted}
+              onLoadMore={onLoadMoreClaude}
               importing={claudeImporting}
               error={claudeError}
               relativeTime={relativeTime}

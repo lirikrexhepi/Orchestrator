@@ -3,6 +3,7 @@ package session
 import (
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -171,6 +172,19 @@ func (w *Workspaces) SetTaskAccount(threadID, account string) {
 	}
 }
 
+func (w *Workspaces) SetTaskCwd(threadID, cwd string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	id, ok := w.byThread[threadID]
+	if !ok {
+		return
+	}
+	if task, ok := w.tasks[id]; ok {
+		task.Cwd = cwd
+	}
+}
+
 // SetSummary records a task's compacted context. Captured while the agent is
 // still alive so a crashed or force-closed session keeps its history.
 func (w *Workspaces) SetSummary(threadID, summary string) {
@@ -240,4 +254,43 @@ func (w *Workspaces) Tasks(workspaceID string) []domain.Task {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
 	return out
+}
+
+func (w *Workspaces) SetWorkspaceCwd(workspaceID, cwd string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if workspace, ok := w.workspaces[workspaceID]; ok {
+		workspace.Cwd = cwd
+	}
+	for _, task := range w.tasks {
+		if task.WorkspaceID == workspaceID && task.Worktree == nil {
+			task.Cwd = cwd
+		}
+	}
+}
+
+func (w *Workspaces) SetTitle(rootThreadID, title, source string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	workspaces := make(map[string]bool)
+	for _, task := range w.tasks {
+		if task.ThreadID != rootThreadID && !strings.HasPrefix(task.ThreadID, rootThreadID+"-cont-") {
+			continue
+		}
+		task.Title = title
+		task.TitleSource = source
+		workspaces[task.WorkspaceID] = true
+	}
+	for id := range workspaces {
+		agents := 0
+		for _, task := range w.tasks {
+			if task.WorkspaceID == id && !strings.Contains(task.ThreadID, "-cont-") {
+				agents++
+			}
+		}
+		if workspace, ok := w.workspaces[id]; ok && agents <= 1 {
+			workspace.Title = title
+		}
+	}
 }

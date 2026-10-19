@@ -48,6 +48,10 @@ var claudeCatalog = []catalogEntry{
 		contextWide: true,
 	},
 	{
+		id: "claude-haiku-5-5", displayName: "Claude Haiku 5.5", minVersion: "2.1.291",
+		efforts: []string{"low", "medium", "high", "xhigh", "max"}, defEffort: "medium",
+	},
+	{
 		id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5",
 		thinking: true,
 	},

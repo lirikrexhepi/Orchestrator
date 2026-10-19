@@ -222,9 +222,19 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 			cwd = wd
 		}
 	}
+	env := provider.LaunchEnv(a.settings)
+	if in.Resume != "" {
+		resolved, err := resumeCwd(sessionConfigDir(env), in.Resume, cwd)
+		if err != nil {
+			return domain.Session{}, err
+		}
+		if !samePath(resolved, cwd) {
+			logger.Infof("Claude", "Resuming session %s in %s, where it was recorded, instead of %s", in.Resume, resolved, cwd)
+			cwd = resolved
+		}
+	}
 	in.Cwd = cwd
 
-	env := provider.LaunchEnv(a.settings)
 	procCtx, cancel := context.WithCancel(context.Background())
 
 	proc, err := process.Start(procCtx, process.Spec{
@@ -232,6 +242,8 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		Args:    a.buildArgs(in),
 		Cwd:     cwd,
 		Env:     env,
+
+		DieWithParent: true,
 	})
 	if err != nil {
 		cancel()
@@ -309,6 +321,8 @@ func snippet(line []byte) string {
 
 func (a *Adapter) finish(s *session, err error) {
 	<-s.proc.Done()
+	logger.Infof("Claude", "CLI exited: thread=%s pid=%d read=%v exit=%v stderr=%q",
+		s.threadID, s.proc.PID(), err, s.proc.ExitError(), s.proc.StderrTail())
 
 	a.mu.Lock()
 	if current, ok := a.sessions[s.threadID]; ok && current == s {

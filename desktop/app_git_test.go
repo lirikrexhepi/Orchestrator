@@ -210,3 +210,26 @@ func TestNormalisePathMatchesAcrossSeparatorsAndCasing(t *testing.T) {
 		t.Errorf("%q != %q", normalisePath(mixed), viaSlash)
 	}
 }
+
+func TestLaneHistoryFollowsNewCommits(t *testing.T) {
+	app, repo, worktree := scratchProject(t)
+
+	before := find(lanesFor(t, app, repo), worktree)
+	again := find(lanesFor(t, app, repo), worktree)
+	if before == nil || again == nil || len(before.Commits) != len(again.Commits) || before.Ahead != again.Ahead {
+		t.Fatalf("repeat lanes differ: %+v vs %+v", before, again)
+	}
+
+	writeFile(t, worktree, "feature.go", "package main\n")
+	gitRun(t, worktree, "add", "-A")
+	gitRun(t, worktree, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "feature")
+
+	after := find(lanesFor(t, app, repo), worktree)
+	if after == nil || len(after.Commits) != len(before.Commits)+1 || after.Ahead != before.Ahead+1 {
+		t.Fatalf("after commit: commits %d ahead %d, want %d and %d",
+			len(after.Commits), after.Ahead, len(before.Commits)+1, before.Ahead+1)
+	}
+	if after.Commits[0].Subject != "feature" {
+		t.Fatalf("newest commit = %q, want feature", after.Commits[0].Subject)
+	}
+}

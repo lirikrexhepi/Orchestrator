@@ -38,7 +38,7 @@ const ThinkingBlockImpl: React.FC<ThinkingBlockProps> = ({
   const text = thoughtText.trim();
   const inTimeline = useInTimeline();
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const long = text.length > 220 || text.split(/\n/).length > 3;
+  const long = text.length > 150 || text.split(/\n/).length > 2;
 
   if (text) {
     return (
@@ -49,13 +49,13 @@ const ThinkingBlockImpl: React.FC<ThinkingBlockProps> = ({
         </div>
         <div
           onClick={() => long && setExpanded((value) => !value)}
-          className={`text-[12.5px] leading-[1.6] tracking-tight text-current/55 whitespace-pre-wrap select-text ${
-            expanded || isThinking ? '' : 'line-clamp-3'
-          } ${long && !isThinking ? 'cursor-pointer hover:text-current/70' : ''} transition-colors duration-150`}
+          className={`mt-0.5 text-[13px] leading-[1.65] tracking-tight text-current/90 whitespace-pre-wrap select-text ${
+            expanded ? '' : 'line-clamp-2'
+          } ${long ? 'cursor-pointer' : ''}`}
         >
           {text}
         </div>
-        {long && !isThinking && (
+        {long && (
           <button
             type="button"
             onClick={() => setExpanded((value) => !value)}

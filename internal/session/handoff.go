@@ -133,7 +133,11 @@ func ExtractConversationText(events []domain.RuntimeEvent, maxChars int) string 
 func BuildHandoffPrompt(prevDriver domain.DriverKind, newDriver domain.DriverKind, events []domain.RuntimeEvent, cwd string) string {
 	conversation := ExtractConversationText(events, maxHandoffChars)
 	var b strings.Builder
-	b.WriteString("This conversation was continued from another provider. ")
+	if prevDriver != "" && prevDriver == newDriver {
+		b.WriteString("This conversation was continued in a new session because the previous one could not be resumed. ")
+	} else {
+		b.WriteString("This conversation was continued from another provider. ")
+	}
 	if prevDriver != "" && newDriver != "" && prevDriver != newDriver {
 		b.WriteString("Previous provider was " + string(prevDriver) + ", you are " + string(newDriver) + ". ")
 	}

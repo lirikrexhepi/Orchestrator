@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"composer/internal/domain"
 	"composer/internal/shell"
@@ -17,8 +18,22 @@ type Repo struct {
 	Root string
 }
 
+var resolvedBinary atomic.Pointer[string]
+
+func binary() string {
+	if path := resolvedBinary.Load(); path != nil {
+		return *path
+	}
+	path, err := exec.LookPath("git")
+	if err != nil {
+		return "git"
+	}
+	resolvedBinary.Store(&path)
+	return path
+}
+
 func command(dir string, args ...string) *exec.Cmd {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command(binary(), args...)
 	cmd.Dir = dir
 	cmd.Env = shell.Slice(shell.BaseEnvironment())
 	hideWindow(cmd)
@@ -33,7 +48,7 @@ func run(ctx context.Context, dir string, args ...string) (string, error) {
 // runRaw is run without the trim, for output whose leading or trailing
 // whitespace carries meaning — NUL-separated records and diff bodies both do.
 func runRaw(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, binary(), args...)
 	cmd.Dir = dir
 	cmd.Env = shell.Slice(shell.BaseEnvironment())
 	hideWindow(cmd)
@@ -42,11 +57,20 @@ func runRaw(ctx context.Context, dir string, args ...string) (string, error) {
 	if err != nil {
 		var exitErr *exec.ExitError
 		if ok := asExitError(err, &exitErr); ok && len(exitErr.Stderr) > 0 {
-			return "", fmt.Errorf("git %s: %s", args[0], strings.TrimSpace(string(exitErr.Stderr)))
+			return "", fmt.Errorf("git %s: %s", subcommand(args), strings.TrimSpace(string(exitErr.Stderr)))
 		}
-		return "", fmt.Errorf("git %s: %w", args[0], err)
+		return "", fmt.Errorf("git %s: %w", subcommand(args), err)
 	}
 	return string(out), nil
+}
+
+func subcommand(args []string) string {
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			return arg
+		}
+	}
+	return args[0]
 }
 
 // Open resolves the repository containing dir, if there is one.
@@ -125,7 +149,7 @@ func (r *Repo) Handoff(ctx context.Context, worktree *domain.Worktree) (domain.T
 // tree oid, then the conflicted paths, then a blank line and human-readable
 // messages — only the paths section is of interest.
 func (r *Repo) previewConflicts(ctx context.Context, base, branch string) ([]string, bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "merge-tree", "--write-tree", "--name-only", base, branch)
+	cmd := exec.CommandContext(ctx, binary(), "merge-tree", "--write-tree", "--name-only", base, branch)
 	cmd.Dir = r.Root
 	cmd.Env = shell.Slice(shell.BaseEnvironment())
 	hideWindow(cmd)

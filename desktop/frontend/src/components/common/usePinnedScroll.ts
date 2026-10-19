@@ -77,18 +77,42 @@ export function usePinnedScroll(
       else el.scrollTop = top;
     };
     pinListeners.add(pin);
-    const distance = () => el.scrollHeight - el.scrollTop - el.clientHeight;    // Wheel, touch, scrollbar drags and keys arrive here; programmatic glides
-    // only ever fire scroll, so they can never trip this.
-    const onGesture = () => {
-      if (distance() > near) {
-        if (pinned.current) {
-          pinned.current = false;
-          unpinRef.current?.();
-        }
+    const distance = () => el.scrollHeight - el.scrollTop - el.clientHeight;
+    let lastTop = el.scrollTop;
+    let touchY: number | null = null;
+    const release = (cancelGlide: boolean) => {
+      if (!pinned.current) return;
+      pinned.current = false;
+      if (cancelGlide) unpinRef.current?.();
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey) return;
+      if (event.deltaY < 0) release(false);
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      touchY = event.touches[0]?.clientY ?? null;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      const y = event.touches[0]?.clientY;
+      if (y === undefined || touchY === null) return;
+      if (y > touchY + 2) release(true);
+      touchY = y;
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home' || (event.key === ' ' && event.shiftKey)) {
+        release(true);
       }
     };
+    const onPointerDown = () => {
+      if (distance() > near) release(true);
+    };
     const onScroll = () => {
-      if (distance() < near) pinned.current = true;
+      const top = el.scrollTop;
+      const movedUp = top < lastTop - 1;
+      const movedDown = top > lastTop + 1;
+      lastTop = top;
+      if (movedUp && distance() > near) release(true);
+      else if (movedDown && distance() < near) pinned.current = true;
     };
     const content = el.firstElementChild ?? el;
     const ro = new ResizeObserver(() => {
@@ -98,18 +122,20 @@ export function usePinnedScroll(
       if (fn) fn(el, top);
       else el.scrollTop = top;
     });
-    el.addEventListener('wheel', onGesture, { passive: true });
-    el.addEventListener('touchmove', onGesture, { passive: true });
-    el.addEventListener('mousedown', onGesture);
-    el.addEventListener('keydown', onGesture);
+    el.addEventListener('wheel', onWheel, { passive: true });
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: true });
+    el.addEventListener('mousedown', onPointerDown);
+    el.addEventListener('keydown', onKey);
     el.addEventListener('scroll', onScroll, { passive: true });
     ro.observe(content);
     return () => {
       pinListeners.delete(pin);
-      el.removeEventListener('wheel', onGesture);
-      el.removeEventListener('touchmove', onGesture);
-      el.removeEventListener('mousedown', onGesture);
-      el.removeEventListener('keydown', onGesture);
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('mousedown', onPointerDown);
+      el.removeEventListener('keydown', onKey);
       el.removeEventListener('scroll', onScroll);
       ro.disconnect();
     };

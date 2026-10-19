@@ -171,8 +171,11 @@ export interface SubagentBlockData {
   status: 'running' | 'completed' | 'error' | 'stopped';
   startedAt?: number;
   endedAt?: number;
+  toolCount?: number;
+  tokens?: number;
   result?: string;
   entries: SubagentEntry[];
+  previousToolIds?: string[];
 }
 
 export type AgentStreamBlock =  | UserMessageBlock

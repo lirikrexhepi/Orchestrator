@@ -19,3 +19,13 @@ func Path(target string) error {
 	}
 	return open(target)
 }
+
+func File(target string) error {
+	if target == "" {
+		return errors.New("no path given")
+	}
+	if _, err := os.Stat(target); err != nil {
+		return err
+	}
+	return launch(target)
+}

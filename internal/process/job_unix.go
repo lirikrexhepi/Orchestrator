@@ -2,6 +2,6 @@
 
 package process
 
-func attachJob(*Process) {}
+func attachJob(*Process, bool) {}
 
 func closeJob(*Process) bool { return false }

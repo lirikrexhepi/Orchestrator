@@ -472,3 +472,44 @@ func TestBOMInMeta(t *testing.T) {
 		t.Errorf("expected 'Test BOM', got %q", meta.Workspace.Title)
 	}
 }
+
+func TestRemoveTurnDropsOnlyThatTurnAndKeepsAppending(t *testing.T) {
+	store := New(t.TempDir())
+	defer store.Close()
+	if err := store.SaveMeta(Meta{Workspace: domain.Workspace{ID: "ws-1"}, Tasks: []domain.Task{{ThreadID: "thread-a", WorkspaceID: "ws-1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	add := func(kind domain.EventKind, turn, text string) {
+		if err := store.Append("ws-1", "thread-a", domain.RuntimeEvent{Kind: kind, ThreadID: "thread-a", TurnID: turn, Text: text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(domain.EventUserMessage, "t1", "keep")
+	add(domain.EventAgentMessage, "t1", "kept reply")
+	add(domain.EventNotice, "", "switched model")
+	add(domain.EventUserMessage, "t2", "wrong chat")
+	add(domain.EventAgentMessage, "t2", "reply to wrong chat")
+	add(domain.EventTurnCompleted, "t2", "")
+	add(domain.EventUserMessage, "t3", "keep too")
+
+	if err := store.RemoveTurn("ws-1", "thread-a", "t2"); err != nil {
+		t.Fatal(err)
+	}
+	add(domain.EventAgentMessage, "t3", "after removal")
+
+	loaded, err := store.Load("ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, e := range loaded.Transcripts["thread-a"] {
+		if e.TurnID == "t2" {
+			t.Fatalf("turn t2 still present: %+v", e)
+		}
+		texts = append(texts, e.Text)
+	}
+	want := []string{"keep", "kept reply", "switched model", "keep too", "after removal"}
+	if strings.Join(texts, "|") != strings.Join(want, "|") {
+		t.Fatalf("transcript = %v, want %v", texts, want)
+	}
+}

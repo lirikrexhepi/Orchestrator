@@ -171,6 +171,26 @@ const shots = {
       await toDeck(page, 0)
     },
   },
+  'wall-sierra': {
+    wallpaper: 'builtin-1',
+    run: async (page) => {
+      await toDeck(page, 0)
+    },
+  },
+  'wall-day': {
+    wallpaper: 'builtin-5',
+    storage: { catalyst_theme_id: 'light' },
+    run: async (page) => {
+      await toDeck(page, 0)
+    },
+  },
+  'wall-silk': {
+    wallpaper: 'builtin-6',
+    storage: { catalyst_theme_id: 'glass' },
+    run: async (page) => {
+      await toDeck(page, 0)
+    },
+  },
   'wall-grid-pink': {
     wallpaper: 'builtin-2',
     run: async (page) => {

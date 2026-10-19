@@ -26,3 +26,69 @@ func TestSubagentFramesCarryTheirParentToolID(t *testing.T) {
 		}
 	}
 }
+
+func TestAsyncAgentLaunchDoesNotEndTheSubagentAndNotificationReportsTotals(t *testing.T) {
+	emit := &captureEmitter{}
+	a := NewAdapter(domain.ProviderSettings{}, emit)
+	s := newContextSession()
+
+	feed(t, a, s,
+		`{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_task","content":"Async agent launched"}]},"tool_use_result":{"isAsync":true,"status":"async_launched","agentId":"a1"}}`,
+		`{"type":"system","subtype":"task_notification","task_id":"a1","tool_use_id":"toolu_task","status":"completed","summary":"all done","usage":{"total_tokens":10,"tool_uses":7,"duration_ms":125000}}`,
+	)
+
+	if len(emit.events) != 2 {
+		t.Fatalf("got %d events, want 2", len(emit.events))
+	}
+	launch := emit.events[0].Tool
+	if launch == nil || !launch.Async || launch.Output != "" {
+		t.Fatalf("launch result = %+v, want async with no output", launch)
+	}
+	done := emit.events[1]
+	if done.Kind != domain.EventToolResult || done.Tool == nil || done.Tool.ID != "toolu_task" {
+		t.Fatalf("notification event = %+v", done)
+	}
+	if done.Tool.Async || done.Tool.ToolCount != 7 || done.Tool.DurationMs != 125000 || done.Tool.Status != domain.ToolCompleted {
+		t.Fatalf("notification tool = %+v", done.Tool)
+	}
+}
+
+func TestTaskProgressReportsLiveSubagentTokens(t *testing.T) {
+	emit := &captureEmitter{}
+	a := NewAdapter(domain.ProviderSettings{}, emit)
+	s := newContextSession()
+
+	feed(t, a, s,
+		`{"type":"system","subtype":"task_progress","task_id":"a1","tool_use_id":"toolu_task","usage":{"total_tokens":20748,"tool_uses":1,"duration_ms":1811},"last_tool_name":"Bash"}`,
+		`{"type":"system","subtype":"task_notification","task_id":"a1","tool_use_id":"toolu_task","status":"completed","summary":"ok","usage":{"total_tokens":22425,"tool_uses":2,"duration_ms":7217}}`,
+	)
+
+	if len(emit.events) != 2 {
+		t.Fatalf("got %d events, want 2", len(emit.events))
+	}
+	progress := emit.events[0]
+	if progress.Kind != domain.EventSubagentProgress || progress.ParentToolID != "toolu_task" || progress.Tool == nil {
+		t.Fatalf("progress event = %+v", progress)
+	}
+	if progress.Tool.Tokens != 20748 || progress.Tool.ToolCount != 1 || progress.Tool.Status != domain.ToolInProgress {
+		t.Fatalf("progress tool = %+v", progress.Tool)
+	}
+	if done := emit.events[1].Tool; done == nil || done.Tokens != 22425 {
+		t.Fatalf("notification tool = %+v", done)
+	}
+}
+
+func TestForegroundAgentResultCarriesReportedTotals(t *testing.T) {
+	emit := &captureEmitter{}
+	a := NewAdapter(domain.ProviderSettings{}, emit)
+	s := newContextSession()
+
+	feed(t, a, s,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_task","content":"report"}]},"tool_use_result":{"status":"completed","totalDurationMs":48851,"totalToolUseCount":11,"totalTokens":30500}}`,
+	)
+
+	tool := emit.events[0].Tool
+	if tool.Async || tool.DurationMs != 48851 || tool.ToolCount != 11 || tool.Tokens != 30500 {
+		t.Fatalf("tool = %+v", tool)
+	}
+}

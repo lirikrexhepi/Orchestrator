@@ -15,6 +15,7 @@ const (
 	EventSubagentMessage  EventKind = "subagent.message"
 	EventSubagentToolCall EventKind = "subagent.tool.call"
 	EventSubagentToolDone EventKind = "subagent.tool.result"
+	EventSubagentProgress EventKind = "subagent.progress"
 	EventPlan             EventKind = "plan"
 	EventApprovalRequest  EventKind = "approval.request"
 	EventApprovalResolved EventKind = "approval.resolved"
@@ -85,6 +86,11 @@ type ToolCall struct {
 	Input  map[string]any `json:"input,omitempty"`
 	Output string         `json:"output,omitempty"`
 	Diffs  []FileDiff     `json:"diffs,omitempty"`
+
+	DurationMs int64 `json:"durationMs,omitempty"`
+	ToolCount  int   `json:"toolCount,omitempty"`
+	Tokens     int64 `json:"tokens,omitempty"`
+	Async      bool  `json:"async,omitempty"`
 }
 
 type FileDiff struct {

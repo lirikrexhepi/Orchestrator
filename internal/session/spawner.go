@@ -12,6 +12,7 @@ import (
 
 	"composer/internal/domain"
 	"composer/internal/git"
+	"composer/internal/logger"
 )
 
 // SpawnRequest is one task the orchestrator asked for. Driver and model are
@@ -102,6 +103,7 @@ func (s *Spawner) Spawn(ctx context.Context, requests []SpawnRequest, opts Spawn
 		if wd, err := os.Getwd(); err == nil {
 			cwd = wd
 		}
+		logger.Warnf("Session", "Spawn without a directory; falling back to process directory %q", cwd)
 	}
 
 	s.mu.Lock()
@@ -215,6 +217,7 @@ func (s *Spawner) spawnOne(
 		Options:  options,
 		State:    domain.TaskRunning,
 		Worktree: worktree,
+		Cwd:      workdir,
 	})
 	if !ok {
 		return nil, fmt.Errorf("workspace %s is gone", workspace.ID)

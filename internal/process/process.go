@@ -15,12 +15,13 @@ import (
 )
 
 type Spec struct {
-	Command  string
-	Args     []string
-	Cwd      string
-	Env      map[string]string
-	Stderr   func(line string)
-	KillTree bool
+	Command       string
+	Args          []string
+	Cwd           string
+	Env           map[string]string
+	Stderr        func(line string)
+	KillTree      bool
+	DieWithParent bool
 }
 
 type Process struct {
@@ -72,7 +73,9 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 
 	p := &Process{cmd: cmd, stdin: stdin, stdout: stdout, exited: make(chan struct{})}
 	if spec.KillTree {
-		attachJob(p)
+		attachJob(p, false)
+	} else if spec.DieWithParent {
+		attachJob(p, true)
 	}
 
 	go p.pumpStderr(stderr, spec.Stderr)
@@ -81,6 +84,9 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 		p.mu.Lock()
 		p.exitErr = err
 		p.mu.Unlock()
+		if spec.DieWithParent {
+			closeJob(p)
+		}
 		close(p.exited)
 	}()
 

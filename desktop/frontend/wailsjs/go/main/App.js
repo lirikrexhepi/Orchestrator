@@ -10,6 +10,10 @@ export function ActiveProject() {
   return window['go']['main']['App']['ActiveProject']();
 }
 
+export function ActivityOverview(arg1, arg2) {
+  return window['go']['main']['App']['ActivityOverview'](arg1, arg2);
+}
+
 export function AddAccount(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddAccount'](arg1, arg2, arg3);
 }
@@ -68,6 +72,10 @@ export function DeleteHistory(arg1) {
 
 export function DeleteTaskHistory(arg1, arg2) {
   return window['go']['main']['App']['DeleteTaskHistory'](arg1, arg2);
+}
+
+export function DeleteTurn(arg1, arg2) {
+  return window['go']['main']['App']['DeleteTurn'](arg1, arg2);
 }
 
 export function DiscardAttachment(arg1) {
@@ -170,6 +178,14 @@ export function ImportClaudeCodeSession(arg1) {
   return window['go']['main']['App']['ImportClaudeCodeSession'](arg1);
 }
 
+export function ImportOpenCodeSession(arg1) {
+  return window['go']['main']['App']['ImportOpenCodeSession'](arg1);
+}
+
+export function InstructionSources(arg1) {
+  return window['go']['main']['App']['InstructionSources'](arg1);
+}
+
 export function InterruptTurn(arg1) {
   return window['go']['main']['App']['InterruptTurn'](arg1);
 }
@@ -186,8 +202,16 @@ export function ListAccounts(arg1) {
   return window['go']['main']['App']['ListAccounts'](arg1);
 }
 
+export function ListChatSourcePage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ListChatSourcePage'](arg1, arg2, arg3);
+}
+
 export function ListClaudeCodeSessions() {
   return window['go']['main']['App']['ListClaudeCodeSessions']();
+}
+
+export function ListClaudeCodeSessionsPage(arg1, arg2) {
+  return window['go']['main']['App']['ListClaudeCodeSessionsPage'](arg1, arg2);
 }
 
 export function ListHistory() {
@@ -234,6 +258,10 @@ export function LoadHistory(arg1) {
   return window['go']['main']['App']['LoadHistory'](arg1);
 }
 
+export function MoveChat(arg1, arg2) {
+  return window['go']['main']['App']['MoveChat'](arg1, arg2);
+}
+
 export function MoveProject(arg1, arg2) {
   return window['go']['main']['App']['MoveProject'](arg1, arg2);
 }
@@ -244,6 +272,10 @@ export function MutateAgentTask(arg1, arg2, arg3, arg4) {
 
 export function NewChat() {
   return window['go']['main']['App']['NewChat']();
+}
+
+export function OpenPath(arg1) {
+  return window['go']['main']['App']['OpenPath'](arg1);
 }
 
 export function OrchestratorAgents() {
@@ -286,6 +318,10 @@ export function ProjectIcon(arg1) {
   return window['go']['main']['App']['ProjectIcon'](arg1);
 }
 
+export function ProjectSwitched() {
+  return window['go']['main']['App']['ProjectSwitched']();
+}
+
 export function ProjectTree(arg1, arg2) {
   return window['go']['main']['App']['ProjectTree'](arg1, arg2);
 }
@@ -320,6 +356,10 @@ export function RemoveProject(arg1) {
 
 export function RenameAccount(arg1, arg2, arg3) {
   return window['go']['main']['App']['RenameAccount'](arg1, arg2, arg3);
+}
+
+export function RenameChat(arg1, arg2) {
+  return window['go']['main']['App']['RenameChat'](arg1, arg2);
 }
 
 export function RenameSession(arg1, arg2) {

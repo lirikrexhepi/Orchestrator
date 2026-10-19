@@ -1,3 +1,136 @@
+export namespace activity {
+	
+	export class Day {
+	    date: string;
+	    count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Day(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.date = source["date"];
+	        this.count = source["count"];
+	    }
+	}
+	export class Project {
+	    path: string;
+	    name: string;
+	    messages: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Project(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
+	        this.messages = source["messages"];
+	    }
+	}
+	export class Share {
+	    driver: string;
+	    model?: string;
+	    messages: number;
+	    tokens: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Share(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.driver = source["driver"];
+	        this.model = source["model"];
+	        this.messages = source["messages"];
+	        this.tokens = source["tokens"];
+	    }
+	}
+	export class Totals {
+	    messages: number;
+	    sessions: number;
+	    toolCalls: number;
+	    tokens: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Totals(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.messages = source["messages"];
+	        this.sessions = source["sessions"];
+	        this.toolCalls = source["toolCalls"];
+	        this.tokens = source["tokens"];
+	    }
+	}
+	export class Overview {
+	    period: string;
+	    project: string;
+	    current: Totals;
+	    previous: Totals;
+	    days: Day[];
+	    yearMessages: number;
+	    activeDays: number;
+	    currentStreak: number;
+	    longestStreak: number;
+	    busiestMonth: string;
+	    busiestMonthMessages: number;
+	    busiestWeekday: string;
+	    busiestWeekdayMessages: number;
+	    providers: Share[];
+	    models: Share[];
+	    projects: Project[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Overview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.period = source["period"];
+	        this.project = source["project"];
+	        this.current = this.convertValues(source["current"], Totals);
+	        this.previous = this.convertValues(source["previous"], Totals);
+	        this.days = this.convertValues(source["days"], Day);
+	        this.yearMessages = source["yearMessages"];
+	        this.activeDays = source["activeDays"];
+	        this.currentStreak = source["currentStreak"];
+	        this.longestStreak = source["longestStreak"];
+	        this.busiestMonth = source["busiestMonth"];
+	        this.busiestMonthMessages = source["busiestMonthMessages"];
+	        this.busiestWeekday = source["busiestWeekday"];
+	        this.busiestWeekdayMessages = source["busiestWeekdayMessages"];
+	        this.providers = this.convertValues(source["providers"], Share);
+	        this.models = this.convertValues(source["models"], Share);
+	        this.projects = this.convertValues(source["projects"], Project);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+
+}
+
 export namespace attachments {
 	
 	export class Attachment {
@@ -39,6 +172,7 @@ export namespace claudeimport {
 	    updatedAt: number;
 	    agentRun: boolean;
 	    entrypoint?: string;
+	    provider?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ExternalSession(source);
@@ -57,7 +191,40 @@ export namespace claudeimport {
 	        this.updatedAt = source["updatedAt"];
 	        this.agentRun = source["agentRun"];
 	        this.entrypoint = source["entrypoint"];
+	        this.provider = source["provider"];
 	    }
+	}
+	export class Page {
+	    sessions: ExternalSession[];
+	    next: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Page(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessions = this.convertValues(source["sessions"], ExternalSession);
+	        this.next = source["next"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }
@@ -181,6 +348,10 @@ export namespace domain {
 	    input?: Record<string, any>;
 	    output?: string;
 	    diffs?: FileDiff[];
+	    durationMs?: number;
+	    toolCount?: number;
+	    tokens?: number;
+	    async?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ToolCall(source);
@@ -195,6 +366,10 @@ export namespace domain {
 	        this.input = source["input"];
 	        this.output = source["output"];
 	        this.diffs = this.convertValues(source["diffs"], FileDiff);
+	        this.durationMs = source["durationMs"];
+	        this.toolCount = source["toolCount"];
+	        this.tokens = source["tokens"];
+	        this.async = source["async"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1044,7 +1219,11 @@ export namespace domain {
 	    state: string;
 	    permission?: string;
 	    archived?: boolean;
+	    titleSource?: string;
+	    titleTurn?: number;
+	    userTurns?: number;
 	    worktree?: Worktree;
+	    cwd?: string;
 	    summary?: string;
 	    createdAt: number;
 	    updatedAt: number;
@@ -1069,7 +1248,11 @@ export namespace domain {
 	        this.state = source["state"];
 	        this.permission = source["permission"];
 	        this.archived = source["archived"];
+	        this.titleSource = source["titleSource"];
+	        this.titleTurn = source["titleTurn"];
+	        this.userTurns = source["userTurns"];
 	        this.worktree = this.convertValues(source["worktree"], Worktree);
+	        this.cwd = source["cwd"];
 	        this.summary = source["summary"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
@@ -1386,6 +1569,79 @@ export namespace history {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.meta = this.convertValues(source["meta"], Meta);
 	        this.transcripts = this.convertValues(source["transcripts"], Array<domain.RuntimeEvent>, true);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace instructions {
+	
+	export class File {
+	    id: string;
+	    group: string;
+	    label: string;
+	    path?: string;
+	    account?: string;
+	    exists: boolean;
+	    content?: string;
+	    size: number;
+	    modified?: number;
+	    note?: string;
+	    warning?: boolean;
+	    truncated?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new File(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.group = source["group"];
+	        this.label = source["label"];
+	        this.path = source["path"];
+	        this.account = source["account"];
+	        this.exists = source["exists"];
+	        this.content = source["content"];
+	        this.size = source["size"];
+	        this.modified = source["modified"];
+	        this.note = source["note"];
+	        this.warning = source["warning"];
+	        this.truncated = source["truncated"];
+	    }
+	}
+	export class Source {
+	    driver: string;
+	    name: string;
+	    files: File[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Source(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.driver = source["driver"];
+	        this.name = source["name"];
+	        this.files = this.convertValues(source["files"], File);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -35,6 +35,7 @@ func main() {
 		filepath.Join(configRoot(), "orchestrator_debug.log"),
 	)
 	logger.Infof("Main", "Starting Orchestrator, PID=%d", os.Getpid())
+	captureCrashes(filepath.Join(configRoot(), "crash.log"))
 
 	if wantsHeadless(os.Args) {
 		if pid := waitPIDArg(os.Args); pid > 0 {

@@ -32,6 +32,7 @@ type Manager struct {
 	// exactly as before, which keeps every existing test unchanged.
 	recorder Recorder
 	notes    TurnNotes
+	handoffs map[string]string
 
 	accountFor AccountResolver
 	expandRefs RefExpander
@@ -113,6 +114,7 @@ func NewManager(registry *provider.Registry) *Manager {
 		adapters: make(map[adapterKey]provider.Adapter),
 		threads:  make(map[string]*record),
 		history:  make(map[string][]domain.RuntimeEvent),
+		handoffs: make(map[string]string),
 	}
 }
 
@@ -381,6 +383,9 @@ func (m *Manager) Send(ctx context.Context, in domain.SendTurnInput) error {
 			return err
 		}
 	}
+	if handoff := m.takeHandoff(in.ThreadID); handoff != "" {
+		in.Text = handoff + "\n\n--- Current request ---\n\n" + in.Text
+	}
 	if note := m.notes.take(in.ThreadID); note != "" {
 		in.Text += "\n\n" + note
 	}
@@ -402,8 +407,62 @@ func (m *Manager) revive(ctx context.Context, threadID string, entry *record) er
 		delete(m.threads, threadID)
 	}
 	m.mu.Unlock()
-	_, err := m.Start(ctx, entry.session.Driver, in)
+	_, err := m.StartResumed(ctx, entry.session.Driver, in, nil)
 	return err
+}
+
+func (m *Manager) StartResumed(ctx context.Context, kind domain.DriverKind, in domain.SessionStartInput, transcript []domain.RuntimeEvent) (bool, error) {
+	notice := "Started a new session; the conversation so far was passed to it"
+	if in.Resume != "" {
+		notice = "Previous session could not be resumed; the conversation so far was passed to a new one"
+		_, err := m.Start(ctx, kind, in)
+		if err == nil {
+			return true, nil
+		}
+		logger.Warnf("Manager", "Resume of thread %s (session %s) failed: %v; starting fresh with its transcript", in.ThreadID, in.Resume, err)
+		in.Resume = ""
+		in.Fork = false
+	}
+	if _, err := m.Start(ctx, kind, in); err != nil {
+		return false, err
+	}
+	if len(transcript) == 0 {
+		transcript = m.History(in.ThreadID)
+	}
+	if hasConversation(transcript) {
+		m.QueueHandoff(in.ThreadID, BuildHandoffPrompt(kind, kind, transcript, in.Cwd))
+		m.RecordNotice(in.ThreadID, notice, "")
+	}
+	return false, nil
+}
+
+func hasConversation(events []domain.RuntimeEvent) bool {
+	for _, event := range events {
+		if event.Kind == domain.EventUserMessage || event.Kind == domain.EventAgentMessage {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) QueueHandoff(threadID, text string) {
+	if threadID == "" || text == "" {
+		return
+	}
+	m.mu.Lock()
+	if m.handoffs == nil {
+		m.handoffs = make(map[string]string)
+	}
+	m.handoffs[threadID] = text
+	m.mu.Unlock()
+}
+
+func (m *Manager) takeHandoff(threadID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	text := m.handoffs[threadID]
+	delete(m.handoffs, threadID)
+	return text
 }
 
 // RecordUserMessage injects a user.message event into the thread's history so
@@ -522,14 +581,74 @@ func (m *Manager) RespondQuestion(ctx context.Context, threadID, requestID strin
 	return entry.adapter.RespondToQuestion(ctx, threadID, requestID, answers)
 }
 
+var ErrTurnRemovalUnsupported = errors.New("provider cannot edit its own session")
+
+func (m *Manager) RemoveProviderTurn(kind domain.DriverKind, account, sessionID, text string, occurrence int) error {
+	adapter, err := m.adapterFor(kind, account)
+	if err != nil {
+		return err
+	}
+	remover, ok := adapter.(provider.TurnRemover)
+	if !ok {
+		return ErrTurnRemovalUnsupported
+	}
+	return remover.RemoveTurn(sessionID, text, occurrence)
+}
+
+func (m *Manager) MoveProviderSession(kind domain.DriverKind, account, sessionID, cwd string) error {
+	adapter, err := m.adapterFor(kind, account)
+	if err != nil {
+		return err
+	}
+	mover, ok := adapter.(provider.SessionMover)
+	if !ok {
+		return nil
+	}
+	return mover.MoveSession(sessionID, cwd)
+}
+
+func (m *Manager) ForgetTurn(threadID, turnID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	transcript := m.history[threadID]
+	drop := domain.ExchangeMask(transcript, turnID)
+	kept := transcript[:0:0]
+	for i, event := range transcript {
+		if !drop[i] {
+			kept = append(kept, event)
+		}
+	}
+	m.history[threadID] = kept
+}
+
+func (m *Manager) TurnInProgress(threadID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, live := m.threads[threadID]; !live {
+		return false
+	}
+	transcript := m.history[threadID]
+	for i := len(transcript) - 1; i >= 0; i-- {
+		switch transcript[i].Kind {
+		case domain.EventTurnStarted:
+			return true
+		case domain.EventTurnCompleted, domain.EventTurnFailed, domain.EventSessionStopped:
+			return false
+		}
+	}
+	return false
+}
+
 func (m *Manager) Stop(ctx context.Context, threadID string) error {
 	m.mu.Lock()
 	entry, ok := m.threads[threadID]
 	delete(m.threads, threadID)
 	m.mu.Unlock()
 	if !ok {
+		logger.Infof("Manager", "Stop: thread=%s found=false", threadID)
 		return nil
 	}
+	logger.Infof("Manager", "Stop: thread=%s found=true driver=%s cwd=%q", threadID, entry.session.Driver, entry.session.Cwd)
 	return entry.adapter.StopSession(ctx, threadID)
 }
 
@@ -596,12 +715,14 @@ func (m *Manager) HistorySnapshot(threadID string) ([]domain.RuntimeEvent, uint6
 	return out, last
 }
 
+var ErrNoSession = errors.New("no active session")
+
 func (m *Manager) lookup(threadID string) (*record, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	entry, ok := m.threads[threadID]
 	if !ok {
-		return nil, fmt.Errorf("no active session for thread %s", threadID)
+		return nil, fmt.Errorf("%w for thread %s", ErrNoSession, threadID)
 	}
 	return entry, nil
 }

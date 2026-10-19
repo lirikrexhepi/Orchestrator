@@ -41,6 +41,8 @@ export function useProjectTree(root: string | null, active: boolean): ProjectTre
   const rootRef = useRef(root);
   rootRef.current = root;
   const dirty = useRef(false);
+  const inFlight = useRef<Promise<void> | null>(null);
+  const queued = useRef(false);
 
   const load = useCallback(async (dir: string) => {
     const at = rootRef.current;
@@ -62,7 +64,7 @@ export function useProjectTree(root: string | null, active: boolean): ProjectTre
     }
   }, []);
 
-  const refresh = useCallback(async () => {
+  const reload = useCallback(async () => {
     const at = rootRef.current;
     if (at === null) return;
     const dirs = ['', ...expandedRef.current];
@@ -76,6 +78,25 @@ export function useProjectTree(root: string | null, active: boolean): ProjectTre
       });
     await Promise.all([statusCall, ...dirs.map((dir) => load(dir))]);
   }, [load]);
+
+  const refresh = useCallback(async () => {
+    if (inFlight.current) {
+      queued.current = true;
+      return inFlight.current;
+    }
+    const run = (async () => {
+      do {
+        queued.current = false;
+        await reload();
+      } while (queued.current);
+    })();
+    inFlight.current = run;
+    try {
+      await run;
+    } finally {
+      inFlight.current = null;
+    }
+  }, [reload]);
 
   // A new checkout is a new tree.
   useEffect(() => {
@@ -93,11 +114,13 @@ export function useProjectTree(root: string | null, active: boolean): ProjectTre
       dirty.current = true;
     });
     const settle = window.setInterval(() => {
-      if (!dirty.current) return;
+      if (!dirty.current || document.hidden) return;
       dirty.current = false;
       void refresh();
     }, SETTLE_MS);
-    const idle = window.setInterval(() => void refresh(), IDLE_REFRESH_MS);
+    const idle = window.setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, IDLE_REFRESH_MS);
     return () => {
       off();
       window.clearInterval(settle);

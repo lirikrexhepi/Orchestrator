@@ -1,7 +1,11 @@
 package main
 
 import (
+	"os"
+
+	"composer/internal/domain"
 	"composer/internal/history"
+	"composer/internal/logger"
 	"composer/internal/session"
 )
 
@@ -72,6 +76,29 @@ func (a *App) SetChatArchived(workspaceID, threadID string, archived bool) error
 	return a.recorder.SetChatArchived(workspaceID, threadID, archived)
 }
 
+// resolveResumeCwd picks the directory a stored task restarts in. The task's
+// own directory wins, but a stale record (deleted worktree, moved folder)
+// falls back to the workspace directory when that still exists, instead of
+// handing the CLI a path that fails obscurely or resolves elsewhere.
+func resolveResumeCwd(task domain.Task, workspaceCwd string) string {
+	candidate := task.Dir(workspaceCwd)
+	if isLiveDir(candidate) {
+		return candidate
+	}
+	if isLiveDir(workspaceCwd) {
+		return workspaceCwd
+	}
+	return candidate
+}
+
+func isLiveDir(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
 // ResumeHistory restarts the agents of a stored session.
 //
 // Every task is attempted; the per-task outcome says whether the agent genuinely
@@ -96,13 +123,9 @@ func (a *App) ResumeHistoryThread(workspaceID, threadID string) (session.ResumeR
 		if threadID != "" && task.ThreadID != threadID && history.RootThreadID(task.ThreadID) != threadID {
 			continue
 		}
-		cwd := loaded.Meta.Workspace.Cwd
-		// A task that ran in a worktree must resume there; that checkout is where
-		// its work actually lives.
-		if task.Worktree != nil && task.Worktree.Path != "" {
-			cwd = task.Worktree.Path
-		}
+		cwd := resolveResumeCwd(task, loaded.Meta.Workspace.Cwd)
 		resumeID := loaded.Meta.Resume[task.ThreadID]
+		logger.Infof("App", "ResumeHistoryThread: thread=%s cwd=%q fellBack=%v hasResumeID=%v", task.ThreadID, cwd, cwd != task.Dir(loaded.Meta.Workspace.Cwd), resumeID != "")
 		fork := false
 		if loaded.Meta.Workspace.ImportedFrom == "claude-code" {
 			original := importedClaudeSession(loaded.Meta.Workspace, task.ThreadID)
@@ -122,6 +145,7 @@ func (a *App) ResumeHistoryThread(workspaceID, threadID string) (session.ResumeR
 			ProviderSessionID: resumeID,
 			Permission:        task.Permission,
 			Fork:              fork,
+			Transcript:        loaded.Transcripts[task.ThreadID],
 		})
 	}
 
@@ -136,6 +160,10 @@ func (a *App) ResumeHistoryThread(workspaceID, threadID string) (session.ResumeR
 		}
 		for _, task := range loaded.Meta.Tasks {
 			if task.ThreadID == outcome.ThreadID {
+				if live, ok := a.manager.ThreadSession(task.ThreadID); ok && live.Cwd != "" && task.Worktree == nil {
+					task.Cwd = live.Cwd
+					a.workspaces.SetTaskCwd(task.ThreadID, live.Cwd)
+				}
 				a.recorder.TrackTask(task)
 				break
 			}

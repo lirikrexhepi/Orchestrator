@@ -37,16 +37,47 @@ function insertAgent(blocks: AgentStreamBlock[], agent: SubagentBlockData): Agen
   return [...blocks.slice(0, at), agent, ...blocks.slice(at)];
 }
 
+function findAgent(blocks: AgentStreamBlock[], toolId: string): number {
+  const id = `subagent-${toolId}`;
+  return blocks.findIndex(
+    (block) => block.type === 'subagent' && (block.id === id || block.previousToolIds?.includes(toolId)),
+  );
+}
+
 function update(
   blocks: AgentStreamBlock[],
   toolId: string,
   at: number | undefined,
   change: (agent: SubagentBlockData) => SubagentBlockData,
 ): AgentStreamBlock[] {
-  const id = `subagent-${toolId}`;
-  const index = blocks.findIndex((block) => block.id === id && block.type === 'subagent');
+  const index = findAgent(blocks, toolId);
   if (index < 0) return insertAgent(blocks, change(blankAgent(toolId, at)));
   return replaceAgent(blocks, index, change(blocks[index] as SubagentBlockData));
+}
+
+function relaunched(blocks: AgentStreamBlock[], toolId: string, title: string, agentType: string | undefined, at: number | undefined): AgentStreamBlock[] {
+  if (findAgent(blocks, toolId) >= 0 || !title) return blocks;
+  const index = blocks.findIndex(
+    (block) => block.type === 'subagent' && block.status === 'stopped' && block.title === title && block.agentType === agentType,
+  );
+  if (index < 0) return blocks;
+  const previous = blocks[index] as SubagentBlockData;
+  return replaceAgent(blocks, index, {
+    ...previous,
+    id: `subagent-${toolId}`,
+    toolId,
+    previousToolIds: [...(previous.previousToolIds ?? []), previous.toolId],
+    status: 'running',
+    startedAt: at ?? previous.startedAt,
+    endedAt: undefined,
+    result: undefined,
+  });
+}
+
+function interrupted(agent: SubagentBlockData, output: string | undefined): boolean {
+  if (agent.status === 'stopped') return true;
+  const text = (output ?? '').trim();
+  return !text || text === agent.title || /interrupt|killed|aborted|cancell?ed/i.test(text.slice(0, 200));
 }
 
 function setEntry(entries: SubagentEntry[], entry: SubagentEntry): SubagentEntry[] {
@@ -57,29 +88,89 @@ function setEntry(entries: SubagentEntry[], entry: SubagentEntry): SubagentEntry
   return out;
 }
 
+function describe(input: Record<string, unknown>): { title: string; agentType: string | undefined; prompt: string | undefined } {
+  const rawTitle = input.description ?? input.subagent_type ?? input.title;
+  const title = typeof rawTitle === 'string' ? rawTitle.trim() : '';
+  const rawType = input.subagent_type ?? input.agent;
+  const agentType = typeof rawType === 'string' && rawType.trim() ? rawType : undefined;
+  const rawPrompt = input.prompt;
+  const prompt = typeof rawPrompt === 'string' && rawPrompt ? rawPrompt : undefined;
+  return { title, agentType, prompt };
+}
+
+function withDetails(agent: SubagentBlockData, input: Record<string, unknown>): SubagentBlockData {
+  const { title, agentType, prompt } = describe(input);
+  return {
+    ...agent,
+    title: title || agent.title,
+    agentType: agentType ?? agent.agentType,
+    prompt: prompt ?? agent.prompt,
+  };
+}
+
+function isTerminal(status: string | undefined): boolean {
+  return status === 'completed' || status === 'failed';
+}
+
+function earliest(current: number | undefined, next: number | undefined): number | undefined {
+  if (!next) return current;
+  if (!current) return next;
+  return Math.min(current, next);
+}
+
 export function trackSubagents(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStreamBlock[] {
   const tool = event.tool;
   switch (event.kind) {
     case 'tool.call': {
       if (!tool || !SPAWN_TOOLS.has(tool.name.toLowerCase())) return blocks;
       const input = (tool.input ?? {}) as Record<string, unknown>;
-      return update(blocks, tool.id, event.at, (agent) => ({
-        ...agent,
-        title: String(input.description || input.subagent_type || agent.title),
-        agentType: typeof input.subagent_type === 'string' ? input.subagent_type : agent.agentType,
-        prompt: typeof input.prompt === 'string' ? input.prompt : agent.prompt,
-        startedAt: agent.startedAt ?? event.at,
+      const { title, agentType } = describe(input);
+      return update(relaunched(blocks, tool.id, title, agentType, event.at), tool.id, event.at, (agent) => ({
+        ...withDetails(agent, input),
+        startedAt: earliest(agent.startedAt, event.at),
       }));
     }
     case 'tool.result': {
       if (!tool) return blocks;
-      const id = `subagent-${tool.id}`;
-      if (!blocks.some((block) => block.id === id && block.type === 'subagent')) return blocks;
-      return update(blocks, tool.id, event.at, (agent) => ({
+      const index = findAgent(blocks, tool.id);
+      if (index < 0) return blocks;
+      if ((blocks[index] as SubagentBlockData).toolId !== tool.id) return blocks;
+      return update(blocks, tool.id, event.at, (agent) => {
+        if (tool.async) return agent;
+        const input = (tool.input ?? {}) as Record<string, unknown>;
+        if (!isTerminal(tool.status)) {
+          return {
+            ...withDetails(agent, input),
+            status: agent.status === 'running' ? 'running' : agent.status,
+            startedAt: earliest(agent.startedAt, event.at),
+            toolCount: tool.toolCount && tool.toolCount > 0 ? tool.toolCount : agent.toolCount,
+            tokens: tool.tokens && tool.tokens > 0 ? tool.tokens : agent.tokens,
+          };
+        }
+        if (tool.status === 'failed' && interrupted(agent, tool.output)) {
+          return { ...withDetails(agent, input), status: 'stopped', endedAt: agent.endedAt ?? event.at };
+        }
+        const startedAt = agent.startedAt ?? event.at;
+        const reported = tool.durationMs && tool.durationMs > 0 ? tool.durationMs : 0;
+        const observed = event.at ? Math.max(event.at, startedAt ?? 0) : startedAt;
+        return {
+          ...withDetails(agent, input),
+          status: tool.status === 'failed' ? 'error' : 'completed',
+          startedAt,
+          endedAt: reported && startedAt ? startedAt + reported : observed,
+          toolCount: tool.toolCount && tool.toolCount > 0 ? tool.toolCount : agent.toolCount,
+          tokens: tool.tokens && tool.tokens > 0 ? tool.tokens : agent.tokens,
+          result: tool.output || agent.result,
+        };
+      });
+    }
+    case 'subagent.progress': {
+      const parent = event.parentToolId;
+      if (!parent || !tool) return blocks;
+      return update(blocks, parent, event.at, (agent) => ({
         ...agent,
-        status: tool.status === 'failed' ? 'error' : 'completed',
-        endedAt: event.at,
-        result: tool.output || agent.result,
+        toolCount: Math.max(agent.toolCount ?? 0, tool.toolCount ?? 0) || agent.toolCount,
+        tokens: Math.max(agent.tokens ?? 0, tool.tokens ?? 0) || agent.tokens,
       }));
     }
     case 'subagent.message': {
@@ -112,14 +203,15 @@ export function trackSubagents(blocks: AgentStreamBlock[], event: RuntimeEvent):
         ...agent,
         entries: agent.entries.map((entry) =>
           entry.kind === 'tool' && entry.id === `u-${tool.id}`
-            ? { ...entry, status: tool.status === 'failed' ? 'error' : 'completed', output: tool.output }
+            ? { ...entry, status: tool.status === 'failed' ? 'error' : 'completed' }
             : entry,
         ),
       }));
     }
+    case 'session.stopped':
     case 'turn.failed':
     case 'turn.completed': {
-      const stopped = event.kind === 'turn.failed' || event.stopReason === 'cancelled';
+      const stopped = event.kind !== 'turn.completed' || event.stopReason === 'cancelled';
       if (!stopped || !blocks.some((block) => block.type === 'subagent' && block.status === 'running')) return blocks;
       return blocks.map((block) =>
         block.type === 'subagent' && block.status === 'running'
