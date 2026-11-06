@@ -98,10 +98,16 @@ func newPassword() string {
 	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
-func startV2Server(ctx context.Context, settings domain.ProviderSettings, client *http.Client) (*server, *httpClient, error) {
+func startV2Server(
+	ctx context.Context,
+	settings domain.ProviderSettings,
+	client *http.Client,
+	onError func(sessionID, errMsg string),
+	onExit func(tail string),
+) (*server, *httpClient, error) {
 	if url := strings.TrimSpace(settings.ServerURL); url != "" {
 		api := &httpClient{base: strings.TrimSuffix(url, "/"), client: client, password: settings.Env[v2PasswordEnv]}
-		return &server{baseURL: api.base}, api, nil
+		return &server{baseURL: api.base, onError: onError, onExit: onExit}, api, nil
 	}
 
 	port, err := freePort()
@@ -123,6 +129,21 @@ func startV2Server(ctx context.Context, settings domain.ProviderSettings, client
 
 	logger.Infof("OpenCode", "Starting v2 server: %s %s", binary(settings), strings.Join(args, " "))
 
+	handleLogLine := func(source, line string) {
+		level, sessionID, errMsg := parseOpenCodeLogLine(line)
+		switch level {
+		case "ERROR":
+			logger.Errorf("OpenCode v2:"+source, "%s", line)
+			if onError != nil && errMsg != "" {
+				onError(sessionID, errMsg)
+			}
+		case "WARN":
+			logger.Warnf("OpenCode v2:"+source, "%s", line)
+		default:
+			logger.Debugf("OpenCode v2:"+source, "%s", line)
+		}
+	}
+
 	procCtx, cancel := context.WithCancel(context.Background())
 	proc, err := process.Start(procCtx, process.Spec{
 		Command:       binary(settings),
@@ -131,7 +152,7 @@ func startV2Server(ctx context.Context, settings domain.ProviderSettings, client
 		Cwd:           cwd,
 		DieWithParent: true,
 		Stderr: func(line string) {
-			logger.Debugf("OpenCode:err", "%s", line)
+			handleLogLine("err", line)
 		},
 	})
 	if err != nil {
@@ -144,7 +165,7 @@ func startV2Server(ctx context.Context, settings domain.ProviderSettings, client
 		scanner := bufio.NewScanner(proc.Stdout())
 		for scanner.Scan() {
 			line := scanner.Text()
-			logger.Debugf("OpenCode:out", "%s", line)
+			handleLogLine("out", line)
 			if match := listeningPattern.FindStringSubmatch(line); match != nil {
 				select {
 				case discovered <- strings.TrimSuffix(match[1], "/"):
@@ -164,7 +185,17 @@ func startV2Server(ctx context.Context, settings domain.ProviderSettings, client
 		return nil, nil, fmt.Errorf("opencode serve exited: %s", proc.StderrTail())
 	}
 
-	srv := &server{baseURL: baseURL, proc: proc, cancel: cancel}
+	go func() {
+		<-proc.Done()
+		err := proc.ExitError()
+		tail := proc.StderrTail()
+		logger.Warnf("OpenCode", "v2 server process exited (err=%v, baseURL=%s): %s", err, baseURL, tail)
+		if onExit != nil {
+			onExit(tail)
+		}
+	}()
+
+	srv := &server{baseURL: baseURL, proc: proc, cancel: cancel, onError: onError, onExit: onExit}
 	api := &httpClient{base: baseURL, client: client, password: password}
 	if err := waitV2Healthy(ctx, srv, api); err != nil {
 		srv.stop()
@@ -267,7 +298,7 @@ type ModelInfo struct {
 func ListModels(ctx context.Context, settings domain.ProviderSettings) ([]ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, v2ModelListBudget)
 	defer cancel()
-	srv, api, err := startV2Server(ctx, settings, &http.Client{})
+	srv, api, err := startV2Server(ctx, settings, &http.Client{}, nil, nil)
 	if err != nil {
 		return nil, err
 	}

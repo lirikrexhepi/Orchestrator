@@ -599,6 +599,24 @@ export namespace domain {
 	        this.mime = source["mime"];
 	    }
 	}
+	export class FileStat {
+	    path: string;
+	    insertions: number;
+	    deletions: number;
+	    binary: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new FileStat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.insertions = source["insertions"];
+	        this.deletions = source["deletions"];
+	        this.binary = source["binary"];
+	    }
+	}
 	export class OptionChoice {
 	    id: string;
 	    label: string;
@@ -1403,6 +1421,8 @@ export namespace domain {
 	    upstream?: string;
 	    unpushed: number;
 	    unpulled: number;
+	    branchBase?: string;
+	    branchFiles: FileStat[];
 	    error?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1424,6 +1444,8 @@ export namespace domain {
 	        this.upstream = source["upstream"];
 	        this.unpushed = source["unpushed"];
 	        this.unpulled = source["unpulled"];
+	        this.branchBase = source["branchBase"];
+	        this.branchFiles = this.convertValues(source["branchFiles"], FileStat);
 	        this.error = source["error"];
 	    }
 	

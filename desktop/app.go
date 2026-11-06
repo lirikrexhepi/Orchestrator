@@ -349,6 +349,7 @@ func (a *App) observe(event domain.RuntimeEvent) {
 func (a *App) domReady(ctx context.Context) {
 	traceStartup("dom ready")
 	runtime.WindowShow(ctx)
+	go a.syncAppIcon()
 }
 
 // trackTaskState keeps a task's stored state in step with its turns, so a

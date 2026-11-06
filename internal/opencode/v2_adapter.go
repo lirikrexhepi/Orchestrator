@@ -110,7 +110,7 @@ func (a *V2Adapter) ensureServer(ctx context.Context) (*httpClient, error) {
 		return api, nil
 	}
 
-	srv, api, err := startV2Server(ctx, a.settings, a.client)
+	srv, api, err := startV2Server(ctx, a.settings, a.client, a.onServerError, a.onServerExit)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +121,66 @@ func (a *V2Adapter) ensureServer(ctx context.Context) (*httpClient, error) {
 
 	go a.streamEvents(streamCtx, api)
 	return api, nil
+}
+
+func (a *V2Adapter) onServerError(sessionID, errMsg string) {
+	var targets []*v2Thread
+	a.mu.RLock()
+	if sessionID != "" {
+		if t := a.bySession[sessionID]; t != nil {
+			targets = append(targets, t)
+		}
+	} else {
+		for _, t := range a.threads {
+			targets = append(targets, t)
+		}
+	}
+	a.mu.RUnlock()
+
+	for _, t := range targets {
+		t.mu.Lock()
+		turnID := t.turnID
+		t.turnID = ""
+		t.mu.Unlock()
+
+		if turnID != "" {
+			logger.Errorf("OpenCode v2", "Failing stuck turn due to OpenCode server error: turnID=%s threadID=%s error=%s", turnID, t.threadID, errMsg)
+			a.emit.Emit(domain.RuntimeEvent{
+				Kind: domain.EventTurnFailed, ThreadID: t.threadID, TurnID: turnID,
+				Driver: domain.DriverOpenCode, Error: errMsg,
+			})
+		}
+	}
+}
+
+func (a *V2Adapter) onServerExit(tail string) {
+	a.mu.Lock()
+	a.server = nil
+	a.api = nil
+	var affected []*v2Thread
+	for _, t := range a.threads {
+		affected = append(affected, t)
+	}
+	a.mu.Unlock()
+
+	for _, t := range affected {
+		t.mu.Lock()
+		turnID := t.turnID
+		t.turnID = ""
+		t.mu.Unlock()
+
+		if turnID != "" {
+			errMsg := "OpenCode v2 server terminated unexpectedly"
+			if tail != "" {
+				errMsg += ": " + tail
+			}
+			logger.Errorf("OpenCode v2", "Server exited while turn was in progress: turnID=%s threadID=%s", turnID, t.threadID)
+			a.emit.Emit(domain.RuntimeEvent{
+				Kind: domain.EventTurnFailed, ThreadID: t.threadID, TurnID: turnID,
+				Driver: domain.DriverOpenCode, Error: errMsg,
+			})
+		}
+	}
 }
 
 func (a *V2Adapter) streamEvents(ctx context.Context, api *httpClient) {
@@ -334,7 +394,18 @@ func (a *V2Adapter) InterruptTurn(ctx context.Context, threadID string) error {
 	if t == nil || api == nil {
 		return nil
 	}
-	return api.do(ctx, http.MethodPost, "/api/session/"+url.PathEscape(t.sessionID)+"/interrupt", nil, nil)
+	err := api.do(ctx, http.MethodPost, "/api/session/"+url.PathEscape(t.sessionID)+"/interrupt", nil, nil)
+	t.mu.Lock()
+	turnID := t.turnID
+	t.turnID = ""
+	t.mu.Unlock()
+	if turnID != "" {
+		a.emit.Emit(domain.RuntimeEvent{
+			Kind: domain.EventTurnCompleted, ThreadID: t.threadID, TurnID: turnID,
+			Driver: domain.DriverOpenCode, StopReason: domain.StopCancelled,
+		})
+	}
+	return err
 }
 
 func (a *V2Adapter) RespondToApproval(ctx context.Context, threadID, requestID string, decision domain.ApprovalDecision) error {

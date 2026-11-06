@@ -5,6 +5,7 @@ import { ScrollArea } from '../common/ScrollArea';
 import { MarkdownText } from './MarkdownText';
 import { formatModelBadge, renderChatIcon } from '../common/DynamicIsland';
 import { SubagentBlockData } from './types';
+import { BreakdownHover, StatFile } from './ChangeBreakdown';
 import { DARK_TONE, DOT_TONE, EntryRow, LIGHT_TONE, STATUS_WORD, Tone, elapsedOf, useNow } from './SubagentMenu';
 import { AvailableEditors, GitPullRequestURL, GitPush, OpenInEditor } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime/runtime';
@@ -30,16 +31,6 @@ function loadEditors(): Promise<string[]> {
 }
 
 const number = new Intl.NumberFormat('en-US');
-
-export function laneTotals(lane?: domain.WorktreeChanges | null): { added: number; removed: number } {
-  let added = 0;
-  let removed = 0;
-  for (const file of lane?.files ?? []) {
-    added += file.insertions || 0;
-    removed += file.deletions || 0;
-  }
-  return { added, removed };
-}
 
 const Row: React.FC<{
   tone: Tone;
@@ -112,6 +103,17 @@ export interface WorkspaceSectionProps {
   onOpenChanges?: () => void;
 }
 
+export function laneStatFiles(lane?: domain.WorktreeChanges | null): StatFile[] {
+  if (lane?.branchFiles) {
+    return lane.branchFiles.map((file) => ({ path: file.path, additions: file.insertions || 0, deletions: file.deletions || 0 }));
+  }
+  const byPath = new Map<string, StatFile>();
+  for (const file of lane?.files ?? []) {
+    byPath.set(file.path, { path: file.path, additions: file.insertions || 0, deletions: file.deletions || 0 });
+  }
+  return [...byPath.values()];
+}
+
 export const WorkspaceSection = React.memo(function WorkspaceSection({
   isLight,
   projectName,
@@ -125,7 +127,19 @@ export const WorkspaceSection = React.memo(function WorkspaceSection({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const root = lane?.path || path || '';
-  const { added, removed } = useMemo(() => laneTotals(lane), [lane]);
+  const statFiles = useMemo(() => laneStatFiles(lane), [lane]);
+  const { added, removed } = useMemo(
+    () =>
+      statFiles.reduce(
+        (sum, file) => ({ added: sum.added + file.additions, removed: sum.removed + file.deletions }),
+        { added: 0, removed: 0 },
+      ),
+    [statFiles],
+  );
+  const compareTo = lane?.branchBase?.replace(/^origin\//, '') || '';
+  const changesCaption = compareTo
+    ? `${statFiles.length} ${statFiles.length === 1 ? 'file' : 'files'} changed vs ${compareTo}`
+    : `${statFiles.length} uncommitted ${statFiles.length === 1 ? 'file' : 'files'}`;
 
   useEffect(() => {
     let alive = true;
@@ -150,7 +164,7 @@ export const WorkspaceSection = React.memo(function WorkspaceSection({
 
   const primaryEditor = editors.find((id) => id !== 'explorer') ?? 'explorer';
   const toggle = (next: 'editor' | 'git') => setMenu((current) => (current === next ? null : next));
-  const target = lane?.upstream?.replace(/^origin\//, '') || lane?.base || '';
+  const target = compareTo || lane?.base || lane?.upstream?.replace(/^origin\//, '') || '';
 
   return (
     <div className="flex flex-col gap-0.5 p-1.5">
@@ -228,10 +242,12 @@ export const WorkspaceSection = React.memo(function WorkspaceSection({
             label="Changes"
             onClick={onOpenChanges}
             trailing={
-              <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap font-mono text-[11px] tabular-nums">
-                <span className="text-emerald-500">+{number.format(added)}</span>
-                <span className="text-rose-500">-{number.format(removed)}</span>
-              </span>
+              <BreakdownHover files={statFiles} caption={changesCaption} className="shrink-0">
+                <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap font-mono text-[11px] tabular-nums">
+                  <span className="text-emerald-500">+{number.format(added)}</span>
+                  <span className="text-rose-500">-{number.format(removed)}</span>
+                </span>
+              </BreakdownHover>
             }
           />
         </>

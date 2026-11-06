@@ -97,6 +97,8 @@ export function GitFileDiff(arg1:string,arg2:string,arg3:boolean):Promise<domain
 
 export function GitOverview():Promise<Array<domain.WorktreeChanges>>;
 
+export function GitOverviewAt(arg1:string):Promise<Array<domain.WorktreeChanges>>;
+
 export function GitPull(arg1:string):Promise<void>;
 
 export function GitPullRequestURL(arg1:string):Promise<string>;

@@ -23,7 +23,36 @@ import (
 
 const defaultHostname = "127.0.0.1"
 
-var listeningPattern = regexp.MustCompile(`on\s+(https?://[^\s]+)`)
+var (
+	listeningPattern  = regexp.MustCompile(`on\s+(https?://[^\s]+)`)
+	logLevelPattern   = regexp.MustCompile(`(?:^|\s)level=(\w+)`)
+	sessionIDPattern  = regexp.MustCompile(`(?:^|\s)session\.id=([^\s]+)`)
+	errorFieldPattern = regexp.MustCompile(`(?:^|\s)error\.error="([^"]+)"`)
+	errorBarePattern  = regexp.MustCompile(`(?:^|\s)error\.error=([^\s]+)`)
+	messagePattern    = regexp.MustCompile(`(?:^|\s)message="([^"]+)"`)
+	streamErrPattern  = regexp.MustCompile(`message="stream error"`)
+)
+
+func parseOpenCodeLogLine(line string) (level, sessionID, errMsg string) {
+	if m := logLevelPattern.FindStringSubmatch(line); m != nil {
+		level = strings.ToUpper(m[1])
+	}
+	if m := sessionIDPattern.FindStringSubmatch(line); m != nil {
+		sessionID = m[1]
+	}
+	if m := errorFieldPattern.FindStringSubmatch(line); m != nil {
+		errMsg = m[1]
+	} else if m := errorBarePattern.FindStringSubmatch(line); m != nil {
+		errMsg = m[1]
+	} else if streamErrPattern.MatchString(line) {
+		errMsg = "OpenCode stream error"
+	} else if level == "ERROR" {
+		if m := messagePattern.FindStringSubmatch(line); m != nil {
+			errMsg = m[1]
+		}
+	}
+	return level, sessionID, errMsg
+}
 
 // server owns a managed `opencode serve` child. When settings point at an
 // external ServerURL the process is skipped entirely and only the base URL is
@@ -32,6 +61,8 @@ type server struct {
 	baseURL string
 	proc    *process.Process
 	cancel  context.CancelFunc
+	onError func(sessionID, errMsg string)
+	onExit  func(tail string)
 }
 
 func freePort() (int, error) {
@@ -50,9 +81,16 @@ func binary(settings domain.ProviderSettings) string {
 	return "opencode"
 }
 
-func startServer(ctx context.Context, settings domain.ProviderSettings, client *http.Client, cwd string) (*server, error) {
+func startServer(
+	ctx context.Context,
+	settings domain.ProviderSettings,
+	client *http.Client,
+	cwd string,
+	onError func(sessionID, errMsg string),
+	onExit func(tail string),
+) (*server, error) {
 	if url := strings.TrimSpace(settings.ServerURL); url != "" {
-		return &server{baseURL: strings.TrimSuffix(url, "/")}, nil
+		return &server{baseURL: strings.TrimSuffix(url, "/"), onError: onError, onExit: onExit}, nil
 	}
 
 	port, err := freePort()
@@ -76,6 +114,21 @@ func startServer(ctx context.Context, settings domain.ProviderSettings, client *
 
 	logger.Infof("OpenCode", "Starting server: %s %s (cwd=%s)", binary(settings), strings.Join(args, " "), procCwd)
 
+	handleLogLine := func(source, line string) {
+		level, sessionID, errMsg := parseOpenCodeLogLine(line)
+		switch level {
+		case "ERROR":
+			logger.Errorf("OpenCode:"+source, "%s", line)
+			if onError != nil && errMsg != "" {
+				onError(sessionID, errMsg)
+			}
+		case "WARN":
+			logger.Warnf("OpenCode:"+source, "%s", line)
+		default:
+			logger.Debugf("OpenCode:"+source, "%s", line)
+		}
+	}
+
 	procCtx, cancel := context.WithCancel(context.Background())
 	proc, err := process.Start(procCtx, process.Spec{
 		Command: binary(settings),
@@ -85,7 +138,7 @@ func startServer(ctx context.Context, settings domain.ProviderSettings, client *
 
 		DieWithParent: true,
 		Stderr: func(line string) {
-			logger.Debugf("OpenCode:err", "%s", line)
+			handleLogLine("err", line)
 		},
 	})
 	if err != nil {
@@ -99,7 +152,7 @@ func startServer(ctx context.Context, settings domain.ProviderSettings, client *
 		scanner := bufio.NewScanner(proc.Stdout())
 		for scanner.Scan() {
 			line := scanner.Text()
-			logger.Debugf("OpenCode:out", "%s", line)
+			handleLogLine("out", line)
 			if match := listeningPattern.FindStringSubmatch(line); match != nil {
 				select {
 				case discovered <- strings.TrimSuffix(match[1], "/"):
@@ -121,7 +174,17 @@ func startServer(ctx context.Context, settings domain.ProviderSettings, client *
 		return nil, fmt.Errorf("opencode serve exited: %s", tail)
 	}
 
-	s := &server{baseURL: baseURL, proc: proc, cancel: cancel}
+	go func() {
+		<-proc.Done()
+		err := proc.ExitError()
+		tail := proc.StderrTail()
+		logger.Warnf("OpenCode", "Server process exited (err=%v, baseURL=%s): %s", err, baseURL, tail)
+		if onExit != nil {
+			onExit(tail)
+		}
+	}()
+
+	s := &server{baseURL: baseURL, proc: proc, cancel: cancel, onError: onError, onExit: onExit}
 	if err := s.waitHealthy(ctx, client); err != nil {
 		logger.Errorf("OpenCode", "Health check failed for %s: %v", baseURL, err)
 		s.stop()
@@ -203,7 +266,8 @@ func subscribe(ctx context.Context, client *http.Client, baseURL string, onEvent
 			continue
 		}
 		var event Event
-		if json.Unmarshal([]byte(payload), &event) != nil {
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			logger.Warnf("OpenCode SSE", "Failed to decode event: %v (payload=%s)", err, payload)
 			continue
 		}
 		onEvent(event)

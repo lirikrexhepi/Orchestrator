@@ -226,6 +226,35 @@ func mapToolStatus(status string) domain.ToolStatus {
 	}
 }
 
+func parseMessageError(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var errObj struct {
+		Name    string `json:"name"`
+		Message string `json:"message"`
+		Data    struct {
+			Message string `json:"message"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &errObj); err == nil {
+		if errObj.Data.Message != "" {
+			return errObj.Data.Message
+		}
+		if errObj.Message != "" {
+			return errObj.Message
+		}
+		if errObj.Name != "" {
+			return errObj.Name
+		}
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil && str != "" {
+		return str
+	}
+	return string(raw)
+}
+
 func (a *Adapter) onMessageUpdated(raw json.RawMessage) {
 	var props MessageUpdatedProperties
 	if json.Unmarshal(raw, &props) != nil {
@@ -250,6 +279,34 @@ func (a *Adapter) onMessageUpdated(raw json.RawMessage) {
 	t.mu.Unlock()
 
 	logger.Infof("OpenCode", "Message updated: id=%s role=%s session=%s", info.ID, info.Role, info.SessionID)
+
+	if len(info.Error) > 0 && string(info.Error) != "null" {
+		errMsg := parseMessageError(info.Error)
+		t.mu.Lock()
+		turnID := t.turnID
+		t.turnID = ""
+		t.lastUserText = ""
+		t.tools = make(map[string]string)
+		t.partText = make(map[string]string)
+		t.partTypes = make(map[string]string)
+		t.mu.Unlock()
+
+		if turnID != "" {
+			if strings.Contains(errMsg, "Aborted") || strings.Contains(string(info.Error), "MessageAbortedError") {
+				logger.Infof("OpenCode", "Turn aborted via message error: turnID=%s threadID=%s", turnID, t.threadID)
+				a.emit.Emit(domain.RuntimeEvent{
+					Kind: domain.EventTurnCompleted, ThreadID: t.threadID, TurnID: turnID,
+					Driver: domain.DriverOpenCode, StopReason: domain.StopCancelled,
+				})
+			} else {
+				logger.Errorf("OpenCode", "Turn failed via message error: turnID=%s threadID=%s error=%s", turnID, t.threadID, errMsg)
+				a.emit.Emit(domain.RuntimeEvent{
+					Kind: domain.EventTurnFailed, ThreadID: t.threadID, TurnID: turnID,
+					Driver: domain.DriverOpenCode, Error: errMsg,
+				})
+			}
+		}
+	}
 
 	if info.Role != "assistant" || info.Tokens == nil {
 		return

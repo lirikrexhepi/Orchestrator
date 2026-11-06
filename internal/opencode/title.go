@@ -115,14 +115,14 @@ func (t *TitleServer) ensureLocked(ctx context.Context) error {
 	t.major = MajorVersion(ctx, t.settings)
 	settings := t.isolated()
 	if t.major >= 2 {
-		srv, api, err := startV2Server(ctx, settings, t.client)
+		srv, api, err := startV2Server(ctx, settings, t.client, nil, nil)
 		if err != nil {
 			return err
 		}
 		t.srv, t.api = srv, api
 		return nil
 	}
-	srv, err := startServer(ctx, settings, t.client, t.workDir)
+	srv, err := startServer(ctx, settings, t.client, t.workDir, nil, nil)
 	if err != nil {
 		return err
 	}

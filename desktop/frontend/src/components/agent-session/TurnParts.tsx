@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { fileIconForPath } from '../common/fileIcon';
 import { Chevron, Collapse, formatElapsed } from './WorkRow';
 import { DiffStat, DiffView } from './EditTool';
+import { BreakdownHover } from './ChangeBreakdown';
 import { EditToolBlockData } from './types';
 
 export const WorkingHeader = React.memo(function WorkingHeader({ startedAt }: { startedAt: number }) {
@@ -80,13 +81,19 @@ const ChangedFile = React.memo(function ChangedFile({ edit }: { edit: EditToolBl
 export const ChangesCard = React.memo(function ChangesCard({ edits }: { edits: EditToolBlockData[] }) {
   const additions = edits.reduce((sum, edit) => sum + (edit.additions ?? 0), 0);
   const deletions = edits.reduce((sum, edit) => sum + (edit.deletions ?? 0), 0);
+  const statFiles = useMemo(
+    () => edits.map((edit) => ({ path: edit.filePath, additions: edit.additions ?? 0, deletions: edit.deletions ?? 0 })),
+    [edits],
+  );
   return (
     <div className="rounded-[14px] border border-current/[0.08] overflow-hidden font-(family-name:--app-font)">
       <div className="flex items-center gap-2 px-3 py-2 text-[12px] tracking-tight text-current/50">
         <span>
           {edits.length} {edits.length === 1 ? 'file' : 'files'} changed
         </span>
-        <DiffStat additions={additions} deletions={deletions} />
+        <BreakdownHover files={statFiles}>
+          <DiffStat additions={additions} deletions={deletions} />
+        </BreakdownHover>
       </div>
       <div className="flex flex-col border-t border-current/[0.06] divide-y divide-current/[0.06]">
         {edits.map((edit) => (

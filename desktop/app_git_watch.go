@@ -18,17 +18,20 @@ import (
 const gitRescanAfter = 60 * time.Second
 
 type laneScan struct {
-	upstream string
-	unpushed int
-	unpulled int
-	files    []domain.FileChange
-	commits  []domain.Commit
-	ahead    int
+	upstream    string
+	unpushed    int
+	unpulled    int
+	files       []domain.FileChange
+	commits     []domain.Commit
+	ahead       int
+	branchBase  string
+	branchFiles []domain.FileStat
 }
 
 func (s laneScan) apply(lane *domain.WorktreeChanges) {
 	lane.Upstream, lane.Unpushed, lane.Unpulled = s.upstream, s.unpushed, s.unpulled
 	lane.Files, lane.Commits, lane.Ahead = s.files, s.commits, s.ahead
+	lane.BranchBase, lane.BranchFiles = s.branchBase, s.branchFiles
 }
 
 type trackedLane struct {
@@ -202,12 +205,14 @@ func (t *gitTracker) finish(lane *trackedLane, result domain.WorktreeChanges) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	lane.scan = laneScan{
-		upstream: result.Upstream,
-		unpushed: result.Unpushed,
-		unpulled: result.Unpulled,
-		files:    result.Files,
-		commits:  result.Commits,
-		ahead:    result.Ahead,
+		upstream:    result.Upstream,
+		unpushed:    result.Unpushed,
+		unpulled:    result.Unpulled,
+		files:       result.Files,
+		commits:     result.Commits,
+		ahead:       result.Ahead,
+		branchBase:  result.BranchBase,
+		branchFiles: result.BranchFiles,
 	}
 	lane.valid = true
 }

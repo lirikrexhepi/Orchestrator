@@ -49,6 +49,14 @@ func (a *App) SetAppIcon(id string) error {
 	return applyErr
 }
 
+func (a *App) syncAppIcon() {
+	id := a.GetAppIcon()
+	if err := applyAppIcon(id); err != nil {
+		logger.Warnf("App", "Could not apply app icon %s: %v", id, err)
+	}
+	publishAppIcon(id)
+}
+
 func applyAppIcon(id string) error {
 	small, err := appIconFiles.ReadFile("assets/logo/sized/" + id + "-32.png")
 	if err != nil {

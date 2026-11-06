@@ -131,7 +131,9 @@ func (a *Adapter) ensureServer(ctx context.Context, cwd string) (*httpClient, er
 		return api, nil
 	}
 
-	srv, err := startServer(ctx, a.settings, a.client, clean)
+	srv, err := startServer(ctx, a.settings, a.client, clean, a.onServerError, func(tail string) {
+		a.onServerExit(clean, tail)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -147,15 +149,159 @@ func (a *Adapter) ensureServer(ctx context.Context, cwd string) (*httpClient, er
 	return api, nil
 }
 
+func (a *Adapter) onServerError(sessionID, errMsg string) {
+	var targets []*thread
+	a.mu.RLock()
+	if sessionID != "" {
+		if t := a.bySession[sessionID]; t != nil {
+			targets = append(targets, t)
+		}
+	} else {
+		for _, t := range a.threads {
+			targets = append(targets, t)
+		}
+	}
+	a.mu.RUnlock()
+
+	for _, t := range targets {
+		t.mu.Lock()
+		turnID := t.turnID
+		t.turnID = ""
+		t.lastUserText = ""
+		t.tools = make(map[string]string)
+		t.partText = make(map[string]string)
+		t.partTypes = make(map[string]string)
+		t.mu.Unlock()
+
+		if turnID != "" {
+			logger.Errorf("OpenCode", "Failing stuck turn due to OpenCode server error: turnID=%s threadID=%s error=%s", turnID, t.threadID, errMsg)
+			a.emit.Emit(domain.RuntimeEvent{
+				Kind: domain.EventTurnFailed, ThreadID: t.threadID, TurnID: turnID,
+				Driver: domain.DriverOpenCode, Error: errMsg,
+			})
+		}
+	}
+}
+
+func (a *Adapter) onServerExit(serverKey, tail string) {
+	a.mu.Lock()
+	delete(a.servers, serverKey)
+	var affected []*thread
+	for _, t := range a.threads {
+		if t.serverKey == serverKey {
+			affected = append(affected, t)
+		}
+	}
+	a.mu.Unlock()
+
+	for _, t := range affected {
+		t.mu.Lock()
+		turnID := t.turnID
+		t.turnID = ""
+		t.lastUserText = ""
+		t.tools = make(map[string]string)
+		t.partText = make(map[string]string)
+		t.partTypes = make(map[string]string)
+		t.mu.Unlock()
+
+		if turnID != "" {
+			errMsg := "OpenCode server terminated unexpectedly"
+			if tail != "" {
+				errMsg += ": " + tail
+			}
+			logger.Errorf("OpenCode", "Server exited while turn was in progress: turnID=%s threadID=%s", turnID, t.threadID)
+			a.emit.Emit(domain.RuntimeEvent{
+				Kind: domain.EventTurnFailed, ThreadID: t.threadID, TurnID: turnID,
+				Driver: domain.DriverOpenCode, Error: errMsg,
+			})
+		}
+	}
+}
+
+func (a *Adapter) reconcileServerThreads(baseURL string) {
+	var candidates []*thread
+	a.mu.RLock()
+	for _, entry := range a.servers {
+		if entry.api != nil && entry.api.base == baseURL {
+			for _, t := range a.threads {
+				if t.serverKey == entry.server.baseURL || (t.api != nil && t.api.base == baseURL) {
+					t.mu.Lock()
+					inTurn := t.turnID != ""
+					t.mu.Unlock()
+					if inTurn {
+						candidates = append(candidates, t)
+					}
+				}
+			}
+		}
+	}
+	a.mu.RUnlock()
+
+	if len(candidates) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	for _, t := range candidates {
+		if t.api == nil || t.sessionID == "" {
+			continue
+		}
+		var messages []struct {
+			Info MessageInfo `json:"info"`
+		}
+		if err := t.api.do(ctx, http.MethodGet, "/session/"+t.sessionID+"/message", nil, &messages); err != nil {
+			continue
+		}
+		if len(messages) == 0 {
+			continue
+		}
+		last := messages[len(messages)-1].Info
+		if last.Role == "assistant" && (last.Time.Completed > 0 || len(last.Error) > 0) {
+			t.mu.Lock()
+			turnID := t.turnID
+			t.turnID = ""
+			t.lastUserText = ""
+			t.tools = make(map[string]string)
+			t.partText = make(map[string]string)
+			t.partTypes = make(map[string]string)
+			t.mu.Unlock()
+
+			if turnID == "" {
+				continue
+			}
+
+			if len(last.Error) > 0 && string(last.Error) != "null" {
+				errMsg := parseMessageError(last.Error)
+				logger.Warnf("OpenCode", "Reconciled errored turn on SSE reconnect: turnID=%s error=%s", turnID, errMsg)
+				a.emit.Emit(domain.RuntimeEvent{
+					Kind: domain.EventTurnFailed, ThreadID: t.threadID, TurnID: turnID,
+					Driver: domain.DriverOpenCode, Error: errMsg,
+				})
+			} else {
+				logger.Infof("OpenCode", "Reconciled completed turn on SSE reconnect: turnID=%s", turnID)
+				a.emit.Emit(domain.RuntimeEvent{
+					Kind: domain.EventTurnCompleted, ThreadID: t.threadID, TurnID: turnID,
+					Driver: domain.DriverOpenCode, StopReason: domain.StopEndTurn,
+				})
+			}
+		}
+	}
+}
+
 // streamEvents keeps the SSE subscription alive for the life of the server,
 // reconnecting on transient drops.
 func (a *Adapter) streamEvents(ctx context.Context, baseURL string) {
 	for {
+		logger.Debugf("OpenCode SSE", "Starting subscription to %s", baseURL)
 		err := subscribe(ctx, a.client, baseURL, a.handleEvent)
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
+			logger.Warnf("OpenCode SSE", "Subscription dropped from %s: %v; reconnecting...", baseURL, err)
+			a.reconcileServerThreads(baseURL)
 			select {
 			case <-ctx.Done():
 				return
@@ -298,7 +444,24 @@ func (a *Adapter) InterruptTurn(ctx context.Context, threadID string) error {
 		return nil
 	}
 	logger.Infof("OpenCode", "InterruptTurn: thread=%s session=%s", threadID, t.sessionID)
-	return t.api.do(ctx, http.MethodPost, "/session/"+t.sessionID+"/abort", nil, nil)
+	err := t.api.do(ctx, http.MethodPost, "/session/"+t.sessionID+"/abort", nil, nil)
+
+	t.mu.Lock()
+	turnID := t.turnID
+	t.turnID = ""
+	t.lastUserText = ""
+	t.tools = make(map[string]string)
+	t.partText = make(map[string]string)
+	t.partTypes = make(map[string]string)
+	t.mu.Unlock()
+
+	if turnID != "" {
+		a.emit.Emit(domain.RuntimeEvent{
+			Kind: domain.EventTurnCompleted, ThreadID: t.threadID, TurnID: turnID,
+			Driver: domain.DriverOpenCode, StopReason: domain.StopCancelled,
+		})
+	}
+	return err
 }
 
 func (a *Adapter) RespondToApproval(ctx context.Context, threadID, requestID string, decision domain.ApprovalDecision) error {

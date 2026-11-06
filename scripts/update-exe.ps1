@@ -71,6 +71,19 @@ Invoke-Step "Installing to $ExePath" {
     Copy-Item $Built $ExePath -Force
 }
 
+Invoke-Step 'Refreshing shell icons' {
+    Add-Type -Namespace ShellRefresh -Name Native -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("shell32.dll")]
+public static extern void SHChangeNotify(int eventId, int flags, System.IntPtr item1, System.IntPtr item2);
+'@
+    [ShellRefresh.Native]::SHChangeNotify(0x08000000, 0x1000, [IntPtr]::Zero, [IntPtr]::Zero)
+    $ie4uinit = Join-Path $env:SystemRoot 'System32\ie4uinit.exe'
+    if (Test-Path $ie4uinit) {
+        & $ie4uinit -show
+        $global:LASTEXITCODE = 0
+    }
+}
+
 if ($task) {
     $taskExe = $task.Actions[0].Execute
     if ([IO.Path]::GetFullPath($taskExe) -ne [IO.Path]::GetFullPath($ExePath)) {

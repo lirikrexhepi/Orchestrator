@@ -8,6 +8,9 @@ import { FilePreview } from '../files/FilePreview';
 import { FileTree } from '../files/FileTree';
 import { repoPath } from '../files/status';
 import { useProjectTree } from '../files/useProjectTree';
+import { fileIconForPath } from '../common/fileIcon';
+import { changeDiffFile, changeDiffText, ThreadFileChange } from './threadChanges';
+import { BreakdownHover } from './ChangeBreakdown';
 import {
   ArrowDown,
   ArrowUp,
@@ -24,12 +27,13 @@ import {
 } from '../common/icons';
 import { ClipboardSetText } from '../../../wailsjs/runtime/runtime';
 
-type LeftTab = 'files' | 'changes' | 'commits';
+type LeftTab = 'thread' | 'worktree' | 'commits' | 'files';
 
 export interface AgentGitViewProps {
   threadId?: string;
   branch?: string;
   git?: GitState;
+  threadChanges?: ThreadFileChange[];
   className?: string;
 }
 
@@ -166,6 +170,44 @@ const FileRow = React.memo<FileRowProps>(({ file, selected, onSelect, onToggle, 
 });
 FileRow.displayName = 'GitFileRow';
 
+function splitPath(path: string): { dir: string; base: string } {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  const base = parts.pop() || path;
+  return { dir: parts.length ? `${parts.slice(-2).join('/')}/` : '', base };
+}
+
+const ThreadRow = React.memo<{
+  change: ThreadFileChange;
+  selected: boolean;
+  onSelect: () => void;
+}>(({ change, selected, onSelect }) => {
+  const { dir, base } = splitPath(change.path);
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      title={change.path}
+      className={`w-full text-left px-2 py-1.5 rounded-[8px] flex items-center gap-2 transition-colors cursor-pointer ${
+        selected ? 'bg-white/[0.14] text-white' : 'text-white/70 hover:bg-white/[0.06] hover:text-white'
+      }`}
+    >
+      <img src={fileIconForPath(change.path)} alt="" draggable={false} className="w-[14px] h-[14px] shrink-0" />
+      <div className="flex-1 min-w-0">
+        <div className="text-[12px] font-medium truncate">
+          <span className="text-white/35">{dir}</span>
+          {base}
+        </div>
+        {change.edits > 1 && <div className="text-[10px] text-white/30 font-mono truncate">{change.edits} edits</div>}
+      </div>
+      <span className="shrink-0 flex items-center gap-1.5 text-[10.5px] tabular-nums">
+        {change.additions > 0 && <span className="text-emerald-300">+{change.additions}</span>}
+        {change.deletions > 0 && <span className="text-rose-300">−{change.deletions}</span>}
+      </span>
+    </button>
+  );
+});
+ThreadRow.displayName = 'ThreadChangeRow';
+
 const SectionHeader: React.FC<{
   label: string;
   count: number;
@@ -188,9 +230,10 @@ const SectionHeader: React.FC<{
   </div>
 );
 
-export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, git, className = '' }) => {
+export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, git, threadChanges = [], className = '' }) => {
   const [copied, setCopied] = useState(false);
-  const [leftTab, setLeftTab] = useState<LeftTab>('changes');
+  const [leftTab, setLeftTab] = useState<LeftTab>('thread');
+  const [threadKey, setThreadKey] = useState<string | null>(null);
   const [treeFile, setTreeFile] = useState<string | null>(null);
   const [treeMode, setTreeMode] = useState<'diff' | 'file'>('diff');
   const [summary, setSummary] = useState('');
@@ -198,6 +241,15 @@ export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, gi
   const [branchQuery, setBranchQuery] = useState('');
   const [showDescription, setShowDescription] = useState(false);
   const [pendingBranch, setPendingBranch] = useState<string | null>(null);
+
+  const selectedChange = useMemo(
+    () => threadChanges.find((change) => change.key === threadKey) ?? threadChanges[0] ?? null,
+    [threadChanges, threadKey],
+  );
+  const selectedDiffFile = useMemo(
+    () => (selectedChange ? changeDiffFile(selectedChange) : null),
+    [selectedChange],
+  );
 
   const matchingLane =
     git?.lanes.find(
@@ -276,6 +328,15 @@ export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, gi
           .join('\n'),
       )
       .join('\n\n');
+    if (!text) return;
+    await ClipboardSetText(text);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
+
+  const copyThreadDiff = async () => {
+    if (!selectedChange) return;
+    const text = changeDiffText(selectedChange);
     if (!text) return;
     await ClipboardSetText(text);
     setCopied(true);
@@ -523,13 +584,20 @@ export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, gi
           <div className="flex items-center p-1 bg-white/[0.02] shrink-0">
             <button
               type="button"
+              onClick={() => setLeftTab('thread')}
+              className={tabClass(leftTab === 'thread')}
+            >
+              Thread {threadChanges.length > 0 && `(${threadChanges.length})`}
+            </button>
+            <button
+              type="button"
               onClick={() => {
-                setLeftTab('changes');
+                setLeftTab('worktree');
                 git.selectView({ kind: 'changes' });
               }}
-              className={tabClass(leftTab === 'changes')}
+              className={tabClass(leftTab === 'worktree')}
             >
-              Changes {changedFiles.length > 0 && `(${changedFiles.length})`}
+              Worktree {changedFiles.length > 0 && `(${changedFiles.length})`}
             </button>
             <button
               type="button"
@@ -549,7 +617,28 @@ export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, gi
           <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-1">
             {leftTab === 'files' ? (
               <FileTree tree={tree} selected={treeFile} onSelect={openTreeFile} />
-            ) : leftTab === 'changes' ? (
+            ) : leftTab === 'thread' ? (
+              threadChanges.length === 0 ? (
+                <div className="flex flex-col items-center justify-center text-center p-5 h-full">
+                  <div className="w-9 h-9 rounded-xl bg-white/[0.05] flex items-center justify-center mb-2">
+                    <Check size={16} className="text-white/35" />
+                  </div>
+                  <span className={`text-[12px] font-medium text-white/55 mb-0.5 ${FONT}`}>No edits in this chat</span>
+                  <span className={`text-[10.5px] text-white/35 max-w-[190px] ${FONT}`}>
+                    Every file this chat writes or edits shows up here.
+                  </span>
+                </div>
+              ) : (
+                threadChanges.map((change) => (
+                  <ThreadRow
+                    key={change.key}
+                    change={change}
+                    selected={selectedChange?.key === change.key}
+                    onSelect={() => setThreadKey(change.key)}
+                  />
+                ))
+              )
+            ) : leftTab === 'worktree' ? (
               changedFiles.length === 0 ? (
                 <div className="flex flex-col items-center justify-center text-center p-5 h-full">
                   <div className="w-9 h-9 rounded-xl bg-white/[0.05] flex items-center justify-center mb-2">
@@ -633,7 +722,7 @@ export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, gi
             )}
           </div>
 
-          {leftTab === 'changes' && (
+          {leftTab === 'worktree' && (
             <div className="shrink-0 p-2 flex flex-col gap-1.5 border-t border-white/[0.07]">
               <input
                 value={summary}
@@ -683,7 +772,56 @@ export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, gi
         </div>
 
         <div className="flex-1 min-h-0 rounded-xl bg-[#0d0f12] overflow-hidden flex flex-col">
-          {leftTab === 'files' ? (
+          {leftTab === 'thread' ? (
+            !selectedChange ? (
+              <div className="flex-1 min-h-0 grid place-items-center p-6">
+                <p className={`text-[12px] text-white/35 text-center ${FONT} max-w-[260px] leading-relaxed`}>
+                  No code changes in this chat yet. What the agent writes and edits shows up here, along the whole thread.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 px-3 h-[32px] border-b border-white/[0.07] shrink-0">
+                  <span className={`text-[11.5px] font-medium text-white/80 tracking-tight truncate flex-1 min-w-0 ${FONT}`}>
+                    {selectedChange.path}
+                  </span>
+                  <span className={`text-[10.5px] text-white/35 tabular-nums shrink-0 ${FONT}`}>
+                    {selectedChange.edits} edit{selectedChange.edits === 1 ? '' : 's'}
+                  </span>
+                  <span className={`text-[10.5px] tabular-nums shrink-0 ${FONT}`}>
+                    <span className="text-emerald-300/80">+{selectedChange.additions}</span>{' '}
+                    <span className="text-rose-300/80">−{selectedChange.deletions}</span>
+                  </span>
+                  {selectedDiffFile && (
+                    <button
+                      type="button"
+                      title="Copy diff"
+                      onClick={() => void copyThreadDiff()}
+                      className="w-[24px] h-[24px] rounded-[7px] flex items-center justify-center text-white/45 hover:text-white hover:bg-white/10 active:scale-90 transition-all cursor-pointer shrink-0"
+                    >
+                      {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
+                    </button>
+                  )}
+                </div>
+                {selectedDiffFile ? (
+                  <DiffView
+                    diffs={[selectedDiffFile]}
+                    isLoading={false}
+                    error={null}
+                    placeholder="No diff to display."
+                  />
+                ) : (
+                  <div className="flex-1 min-h-0 grid place-items-center p-6">
+                    <p className={`text-[12px] text-white/40 text-center ${FONT} max-w-[240px] leading-relaxed`}>
+                      {selectedChange.groups.some((group) => group.status === 'running')
+                        ? 'The agent is editing this file — the diff appears once the edit lands.'
+                        : 'No diff captured for this edit (it may have come from a subagent).'}
+                    </p>
+                  </div>
+                )}
+              </>
+            )
+          ) : leftTab === 'files' ? (
             !treeFile || !treeRoot ? (
               <div className="flex-1 min-h-0 grid place-items-center p-6">
                 <p className={`text-[12px] text-white/35 text-center ${FONT}`}>
@@ -731,10 +869,15 @@ export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, gi
                   <span className={`text-[11.5px] font-medium text-white/80 tracking-tight truncate flex-1 min-w-0 ${FONT}`}>
                     {git.diffs.length === 1 ? git.diffs[0].path : `${git.diffs.length} files`}
                   </span>
-                  <span className={`text-[10.5px] tabular-nums shrink-0 ${FONT}`}>
-                    <span className="text-emerald-300/80">+{git.diffs.reduce((n, d) => n + d.insertions, 0)}</span>{' '}
-                    <span className="text-rose-300/80">−{git.diffs.reduce((n, d) => n + d.deletions, 0)}</span>
-                  </span>
+                  <BreakdownHover
+                    files={git.diffs.map((d) => ({ path: d.path, additions: d.insertions, deletions: d.deletions }))}
+                    className="shrink-0"
+                  >
+                    <span className={`text-[10.5px] tabular-nums shrink-0 ${FONT}`}>
+                      <span className="text-emerald-300/80">+{git.diffs.reduce((n, d) => n + d.insertions, 0)}</span>{' '}
+                      <span className="text-rose-300/80">−{git.diffs.reduce((n, d) => n + d.deletions, 0)}</span>
+                    </span>
+                  </BreakdownHover>
                   <button
                     type="button"
                     title="Copy diff"

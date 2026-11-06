@@ -8,7 +8,7 @@ import { AgentBrowserView } from './AgentBrowserView';
 import { AgentGitView } from './AgentGitView';
 import { AgentServersView } from './AgentServersView';
 import { domain, servers } from '../../../wailsjs/go/models';
-import { GitState } from '../git';
+import { GitState, useGit } from '../git';
 import { X, Square, Folder, Minimize } from '../common/icons';
 import { OrbitLoader } from './OrbitLoader';
 import { TextShimmer } from './TextShimmer';
@@ -22,6 +22,7 @@ import { usePinnedScroll } from '../common/usePinnedScroll';
 import { ChatTitle } from './ChatTitle';
 import { ContextRing } from './ContextRing';
 import type { ContextUsage } from './contextUsage';
+import { collectThreadChanges, ThreadFileChange } from './threadChanges';
 import { parseSwitchNotice } from './NoticeDivider';
 import { formatModelBadge, renderChatIcon } from '../common/DynamicIsland';
 
@@ -74,6 +75,7 @@ export interface AgentWindowProps {
   onResizeStart?: () => void;
   onResizeEnd?: () => void;
   projectName?: string;
+  projectPath?: string;
   accountName?: string;
   isFullscreen?: boolean;
   onEnterFullscreen?: () => void;
@@ -109,6 +111,10 @@ function formatDuration(ms: number): string {
  * Sleek, non-draggable physical card matching Felix Haas (Lovable) design.
  * Adapts to Deck (focused carousel) and Grid (Exposé overview) modes.
  */
+function lanePathKey(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
 const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   id,
   title = 'Agent',
@@ -147,6 +153,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   onResizeStart,
   onResizeEnd,
   projectName,
+  projectPath,
   accountName,
   isFullscreen = false,
   onEnterFullscreen,
@@ -381,14 +388,21 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   const webServers = (detectedServers || []).filter((s) => !s.agent && s.port > 0);
   const primaryServer = webServers[0];
 
+  const threadGit = useGit(Boolean(projectPath) && ((isFullscreen && isFocused) || activeMode === 'changes'), projectPath);
+  const laneGit = projectPath ? threadGit : git;
+  const projectKey = projectPath ? lanePathKey(projectPath) : '';
   const matchingLane =
-    git?.lanes.find(
+    laneGit?.lanes.find(
       (l) =>
         (id && l.threadId === id) ||
         (subtitle && l.branch === subtitle) ||
         (l.title && id && l.title.includes(id)),
-    ) || git?.lanes.find((l) => l.isMain);
-  const changesCount = matchingLane?.files?.length ?? 0;
+    ) ||
+    (projectKey ? laneGit?.lanes.find((l) => lanePathKey(l.path) === projectKey) : undefined) ||
+    laneGit?.lanes.find((l) => l.isMain);
+
+  const threadChanges = useMemo(() => collectThreadChanges(streamBlocks), [streamBlocks]);
+  const changesCount = Math.max(threadChanges.length, 0);
 
   const isWorking =
     status === 'working' ||
@@ -497,8 +511,16 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   const { currentTheme } = useTheme();
   const isLight = currentTheme.id === 'light' || currentTheme.id === 'white';
   const workspaceSection = useMemo(
-    () => <WorkspaceSection isLight={isLight} projectName={projectName} lane={matchingLane ?? null} onOpenChanges={openChanges} />,
-    [isLight, projectName, matchingLane, openChanges],
+    () => (
+      <WorkspaceSection
+        isLight={isLight}
+        projectName={projectName}
+        path={projectPath}
+        lane={matchingLane ?? null}
+        onOpenChanges={openChanges}
+      />
+    ),
+    [isLight, projectName, projectPath, matchingLane, openChanges],
   );
 
   const projectMeta = (
@@ -860,7 +882,8 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 <AgentGitView
                   threadId={id}
                   branch={subtitle}
-                  git={git}
+                  git={laneGit}
+                  threadChanges={threadChanges}
                 />
               )}
             </div>

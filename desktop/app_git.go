@@ -28,6 +28,20 @@ func (a *App) GitOverview() ([]domain.WorktreeChanges, error) {
 	return a.gitOverviewAt(a.ctx, root)
 }
 
+func (a *App) GitOverviewAt(root string) ([]domain.WorktreeChanges, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return a.GitOverview()
+	}
+	if repo, ok := git.Open(a.ctx, root); ok {
+		root = repo.Root
+		if gitDir, commonDir, found := gitDirs(root); found && pathKey(gitDir) != pathKey(commonDir) {
+			root = filepath.Dir(commonDir)
+		}
+	}
+	return a.gitOverviewAt(a.ctx, filepath.Clean(root))
+}
+
 // gitOverviewAt is GitOverview for any project, not just the active one; the
 // phone browses projects without switching the desktop's selection.
 func (a *App) gitOverviewAt(ctx context.Context, root string) ([]domain.WorktreeChanges, error) {
@@ -178,6 +192,7 @@ func scanLane(ctx context.Context, checkout git.Checkout, lane *domain.WorktreeC
 		return
 	}
 	lane.Files = files
+	lane.BranchBase, lane.BranchFiles = working.BranchDiff(ctx, compareBase(ctx, working, checkout, lane.Base), untrackedPaths(files))
 
 	commits, ahead, err := laneCommits(ctx, working, checkout, lane.Base, tips, tipsKnown)
 	if err != nil {
@@ -192,6 +207,29 @@ func scanLane(ctx context.Context, checkout git.Checkout, lane *domain.WorktreeC
 	if !checkout.IsMain {
 		lane.Ahead = ahead
 	}
+}
+
+func compareBase(ctx context.Context, working *git.Repo, checkout git.Checkout, base string) string {
+	if !checkout.IsMain {
+		return base
+	}
+	if checkout.Detached {
+		return ""
+	}
+	if def := working.DefaultBranch(ctx); def != "" && !git.SameBranch(def, checkout.Branch) {
+		return def
+	}
+	return ""
+}
+
+func untrackedPaths(files []domain.FileChange) []string {
+	var paths []string
+	for _, file := range files {
+		if file.Status == domain.ChangeUntracked {
+			paths = append(paths, file.Path)
+		}
+	}
+	return paths
 }
 
 type laneHistory struct {

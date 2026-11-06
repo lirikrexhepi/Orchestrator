@@ -1,5 +1,6 @@
-import { RuntimeEvent } from './eventReducer';
+import { RuntimeEvent, editBlockFields } from './eventReducer';
 import { AgentStreamBlock, SubagentBlockData, SubagentEntry } from './types';
+import { isEditToolName } from './threadChanges';
 
 const SPAWN_TOOLS = new Set(['task', 'agent']);
 const TARGET_KEYS = ['file_path', 'command', 'pattern', 'path', 'url', 'query', 'description', 'prompt'];
@@ -186,16 +187,28 @@ export function trackSubagents(blocks: AgentStreamBlock[], event: RuntimeEvent):
     case 'subagent.tool.call': {
       const parent = event.parentToolId;
       if (!parent || !tool) return blocks;
+      const input = (tool.input ?? {}) as Record<string, unknown>;
+      const target = targetOf(input);
+      const edit = isEditToolName(tool.name)
+        ? editBlockFields(tool.name || '', input, tool.diffs)
+        : null;
+      const entry: SubagentEntry = {
+        id: `u-${tool.id}`,
+        kind: 'tool',
+        name: tool.name,
+        target,
+        status: 'running',
+        at: event.at,
+      };
+      if (edit) {
+        entry.filePath = edit.filePath && edit.filePath !== tool.name ? edit.filePath : target;
+        entry.additions = edit.additions;
+        entry.deletions = edit.deletions;
+        entry.diffLines = edit.diffLines;
+      }
       return update(blocks, parent, event.at, (agent) => ({
         ...agent,
-        entries: setEntry(agent.entries, {
-          id: `u-${tool.id}`,
-          kind: 'tool',
-          name: tool.name,
-          target: targetOf(tool.input as Record<string, unknown> | undefined),
-          status: 'running',
-          at: event.at,
-        }),
+        entries: setEntry(agent.entries, entry),
       }));
     }
     case 'subagent.tool.result': {

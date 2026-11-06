@@ -8,6 +8,7 @@ import { MarkdownText } from './MarkdownText';
 import { OrbitLoader } from './OrbitLoader';
 import { SubagentBlockData, SubagentEntry } from './types';
 import { renderChatIcon } from '../common/DynamicIsland';
+import { subagentTotals } from './threadChanges';
 
 export interface SubagentMenuProps {
   agents: SubagentBlockData[];
@@ -199,17 +200,20 @@ function totalElapsedMs(agents: SubagentBlockData[], now: number): number {
   }, 0);
 }
 
-function formatTokens(tokens: number | undefined): string {
-  if (!tokens || tokens <= 0) return '';
-  if (tokens < 1000) return `${tokens}`;
-  if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(tokens < 10_000 ? 1 : 0).replace(/\.0$/, '')}k`;
-  return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
-}
-
 function toolCount(agent: SubagentBlockData): number {
   const seen = agent.entries.filter((entry) => entry.kind === 'tool').length;
   return Math.max(seen, agent.toolCount ?? 0);
 }
+
+const DiffStatBadge: React.FC<{ additions: number; deletions: number }> = ({ additions, deletions }) => {
+  if (additions <= 0 && deletions <= 0) return null;
+  return (
+    <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] tabular-nums font-(family-name:--app-font)">
+      {additions > 0 && <span className="text-emerald-500">+{additions}</span>}
+      {deletions > 0 && <span className="text-rose-500">−{deletions}</span>}
+    </span>
+  );
+};
 
 export const StatusMark: React.FC<{ status: SubagentBlockData['status']; size?: number }> = ({ status, size = 13 }) => {
   if (status === 'running') return <OrbitLoader size={size} />;
@@ -252,11 +256,11 @@ const Transcript: React.FC<{
 }> = ({ agent, now, tone, onBack }) => {
   const [briefOpen, setBriefOpen] = useState(false);
 
-  const tokens = formatTokens(agent.tokens);
+  const stats = subagentTotals(agent);
   const meta = [
     agent.agentType,
     STATUS_WORD[agent.status],
-    tokens && `${tokens} tokens`,
+    (stats.additions > 0 || stats.deletions > 0) && `+${stats.additions} −${stats.deletions} lines`,
     `${toolCount(agent)} tool calls`,
     elapsedOf(agent, now),
   ]
@@ -351,12 +355,20 @@ const AgentRow: React.FC<{
   isLight: boolean;
   faded?: boolean;
   onSelect: () => void;
-}> = ({ agent, now, tone, driver, modelId, isLight, faded = false, onSelect }) => (
+}> = ({ agent, now, tone, driver, modelId, isLight, faded = false, onSelect }) => {
+  const stats = subagentTotals(agent);
+  return (
   <button
     type="button"
     onClick={onSelect}
     title={[
-      [formatTokens(agent.tokens) && `${formatTokens(agent.tokens)} tokens`, `${toolCount(agent)} tool calls`].filter(Boolean).join(' · '),
+      [
+        (stats.additions > 0 || stats.deletions > 0) && `+${stats.additions} −${stats.deletions} lines`,
+        stats.files > 0 && `${stats.files} file${stats.files === 1 ? '' : 's'}`,
+        `${toolCount(agent)} tool calls`,
+      ]
+        .filter(Boolean)
+        .join(' · '),
       agent.prompt?.slice(0, 280),
     ]
       .filter(Boolean)
@@ -374,16 +386,7 @@ const AgentRow: React.FC<{
     <span className={`min-w-0 flex-1 truncate text-[13.5px] font-medium tracking-tight font-(family-name:--app-font) ${tone.title}`}>
       {agent.title}
     </span>
-    {agent.tokens ? (
-      <span
-        className={`shrink-0 text-[12px] tabular-nums font-(family-name:--app-font) ${
-          agent.status === 'running' ? tone.body : tone.muted
-        }`}
-      >
-        {formatTokens(agent.tokens)}
-        <span className={`ml-0.5 text-[10.5px] ${tone.faint}`}>tok</span>
-      </span>
-    ) : null}
+    <DiffStatBadge additions={stats.additions} deletions={stats.deletions} />
     <span className={`shrink-0 text-[12px] tabular-nums font-(family-name:--app-font) ${tone.muted}`}>
       {elapsedOf(agent, now)}
     </span>
@@ -395,7 +398,8 @@ const AgentRow: React.FC<{
       {STATUS_WORD[agent.status]}
     </span>
   </button>
-);
+  );
+};
 
 const Summary: React.FC<{ agents: SubagentBlockData[]; tone: Tone; now: number }> = ({ agents, tone, now }) => {
   const running = agents.filter((agent) => agent.status === 'running').length;

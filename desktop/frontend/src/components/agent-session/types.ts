@@ -159,6 +159,10 @@ export type SubagentEntry =
       status: 'running' | 'completed' | 'error';
       output?: string;
       at?: number;
+      filePath?: string;
+      additions?: number;
+      deletions?: number;
+      diffLines?: DiffLine[];
     };
 
 export interface SubagentBlockData {

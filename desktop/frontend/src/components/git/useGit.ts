@@ -4,6 +4,7 @@ import {
   GitCommitDiff,
   GitFileDiff,
   GitOverview,
+  GitOverviewAt,
   RemoveGitWorktree,
   RevealPath,
 } from '../../../wailsjs/go/main/App';
@@ -58,7 +59,7 @@ function sameFile(left: FileKey | null, right: FileKey | null): boolean {
  * rebase — so failures are held per concern rather than as one flag. A diff that
  * fails to load must not blank the lane list that is still perfectly valid.
  */
-export function useGit(isOpen: boolean): GitState {
+export function useGit(isOpen: boolean, root?: string): GitState {
   const [lanes, setLanes] = useState<domain.WorktreeChanges[]>([]);
   const [activeLanePath, setActiveLanePath] = useState<string | null>(null);
   const [view, setView] = useState<GitView>({ kind: 'changes' });
@@ -81,7 +82,7 @@ export function useGit(isOpen: boolean): GitState {
 
   const load = useCallback(async () => {
     try {
-      const next = await GitOverview();
+      const next = (await (root ? GitOverviewAt(root) : GitOverview())) ?? [];
       const key = JSON.stringify(next);
       if (key !== lanesKey.current) {
         lanesKey.current = key;
@@ -91,7 +92,7 @@ export function useGit(isOpen: boolean): GitState {
     } catch (cause) {
       setError(message(cause));
     }
-  }, []);
+  }, [root]);
 
   const refresh = useCallback(
     async (silent = false) => {

@@ -108,9 +108,13 @@ type fileStat struct {
 // figure worth showing beside a filename. Failure is not fatal: counts are
 // decoration, and a repository with no commits yet has no HEAD to diff.
 func (r *Repo) numstats(ctx context.Context) map[string]fileStat {
+	return r.numstatsAgainst(ctx, "HEAD")
+}
+
+func (r *Repo) numstatsAgainst(ctx context.Context, rev string) map[string]fileStat {
 	stats := make(map[string]fileStat)
 
-	raw, err := runRaw(ctx, r.Root, "diff", "--numstat", "-z", "HEAD")
+	raw, err := runRaw(ctx, r.Root, "diff", "--numstat", "-z", rev)
 	if err != nil {
 		return stats
 	}

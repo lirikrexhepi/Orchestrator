@@ -1319,6 +1319,7 @@ export const Scene: React.FC<SceneProps> = ({ children }) => {
                       }));
                     }}
                     projectName={task.projectName}
+                    projectPath={task.projectPath}
                     accountName={accountLabel(task.driver, task.account)}
                     isFullscreen={isFullscreen}
                     onEnterFullscreen={() => setFullscreenId(task.threadId)}

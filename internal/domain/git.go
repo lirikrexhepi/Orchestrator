@@ -89,14 +89,23 @@ type WorktreeChanges struct {
 	IsMain   bool   `json:"isMain"`
 	// Orphaned marks a worktree on disk that no task in this session claims —
 	// the leftover case worth reviewing before it is removed.
-	Orphaned bool         `json:"orphaned"`
-	Files    []FileChange `json:"files"`
-	Commits  []Commit     `json:"commits"`
-	Ahead    int          `json:"ahead"`
-	Upstream string       `json:"upstream,omitempty"`
-	Unpushed int          `json:"unpushed"`
-	Unpulled int          `json:"unpulled"`
-	Error    string       `json:"error,omitempty"`
+	Orphaned    bool         `json:"orphaned"`
+	Files       []FileChange `json:"files"`
+	Commits     []Commit     `json:"commits"`
+	Ahead       int          `json:"ahead"`
+	Upstream    string       `json:"upstream,omitempty"`
+	Unpushed    int          `json:"unpushed"`
+	Unpulled    int          `json:"unpulled"`
+	BranchBase  string       `json:"branchBase,omitempty"`
+	BranchFiles []FileStat   `json:"branchFiles"`
+	Error       string       `json:"error,omitempty"`
+}
+
+type FileStat struct {
+	Path       string `json:"path"`
+	Insertions int    `json:"insertions"`
+	Deletions  int    `json:"deletions"`
+	Binary     bool   `json:"binary"`
 }
 
 type BranchInfo struct {

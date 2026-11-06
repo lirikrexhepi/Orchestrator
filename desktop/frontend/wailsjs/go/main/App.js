@@ -162,6 +162,10 @@ export function GitOverview() {
   return window['go']['main']['App']['GitOverview']();
 }
 
+export function GitOverviewAt(arg1) {
+  return window['go']['main']['App']['GitOverviewAt'](arg1);
+}
+
 export function GitPull(arg1) {
   return window['go']['main']['App']['GitPull'](arg1);
 }
