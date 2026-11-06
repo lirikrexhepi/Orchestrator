@@ -235,7 +235,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
               <button
                 type="button"
                 onClick={onInterrupt}
-                className="w-[30px] h-[30px] rounded-[10px] flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 shadow-[0_2px_8px_rgba(239,68,68,0.3)]"
+                className="w-[32px] h-[32px] rounded-[10px] flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 shadow-[0_2px_8px_rgba(239,68,68,0.3)]"
                 title="Stop agent"
                 aria-label="Stop"
               >
@@ -248,31 +248,29 @@ export const GlassInput: React.FC<GlassInputProps> = ({
                 onClick={handleSend}
                 style={{
                   backgroundColor: '#132B40',
-                  borderColor: canSubmit ? '#A5BFD5' : 'rgba(165, 191, 213, 0.45)',
-                  boxShadow: canSubmit
-                    ? '0 3px 10px rgba(19, 43, 64, 0.6), inset 0 1px 1px rgba(165, 191, 213, 0.6), inset 0 -1px 1px rgba(0, 0, 0, 0.35)'
-                    : '0 2px 6px rgba(19, 43, 64, 0.4), inset 0 1px 1px rgba(165, 191, 213, 0.3)',
+                  borderColor: canSubmit ? 'rgba(165, 191, 213, 0.45)' : 'rgba(165, 191, 213, 0.2)',
+                  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12)',
                 }}
-                className={`w-[30px] h-[30px] rounded-[10px] border flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
+                className={`w-[32px] h-[32px] rounded-[10px] border flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
                   canSubmit
                     ? 'opacity-100 hover:brightness-110 active:scale-95'
-                    : 'opacity-75 cursor-pointer hover:opacity-90'
+                    : 'opacity-70 cursor-pointer hover:opacity-85'
                 }`}
                 title="Send task (Enter)"
                 aria-label="Send"
               >
                 <svg
-                  width="14"
-                  height="14"
+                  width="16"
+                  height="16"
                   viewBox="0 0 24 24"
                   fill="none"
-                  stroke="#A5BFD5"
-                  strokeWidth="2.5"
+                  stroke={canSubmit ? '#A5BFD5' : 'rgba(165, 191, 213, 0.5)'}
+                  strokeWidth="3.2"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 >
-                  <path d="M7 17v-5a4 4 0 0 1 4-4h6" />
-                  <polyline points="14 5 17 8 14 11" />
+                  <path d="M7 17v-2a3 3 0 0 1 3-3h7" />
+                  <polyline points="13 7 18 12 13 17" />
                 </svg>
               </button>
             )}

@@ -42,28 +42,39 @@ Invoke-Step 'Building desktop app (wails build)' {
 
 if (-not (Test-Path $Built)) { throw "Build finished but $Built is missing" }
 
-Invoke-Step 'Stopping running Orchestrator' {
-    $instanceFile = Join-Path $env:APPDATA 'composer\headless.json'
-    if (Test-Path $instanceFile) {
+Invoke-Step "Installing to $ExePath" {
+    if (Test-Path $ExePath) {
+        $oldExe = "$ExePath.old.exe"
+        if (Test-Path $oldExe) { Remove-Item -Force $oldExe -ErrorAction SilentlyContinue }
         try {
-            $instance = Get-Content $instanceFile -Raw | ConvertFrom-Json
-            Invoke-WebRequest -UseBasicParsing -Method Post -Uri "http://127.0.0.1:$($instance.port)/api/local/shutdown" `
-                -Headers @{ 'X-Orchestrator-Instance' = $instance.secret } -Body '{}' -ContentType 'application/json' -TimeoutSec 5 | Out-Null
-        } catch { }
+            # Try atomic rename so running processes don't crash or get killed
+            Move-Item -Path $ExePath -Destination $oldExe -Force
+        } catch {
+            Copy-Item $ExePath "$ExePath.bak" -Force
+        }
     }
-    if ($taskWasRunning) { Stop-ScheduledTask -TaskName $TaskName }
-    foreach ($p in Get-OrchestratorProcesses) {
-        if ($p.MainWindowHandle -ne 0) { [void]$p.CloseMainWindow() }
-    }
-    $deadline = (Get-Date).AddSeconds(15)
-    while ((Get-OrchestratorProcesses) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 300 }
-    Get-OrchestratorProcesses | Stop-Process -Force
-    Start-Sleep -Milliseconds 500
+    Copy-Item $Built $ExePath -Force
 }
 
-Invoke-Step "Installing to $ExePath" {
-    if (Test-Path $ExePath) { Copy-Item $ExePath "$ExePath.bak" -Force }
-    Copy-Item $Built $ExePath -Force
+if (-not $NoLaunch) {
+    Invoke-Step 'Stopping running Orchestrator' {
+        $instanceFile = Join-Path $env:APPDATA 'composer\headless.json'
+        if (Test-Path $instanceFile) {
+            try {
+                $instance = Get-Content $instanceFile -Raw | ConvertFrom-Json
+                Invoke-WebRequest -UseBasicParsing -Method Post -Uri "http://127.0.0.1:$($instance.port)/api/local/shutdown" `
+                    -Headers @{ 'X-Orchestrator-Instance' = $instance.secret } -Body '{}' -ContentType 'application/json' -TimeoutSec 5 | Out-Null
+            } catch { }
+        }
+        if ($taskWasRunning) { Stop-ScheduledTask -TaskName $TaskName }
+        foreach ($p in Get-OrchestratorProcesses) {
+            if ($p.MainWindowHandle -ne 0) { [void]$p.CloseMainWindow() }
+        }
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Get-OrchestratorProcesses) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 300 }
+        Get-OrchestratorProcesses | Stop-Process -Force
+        Start-Sleep -Milliseconds 500
+    }
 }
 
 Invoke-Step 'Refreshing shell icons' {

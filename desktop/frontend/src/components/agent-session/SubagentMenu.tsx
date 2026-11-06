@@ -9,6 +9,7 @@ import { OrbitLoader } from './OrbitLoader';
 import { SubagentBlockData, SubagentEntry } from './types';
 import { renderChatIcon } from '../common/DynamicIsland';
 import { subagentTotals } from './threadChanges';
+import { GlassSquircle } from '../../ui/glass/GlassSquircle';
 
 export interface SubagentMenuProps {
   agents: SubagentBlockData[];
@@ -31,10 +32,10 @@ const STACK_HEIGHT = 51;
 const TRANSCRIPT_WIDTH = 560;
 const TRANSCRIPT_HEIGHT = 420;
 const EDGE = 12;
-const DOCK_WIDTH = 390;
-const DOCK_MIN_WINDOW = 1480;
-const DOCK_TOP = 120;
-const DOCK_RIGHT = 30;
+const DOCK_WIDTH = 340;
+const DOCK_MIN_WINDOW = 1100;
+const DOCK_TOP = 56;
+const DOCK_RIGHT = 24;
 
 const TOOL_ICONS: Record<string, string> = {
   read: 'search',
@@ -695,11 +696,13 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
   if (docked) {
     const dockWidth = selected
       ? TRANSCRIPT_WIDTH
-      : dockCollapsed
-        ? FOLDED_DOCK_WIDTH
-        : compact
-          ? COMPACT_WIDTH
-          : DOCK_WIDTH;
+      : agents.length === 0
+        ? 280
+        : dockCollapsed
+          ? FOLDED_DOCK_WIDTH
+          : compact
+            ? COMPACT_WIDTH
+            : DOCK_WIDTH;
     return createPortal(
       <div
         onClick={(event) => event.stopPropagation()}
@@ -712,50 +715,74 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
           zIndex: 45,
           transition: 'width 220ms cubic-bezier(0.32, 0.72, 0, 1)',
         }}
-        className={`pointer-events-auto flex flex-col overflow-hidden rounded-[18px] border ${tone.panel}`}
+        className="pointer-events-auto flex flex-col"
       >
-        {selected ? (
-          <Transcript agent={selected} now={now} tone={tone} onBack={() => setOpenId(null)} />
-        ) : (
-          <div className="flex min-h-0 flex-col">
-            {workspace}
-            {agents.length > 0 && (
-            <div className={`flex min-h-0 flex-col p-2 ${workspace ? `border-t ${tone.divider}` : ''}`}>
-            <div className="flex items-center gap-3 px-2 pb-1.5 pt-1.5">
-              <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>Lineage</span>
-              <span className={`h-px flex-1 ${tone.divider} border-t`} />
-              <Summary agents={agents} tone={tone} now={now} />
-              <button
-                type="button"
-                onClick={() => collapseDock(!dockCollapsed)}
-                title={`${dockCollapsed ? 'Expand subagents' : 'Collapse subagents'}${totalLabel ? ` · ${totalLabel}` : ''}`}
-                aria-label={dockCollapsed ? 'Expand subagents' : 'Collapse subagents'}
-                aria-expanded={!dockCollapsed}
-                className={`-mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full cursor-pointer ${tone.close}`}
-              >
-                <MaterialIcon name={dockCollapsed ? 'unfold_more' : 'unfold_less'} size={15} />
-              </button>
-            </div>
-            <AnimatePresence initial={false}>
-              {!dockCollapsed && (
-                <motion.div
-                  key="dock-list"
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={DOCK_EASE}
-                  className="flex min-h-0 flex-col overflow-hidden"
-                >
-                  <ScrollArea maxHeight="calc(100vh - 220px)" className="flex flex-col pt-0.5">
-                    {list}
-                  </ScrollArea>
-                </motion.div>
+        <GlassSquircle
+          radius={20}
+          fill={isLight ? 'rgba(255, 255, 255, 0.75)' : 'rgba(14, 15, 18, 0.72)'}
+          frost={16}
+          border={{
+            strokeWidth: 1,
+            align: 'inside',
+            light: {
+              angle: 303,
+              intensity: 0.38,
+              backIntensity: 0.22,
+            },
+          }}
+          style={{
+            boxShadow: isLight
+              ? '0 10px 30px rgba(0, 0, 0, 0.08)'
+              : '0 14px 40px rgba(0, 0, 0, 0.55)',
+            overflow: 'hidden',
+          }}
+          className={`flex flex-col w-full ${isLight ? 'text-black' : 'text-white'}`}
+        >
+          {selected ? (
+            <Transcript agent={selected} now={now} tone={tone} onBack={() => setOpenId(null)} />
+          ) : (
+            <div className="flex min-h-0 flex-col">
+              {workspace}
+              {agents.length > 0 && (
+                <div className={`flex min-h-0 flex-col p-2 ${workspace ? `border-t ${tone.divider}` : ''}`}>
+                  <div className="flex items-center gap-3 px-2 pb-1.5 pt-1.5">
+                    <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>
+                      Lineage
+                    </span>
+                    <span className={`h-px flex-1 ${tone.divider} border-t`} />
+                    <Summary agents={agents} tone={tone} now={now} />
+                    <button
+                      type="button"
+                      onClick={() => collapseDock(!dockCollapsed)}
+                      title={`${dockCollapsed ? 'Expand subagents' : 'Collapse subagents'}${totalLabel ? ` · ${totalLabel}` : ''}`}
+                      aria-label={dockCollapsed ? 'Expand subagents' : 'Collapse subagents'}
+                      aria-expanded={!dockCollapsed}
+                      className={`-mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full cursor-pointer ${tone.close}`}
+                    >
+                      <MaterialIcon name={dockCollapsed ? 'unfold_more' : 'unfold_less'} size={15} />
+                    </button>
+                  </div>
+                  <AnimatePresence initial={false}>
+                    {!dockCollapsed && (
+                      <motion.div
+                        key="dock-list"
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={DOCK_EASE}
+                        className="flex min-h-0 flex-col overflow-hidden"
+                      >
+                        <ScrollArea maxHeight="calc(100vh - 220px)" className="flex flex-col pt-0.5">
+                          {list}
+                        </ScrollArea>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               )}
-            </AnimatePresence>
             </div>
-            )}
-          </div>
-        )}
+          )}
+        </GlassSquircle>
       </div>,
       document.body,
     );
@@ -805,25 +832,47 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
                 zIndex: 2000,
                 transition: 'width 220ms cubic-bezier(0.32, 0.72, 0, 1)',
               }}
-              className={`pointer-events-auto flex flex-col overflow-hidden rounded-[18px] border backdrop-blur-xl ${tone.panel}`}
+              className="pointer-events-auto flex flex-col"
             >
-              {selected ? (
-                <Transcript agent={selected} now={now} tone={tone} onBack={() => setOpenId(null)} />
-              ) : (
-                <div className="flex min-h-0 flex-col p-2">
-                  {workspace && <div className={`-mx-2 -mt-2 mb-1 border-b ${tone.divider}`}>{workspace}</div>}
-                  <div className="flex items-center gap-3 px-2 pb-2 pt-1.5">
-                    <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>
-                      Lineage
-                    </span>
-                    <span className={`h-px flex-1 ${tone.divider} border-t`} />
-                    <Summary agents={agents} tone={tone} now={now} />
+              <GlassSquircle
+                radius={18}
+                fill={isLight ? 'rgba(255, 255, 255, 0.75)' : 'rgba(14, 15, 18, 0.72)'}
+                frost={16}
+                border={{
+                  strokeWidth: 1,
+                  align: 'inside',
+                  light: {
+                    angle: 303,
+                    intensity: 0.38,
+                    backIntensity: 0.22,
+                  },
+                }}
+                style={{
+                  boxShadow: isLight
+                    ? '0 10px 30px rgba(0, 0, 0, 0.08)'
+                    : '0 14px 40px rgba(0, 0, 0, 0.55)',
+                  overflow: 'hidden',
+                }}
+                className={`flex flex-col w-full ${isLight ? 'text-black' : 'text-white'}`}
+              >
+                {selected ? (
+                  <Transcript agent={selected} now={now} tone={tone} onBack={() => setOpenId(null)} />
+                ) : (
+                  <div className="flex min-h-0 flex-col p-2">
+                    {workspace && <div className={`-mx-2 -mt-2 mb-1 border-b ${tone.divider}`}>{workspace}</div>}
+                    <div className="flex items-center gap-3 px-2 pb-2 pt-1.5">
+                      <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>
+                        Lineage
+                      </span>
+                      <span className={`h-px flex-1 ${tone.divider} border-t`} />
+                      <Summary agents={agents} tone={tone} now={now} />
+                    </div>
+                    <ScrollArea maxHeight={`calc(100vh - ${anchor.top + 80}px)`} className="flex flex-col">
+                      {list}
+                    </ScrollArea>
                   </div>
-                  <ScrollArea maxHeight={`calc(100vh - ${anchor.top + 80}px)`} className="flex flex-col">
-                    {list}
-                  </ScrollArea>
-                </div>
-              )}
+                )}
+              </GlassSquircle>
             </motion.div>
           )}
         </AnimatePresence>,

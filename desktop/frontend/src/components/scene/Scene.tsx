@@ -19,11 +19,13 @@ import { HomeStats } from '../layout/HomeStats';
 import { GlassInput } from '../layout/GlassInput';
 import { DynamicIsland, DynamicIslandNotification } from '../common/DynamicIsland';
 import { TitleBar } from '../common/TitleBar';
-import { SettingsPanel } from '../sidebar/SettingsPanel';
+import { GlassSquircle } from '../../ui/glass/GlassSquircle';
 import { RespondToQuestion } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime/runtime';
 import { playTaskComplete } from '../../sound';
 import { domain } from '../../../wailsjs/go/models';
+
+const SettingsWindow = React.lazy(() => import('../sidebar/SettingsWindow'));
 
 export interface SceneProps {
   children?: React.ReactNode;
@@ -243,6 +245,52 @@ export const Scene: React.FC<SceneProps> = () => {
     }
   };
 
+  const leftTarget = useMemo(() => {
+    if (activeView === 'chat') {
+      if (activeCardIndex > 0) {
+        const neighbor = activeTasks[activeCardIndex - 1];
+        return {
+          title: neighbor?.title || 'Agent',
+          isBusy: neighbor?.isBusy,
+          subtitle: 'Ctrl + ←',
+          onClick: () => setActiveCardIndex((prev) => Math.max(0, prev - 1)),
+        };
+      } else {
+        return {
+          title: 'Home',
+          isBusy: undefined,
+          subtitle: 'Ctrl + ←',
+          onClick: () => setActiveView('home'),
+        };
+      }
+    }
+    return null;
+  }, [activeView, activeCardIndex, activeTasks]);
+
+  const rightTarget = useMemo(() => {
+    if (activeView === 'home' && activeTasks.length > 0) {
+      const neighbor = activeTasks[0];
+      return {
+        title: neighbor?.title || 'Agent',
+        isBusy: neighbor?.isBusy,
+        subtitle: 'Ctrl + →',
+        onClick: () => {
+          setActiveCardIndex(0);
+          setActiveView('chat');
+        },
+      };
+    } else if (activeView === 'chat' && activeCardIndex < activeTasks.length - 1) {
+      const neighbor = activeTasks[activeCardIndex + 1];
+      return {
+        title: neighbor?.title || 'Agent',
+        isBusy: neighbor?.isBusy,
+        subtitle: 'Ctrl + →',
+        onClick: () => setActiveCardIndex((prev) => Math.min(activeTasks.length - 1, prev + 1)),
+      };
+    }
+    return null;
+  }, [activeView, activeCardIndex, activeTasks]);
+
   return (
     <div
       className={`relative w-screen h-screen overflow-hidden flex select-none ${
@@ -372,12 +420,111 @@ export const Scene: React.FC<SceneProps> = () => {
                   projectPath={activeTask.projectPath}
                   accountName={accountLabel(activeTask.driver, activeTask.account)}
                   isFullscreen={true}
+                  isFocused={true}
                   className="w-full h-full"
                 />
               </Suspense>
             </div>
           )}
         </div>
+
+        {/* Bottom Left Navigation Indicator */}
+        {leftTarget && (
+          <button
+            type="button"
+            onClick={leftTarget.onClick}
+            title={leftTarget.title}
+            aria-label={leftTarget.title}
+            className="fixed bottom-7 left-[64px] z-30 pointer-events-auto cursor-pointer transition-transform duration-150 active:scale-95 group hidden md:flex"
+          >
+            <GlassSquircle
+              radius={14}
+              fill={isLight ? 'rgba(255, 255, 255, 0.72)' : 'rgba(14, 15, 18, 0.72)'}
+              frost={16}
+              border={{
+                strokeWidth: 1,
+                align: 'inside',
+                light: { angle: 303, intensity: 0.35, backIntensity: 0.2 },
+              }}
+              style={{
+                boxShadow: isLight
+                  ? '0 6px 20px rgba(0, 0, 0, 0.08)'
+                  : '0 8px 24px rgba(0, 0, 0, 0.45)',
+              }}
+              className="flex items-center gap-2.5 px-3 py-1.5 max-w-[210px]"
+            >
+              <span className="text-[14px] leading-none text-white/50 group-hover:text-white/90 transition-colors">
+                ←
+              </span>
+              <div className="flex flex-col min-w-0 text-left">
+                <span className="truncate text-[11.5px] font-medium leading-tight text-white/85 group-hover:text-white transition-colors">
+                  {leftTarget.title}
+                </span>
+                <span className="flex items-center gap-1.5 text-[9.5px] text-white/50 leading-tight">
+                  {leftTarget.isBusy !== undefined && (
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                        leftTarget.isBusy
+                          ? 'bg-emerald-400 animate-pulse shadow-[0_0_6px_rgba(52,211,153,0.8)]'
+                          : 'bg-white/30'
+                      }`}
+                    />
+                  )}
+                  <span>{leftTarget.subtitle}</span>
+                </span>
+              </div>
+            </GlassSquircle>
+          </button>
+        )}
+
+        {/* Bottom Right Navigation Indicator */}
+        {rightTarget && (
+          <button
+            type="button"
+            onClick={rightTarget.onClick}
+            title={rightTarget.title}
+            aria-label={rightTarget.title}
+            className="fixed bottom-7 right-6 z-30 pointer-events-auto cursor-pointer transition-transform duration-150 active:scale-95 group hidden md:flex"
+          >
+            <GlassSquircle
+              radius={14}
+              fill={isLight ? 'rgba(255, 255, 255, 0.72)' : 'rgba(14, 15, 18, 0.72)'}
+              frost={16}
+              border={{
+                strokeWidth: 1,
+                align: 'inside',
+                light: { angle: 303, intensity: 0.35, backIntensity: 0.2 },
+              }}
+              style={{
+                boxShadow: isLight
+                  ? '0 6px 20px rgba(0, 0, 0, 0.08)'
+                  : '0 8px 24px rgba(0, 0, 0, 0.45)',
+              }}
+              className="flex items-center gap-2.5 px-3 py-1.5 max-w-[210px]"
+            >
+              <div className="flex flex-col min-w-0 text-right">
+                <span className="truncate text-[11.5px] font-medium leading-tight text-white/85 group-hover:text-white transition-colors">
+                  {rightTarget.title}
+                </span>
+                <span className="flex items-center justify-end gap-1.5 text-[9.5px] text-white/50 leading-tight">
+                  <span>{rightTarget.subtitle}</span>
+                  {rightTarget.isBusy !== undefined && (
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                        rightTarget.isBusy
+                          ? 'bg-emerald-400 animate-pulse shadow-[0_0_6px_rgba(52,211,153,0.8)]'
+                          : 'bg-white/30'
+                      }`}
+                    />
+                  )}
+                </span>
+              </div>
+              <span className="text-[14px] leading-none text-white/50 group-hover:text-white/90 transition-colors">
+                →
+              </span>
+            </GlassSquircle>
+          </button>
+        )}
 
         {/* Floating Bottom Liquid Glass Input (Home and Chat) */}
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-[640px] px-4 z-40 pointer-events-auto">
@@ -396,16 +543,16 @@ export const Scene: React.FC<SceneProps> = () => {
         </div>
       </div>
 
-      {/* Settings Panel Flyout (Only for settings at the bottom) */}
+      {/* Settings Modal (Direct Full Center Modal) */}
       {isSettingsOpen && (
-        <div className="fixed inset-y-0 left-[48px] w-[380px] z-50 shadow-2xl animate-slide-right flex flex-col bg-[#111215]/95 backdrop-blur-xl border-r border-white/10">
-          <SettingsPanel
+        <Suspense fallback={null}>
+          <SettingsWindow
+            open={isSettingsOpen}
+            onClose={() => setIsSettingsOpen(false)}
             wallpaper={wallpaper}
             defaultModels={defaultModels}
-            onClose={() => setIsSettingsOpen(false)}
-            className="w-full h-full"
           />
-        </div>
+        </Suspense>
       )}
     </div>
   );
