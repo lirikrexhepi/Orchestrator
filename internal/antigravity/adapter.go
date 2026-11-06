@@ -204,9 +204,10 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 	turnCtx, cancelTurn := context.WithCancel(context.Background())
 	s.mu.Lock()
 	if s.turnID != "" {
-		s.mu.Unlock()
-		cancelTurn()
-		return errors.New("turn already in progress for thread " + in.ThreadID)
+		// Steering turn: interrupt the in-flight process so the new steer prompt takes over
+		if prevCancel := s.cancelTurn; prevCancel != nil {
+			prevCancel()
+		}
 	}
 	s.turnID = in.TurnID
 	s.cancelTurn = cancelTurn

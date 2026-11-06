@@ -40,6 +40,7 @@ export interface DynamicIslandProps {
     model?: string;
     isBusy?: boolean;
     projectName?: string;
+    blocks?: any[];
   }>;
   notification?: DynamicIslandNotification | null;
   onDismissNotification?: () => void;
@@ -519,7 +520,20 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   // Active task and model detection
   const activeTask = activeTasks[0];
-  const anyBusyTask = useMemo(() => activeTasks.find((t) => t.isBusy), [activeTasks]);
+  const anyBusyTask = useMemo(
+    () =>
+      activeTasks.find(
+        (t) =>
+          t.isBusy ||
+          t.blocks?.some(
+            (b: any) =>
+              (b.type === 'thinking' && b.isThinking) ||
+              (b.type === 'tool_bash' && b.status === 'running') ||
+              (b.type === 'tool_search' && b.isSearching),
+          ),
+      ),
+    [activeTasks],
+  );
 
   // Project name
   const displayedProjectName =
@@ -554,7 +568,15 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const runningThreadIds = useMemo(() => {
     const ids = new Set<string>();
     for (const task of activeTasks) {
-      if (!task.isBusy) continue;
+      const isWorking =
+        task.isBusy ||
+        task.blocks?.some(
+          (b: any) =>
+            (b.type === 'thinking' && b.isThinking) ||
+            (b.type === 'tool_bash' && b.status === 'running') ||
+            (b.type === 'tool_search' && b.isSearching),
+        );
+      if (!isWorking) continue;
       ids.add(task.threadId);
       const root = task.threadId.split('-cont-')[0];
       ids.add(root);

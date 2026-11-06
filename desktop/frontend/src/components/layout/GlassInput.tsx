@@ -116,6 +116,13 @@ export const GlassInput: React.FC<GlassInputProps> = ({
         </div>
       )}
 
+      {/* Attached files side rail (positioned on the side so the input height never expands upwards or blocks chat) */}
+      {attachments && attachments.items.length > 0 && (
+        <div className="absolute right-[calc(100%+14px)] bottom-0 max-h-[380px] overflow-y-auto overflow-x-hidden flex flex-col items-end gap-1.5 z-40 pointer-events-auto select-none custom-scrollbar">
+          <AttachmentStrip items={attachments.items} onRemove={attachments.remove} compact vertical />
+        </div>
+      )}
+
       {/* Main Glass Input Squircle */}
       <GlassSquircle
         radius={22}
@@ -140,13 +147,6 @@ export const GlassInput: React.FC<GlassInputProps> = ({
             : '0 14px 40px rgba(0, 0, 0, 0.55)',
         }}
       >
-        {/* Attached files preview strip */}
-        {attachments && attachments.items.length > 0 && (
-          <div className="pb-1">
-            <AttachmentStrip items={attachments.items} onRemove={attachments.remove} compact />
-          </div>
-        )}
-
         {/* Text Area */}
         <textarea
           ref={textareaRef}

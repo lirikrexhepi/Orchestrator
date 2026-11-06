@@ -245,13 +245,29 @@ export const Scene: React.FC<SceneProps> = () => {
     }
   };
 
+  const isTaskWorking = useCallback((task?: (typeof activeTasks)[0] | null) => {
+    if (!task) return false;
+    if (task.isBusy) return true;
+    return Boolean(
+      task.blocks?.some(
+        (b) =>
+          (b.type === 'thinking' && b.isThinking) ||
+          (b.type === 'tool_bash' && b.status === 'running') ||
+          (b.type === 'tool_search' && b.isSearching) ||
+          (b.type === 'tool_edit' && (b as any).status === 'running'),
+      ),
+    );
+  }, []);
+
+  const activeTaskWorking = isTaskWorking(activeTask);
+
   const leftTarget = useMemo(() => {
     if (activeView === 'chat') {
       if (activeCardIndex > 0) {
         const neighbor = activeTasks[activeCardIndex - 1];
         return {
           title: neighbor?.title || 'Agent',
-          isBusy: neighbor?.isBusy,
+          isBusy: isTaskWorking(neighbor),
           subtitle: 'Ctrl + ←',
           onClick: () => setActiveCardIndex((prev) => Math.max(0, prev - 1)),
         };
@@ -265,14 +281,14 @@ export const Scene: React.FC<SceneProps> = () => {
       }
     }
     return null;
-  }, [activeView, activeCardIndex, activeTasks]);
+  }, [activeView, activeCardIndex, activeTasks, isTaskWorking]);
 
   const rightTarget = useMemo(() => {
     if (activeView === 'home' && activeTasks.length > 0) {
       const neighbor = activeTasks[0];
       return {
         title: neighbor?.title || 'Agent',
-        isBusy: neighbor?.isBusy,
+        isBusy: isTaskWorking(neighbor),
         subtitle: 'Ctrl + →',
         onClick: () => {
           setActiveCardIndex(0);
@@ -283,13 +299,13 @@ export const Scene: React.FC<SceneProps> = () => {
       const neighbor = activeTasks[activeCardIndex + 1];
       return {
         title: neighbor?.title || 'Agent',
-        isBusy: neighbor?.isBusy,
+        isBusy: isTaskWorking(neighbor),
         subtitle: 'Ctrl + →',
         onClick: () => setActiveCardIndex((prev) => Math.min(activeTasks.length - 1, prev + 1)),
       };
     }
     return null;
-  }, [activeView, activeCardIndex, activeTasks]);
+  }, [activeView, activeCardIndex, activeTasks, isTaskWorking]);
 
   return (
     <div
@@ -392,7 +408,7 @@ export const Scene: React.FC<SceneProps> = () => {
                   subtitle={activeTask.branch}
                   modelId={activeTask.model}
                   driver={activeTask.driver}
-                  status={activeTask.isBusy ? 'working' : 'idle'}
+                  status={activeTaskWorking ? 'working' : 'idle'}
                   workStartedAt={activeTask.workStartedAt}
                   lastTurnMs={activeTask.lastTurnMs}
                   contextUsage={activeTask.context}
@@ -531,12 +547,12 @@ export const Scene: React.FC<SceneProps> = () => {
           <GlassInput
             onSubmit={handleSubmitPrompt}
             onInterrupt={
-              activeView === 'chat' && activeTask?.isBusy
+              activeView === 'chat' && activeTaskWorking
                 ? () => spawner.interrupt(activeTask.threadId)
                 : undefined
             }
             onNewChat={() => setActiveView('home')}
-            isBusy={activeView === 'chat' && Boolean(activeTask?.isBusy)}
+            isBusy={activeView === 'chat' && activeTaskWorking}
             attachments={attachments}
             isLight={isLight}
           />

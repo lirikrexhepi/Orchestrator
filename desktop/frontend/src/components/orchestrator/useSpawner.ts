@@ -946,12 +946,15 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
               domain.SendTurnInput.createFrom({ threadId, turnId, text: trimmed, files }),
             );
           } catch (cause) {
-            setTasks((previous) =>
-              previous.map((task) =>
-                task.threadId === threadId ? { ...task, isBusy: false } : task,
-              ),
-            );
-            setError(cause instanceof Error ? cause.message : String(cause));
+            const msg = cause instanceof Error ? cause.message : String(cause);
+            if (!msg.includes('already in progress')) {
+              setTasks((previous) =>
+                previous.map((task) =>
+                  task.threadId === threadId ? { ...task, isBusy: false } : task,
+                ),
+              );
+            }
+            setError(msg);
           }
           return threadId;
         }
@@ -974,10 +977,13 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
             domain.SendTurnInput.createFrom({ threadId, turnId, text: trimmed, files }),
           );
         } catch (cause) {
-          setTasks((previous) =>
-            previous.map((task) => (task.threadId === threadId ? { ...task, isBusy: false } : task)),
-          );
-          setError(cause instanceof Error ? cause.message : String(cause));
+          const msg = cause instanceof Error ? cause.message : String(cause);
+          if (!msg.includes('already in progress')) {
+            setTasks((previous) =>
+              previous.map((task) => (task.threadId === threadId ? { ...task, isBusy: false } : task)),
+            );
+          }
+          setError(msg);
         }
         return threadId;
       }
@@ -988,10 +994,13 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
           domain.SendTurnInput.createFrom({ threadId, turnId, text: trimmed, files }),
         );
       } catch (cause) {
-        setTasks((previous) =>
-          previous.map((task) => (task.threadId === threadId ? { ...task, isBusy: false } : task)),
-        );
-        setError(cause instanceof Error ? cause.message : String(cause));
+        const msg = cause instanceof Error ? cause.message : String(cause);
+        if (!msg.includes('already in progress')) {
+          setTasks((previous) =>
+            previous.map((task) => (task.threadId === threadId ? { ...task, isBusy: false } : task)),
+          );
+        }
+        setError(msg);
       }
       return threadId;
     },
