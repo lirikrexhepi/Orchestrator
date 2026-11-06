@@ -4,7 +4,7 @@
   --app-font: "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --app-mono-font: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --ink: 255, 255, 255;
-  --rim: #ffffff;
+  --rim: rgba(255, 255, 255, 0.45);
   --glass-control: #232326;
   --glass-surface: linear-gradient(160deg, #131416 0%, #17181b 50%, #1c1d21 100%);
   --glass-field: linear-gradient(to bottom, #16171a, #131416);

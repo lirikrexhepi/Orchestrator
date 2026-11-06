@@ -4,22 +4,21 @@ import { useProjects } from '../orchestrator/useProjects';
 import { useSpawner } from '../orchestrator/useSpawner';
 import { useAttachments } from '../common/useAttachments';
 import { useHistory } from '../history/useHistory';
+import { useUsage } from '../sidebar/useUsage';
+import { useClaudeImport } from '../history/useClaudeImport';
 import { useDefaultModels } from '../sidebar/useDefaultModels';
 import { useTheme } from '../../themes';
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
 import { AgentWindow } from '../agent-session';
 import { NavRail } from '../layout/NavRail';
-import { TopNotch } from '../layout/TopNotch';
 import { HomeStats } from '../layout/HomeStats';
 import { GlassInput } from '../layout/GlassInput';
-import { HistoryPanel } from '../history/HistoryPanel';
+import { DynamicIsland, DynamicIslandNotification } from '../common/DynamicIsland';
 import { SettingsPanel } from '../sidebar/SettingsPanel';
-import { ProjectPicker } from '../orchestrator/ProjectPicker';
 import { RespondToQuestion } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime/runtime';
 import { playTaskComplete } from '../../sound';
 import { domain } from '../../../wailsjs/go/models';
-import { X } from '../common/icons';
 
 export interface SceneProps {
   children?: React.ReactNode;
@@ -33,29 +32,52 @@ export const Scene: React.FC<SceneProps> = () => {
   const { currentTheme } = useTheme();
   const isLight = currentTheme.id === 'light' || currentTheme.id === 'white';
 
-  // Modals / Panels
+  // Panels & Triggers
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [isProjectsOpen, setIsProjectsOpen] = useState(false);
+  const [projectsTrigger, setProjectsTrigger] = useState(0);
+  const [historyTrigger, setHistoryTrigger] = useState(0);
 
   const defaultModels = useDefaultModels(isSettingsOpen);
-  const history = useHistory(isHistoryOpen);
+  const history = useHistory(true);
+  const usage = useUsage(true);
+  const claudeImport = useClaudeImport();
   const activeTasks = spawner.tasks;
 
-  // View state: 'home' (blank chat screen with stats & input) or 'chat' (active fullscreen chat)
+  // View state: 'home' (blank chat screen) or 'chat' (active fullscreen chat)
   const [activeView, setActiveView] = useState<'home' | 'chat'>('home');
   const [activeCardIndex, setActiveCardIndex] = useState(0);
+
+  // Dynamic Island Notifications
+  const [islandNotification, setIslandNotification] = useState<DynamicIslandNotification | null>(null);
+  const notificationTimerRef = useRef<number | null>(null);
 
   // Active task object
   const activeTask = activeTasks[activeCardIndex] ?? null;
 
-  // Play completion sound when a task finishes
+  // Play completion sound and surface notification in Dynamic Island
   useEffect(() => {
-    const off = EventsOn('session:notification', (notif: { type: string }) => {
-      if (notif.type === 'success' && useOrchestratorStore.getState().interfaceSounds) {
-        playTaskComplete();
-      }
-    });
+    const off = EventsOn(
+      'session:notification',
+      (notif: { type: string; title: string; message: string; threadId?: string }) => {
+        if (notificationTimerRef.current) {
+          window.clearTimeout(notificationTimerRef.current);
+        }
+        if (notif.type === 'success' && useOrchestratorStore.getState().interfaceSounds) {
+          playTaskComplete();
+        }
+        setIslandNotification({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: Date.now(),
+          title: notif.title || 'Completed',
+          subtitle: notif.message,
+          type: notif.type === 'alert' ? 'alert' : 'success',
+          threadId: notif.threadId,
+        });
+        notificationTimerRef.current = window.setTimeout(() => {
+          setIslandNotification(null);
+        }, 5000);
+      },
+    );
     return () => {
       off();
     };
@@ -76,7 +98,7 @@ export const Scene: React.FC<SceneProps> = () => {
   // - Ctrl + ArrowLeft: previous agent session (or return to home)
   // - Ctrl + ArrowRight: next agent session (or enter active chat from home)
   // - Ctrl + N: new blank chat / home
-  // - Escape: close open drawers/panels
+  // - Escape: close settings
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'n' || e.key === 'N')) {
@@ -112,8 +134,6 @@ export const Scene: React.FC<SceneProps> = () => {
 
       if (e.key === 'Escape') {
         setIsSettingsOpen(false);
-        setIsHistoryOpen(false);
-        setIsProjectsOpen(false);
         return;
       }
     };
@@ -162,7 +182,6 @@ export const Scene: React.FC<SceneProps> = () => {
   };
 
   const handleOpenHistorySession = async (workspaceId: string, threadId?: string) => {
-    setIsHistoryOpen(false);
     const targetIndex = await spawner.openHistorySession(workspaceId, threadId);
     if (targetIndex >= 0) {
       setActiveCardIndex(targetIndex);
@@ -173,7 +192,7 @@ export const Scene: React.FC<SceneProps> = () => {
   return (
     <div
       className={`relative w-screen h-screen overflow-hidden flex select-none ${
-        isLight ? 'bg-[#f4f4f7] text-black' : 'bg-[#090a0c] text-white'
+        isLight ? 'bg-[#f4f4f7] text-black' : 'bg-[#060709] text-white'
       }`}
     >
       {/* Subtle Wallpaper Layer with 0% top to 8% bottom opacity mask */}
@@ -188,30 +207,60 @@ export const Scene: React.FC<SceneProps> = () => {
         }}
       />
 
-      {/* Left Navigation Rail (Design 2) */}
+      {/* Left Navigation Rail (Floating icons, no vertical line, no bulky background) */}
       <NavRail
         activeView={activeView}
-        hasActiveTasks={activeTasks.length > 0}
         onHomeClick={() => setActiveView('home')}
         onNewChatClick={() => {
           setActiveView('home');
         }}
-        onProjectsClick={() => setIsProjectsOpen((prev) => !prev)}
+        onProjectsClick={() => setProjectsTrigger((p) => p + 1)}
         onSettingsClick={() => setIsSettingsOpen((prev) => !prev)}
-        isProjectsOpen={isProjectsOpen}
         isSettingsOpen={isSettingsOpen}
         isLight={isLight}
       />
 
       {/* Main Workspace Area */}
       <div className="relative flex-1 h-full overflow-hidden flex flex-col z-10">
-        {/* Top Notch Pill */}
-        <TopNotch
-          onHistoryClick={() => setIsHistoryOpen((prev) => !prev)}
-          isHistoryOpen={isHistoryOpen}
-          isLight={isLight}
-          activeTitle={activeView === 'chat' && activeTask ? activeTask.title : undefined}
-        />
+        {/* Dynamic Island at Top Center */}
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 pointer-events-auto">
+          <DynamicIsland
+            projects={projects}
+            activeTaskProjectName={activeTask?.projectName}
+            activeTaskBranch={activeTask?.branch}
+            usageReport={usage.report}
+            usageError={usage.error}
+            activeTasks={spawner.allActiveTasks}
+            notification={islandNotification}
+            onDismissNotification={() => {
+              setIslandNotification(null);
+            }}
+            historyEntries={history.entries}
+            activeWorkspaceId={spawner.workspaceId}
+            onOpenHistory={handleOpenHistorySession}
+            onDeleteHistory={history.remove}
+            onSetChatArchived={(wsId, tId, arch) => {
+              void history.setArchived(wsId, tId, arch);
+            }}
+            onMoveChat={(payload, proj) => {
+              void spawner.moveChat(payload, proj).then(() => history.refresh());
+            }}
+            onRefreshHistory={history.refresh}
+            openProjectsTrigger={projectsTrigger}
+            openHistoryTrigger={historyTrigger}
+            claudeSessions={claudeImport.sessions}
+            claudeLoading={claudeImport.isLoading}
+            onImportClaudeSession={(filePath) => {
+              void (async () => {
+                const targetIdx = await spawner.openHistorySession('', filePath);
+                if (targetIdx >= 0) {
+                  setActiveCardIndex(targetIdx);
+                  setActiveView('chat');
+                }
+              })();
+            }}
+          />
+        </div>
 
         {/* View Content */}
         {activeView === 'home' || !activeTask ? (
@@ -269,68 +318,15 @@ export const Scene: React.FC<SceneProps> = () => {
         )}
       </div>
 
-      {/* History Drawer Flyout */}
-      {isHistoryOpen && (
-        <div className="fixed inset-y-0 left-[58px] w-[360px] z-50 shadow-2xl animate-slide-right flex flex-col bg-[#131417] border-r border-white/10">
-          <HistoryPanel
-            entries={history.entries}
-            isLoading={history.isLoading}
-            error={history.error}
-            activeThreadId={activeTask?.threadId}
-            onOpen={handleOpenHistorySession}
-            onDelete={(wsId, tId) => history.remove(wsId, tId)}
-            onNewChat={() => {
-              setIsHistoryOpen(false);
-              setActiveView('home');
-            }}
-            onRefresh={history.refresh}
-            onClose={() => setIsHistoryOpen(false)}
-            className="w-full h-full"
-          />
-        </div>
-      )}
-
-      {/* Settings Panel Flyout */}
+      {/* Settings Panel Flyout (Only for settings at the bottom) */}
       {isSettingsOpen && (
-        <div className="fixed inset-y-0 left-[58px] w-[380px] z-50 shadow-2xl animate-slide-right flex flex-col bg-[#131417] border-r border-white/10">
+        <div className="fixed inset-y-0 left-[48px] w-[380px] z-50 shadow-2xl animate-slide-right flex flex-col bg-[#111215]/95 backdrop-blur-xl border-r border-white/10">
           <SettingsPanel
             wallpaper={wallpaper}
             defaultModels={defaultModels}
             onClose={() => setIsSettingsOpen(false)}
             className="w-full h-full"
           />
-        </div>
-      )}
-
-      {/* Projects Picker Flyout */}
-      {isProjectsOpen && (
-        <div className="fixed inset-y-0 left-[58px] w-[320px] z-50 shadow-2xl animate-slide-right flex flex-col bg-[#131417] border-r border-white/10 p-4">
-          <div className="flex items-center justify-between pb-3 border-b border-white/10">
-            <span className="text-[13px] font-semibold">Projects</span>
-            <button
-              type="button"
-              onClick={() => setIsProjectsOpen(false)}
-              className="text-white/50 hover:text-white cursor-pointer"
-            >
-              <X size={16} />
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto pt-3">
-            <ProjectPicker
-              projects={projects.projects}
-              activeId={projects.active?.id}
-              onSelect={(id) => {
-                projects.select(id);
-                setIsProjectsOpen(false);
-              }}
-              onAdd={() => {
-                projects.choose();
-              }}
-              onRemove={(id) => {
-                projects.remove(id);
-              }}
-            />
-          </div>
         </div>
       )}
     </div>

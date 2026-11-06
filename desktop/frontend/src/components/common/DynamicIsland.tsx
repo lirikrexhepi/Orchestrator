@@ -1,6 +1,7 @@
 import { ChevronLeft, ChevronRight, MaterialIcon, RefreshCw } from './icons';
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { GlassBorder } from '../../ui/glass/GlassBorder';
 import { ProjectsState, Project } from '../orchestrator/useProjects';
 import { DynamicIslandWaveform } from './DynamicIslandWaveform';
 import { ClaudeChatsView, ProjectChatsView, ProjectsView, islandTone } from './IslandLists';
@@ -62,6 +63,8 @@ export interface DynamicIslandProps {
   onRefreshClaude?: () => void;
   /** Imports the session invisibly and opens it. */
   onImportClaudeSession?: (filePath: string) => void;
+  openProjectsTrigger?: number;
+  openHistoryTrigger?: number;
   className?: string;
 }
 
@@ -468,6 +471,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   claudeError,
   onRefreshClaude,
   onImportClaudeSession,
+  openProjectsTrigger,
+  openHistoryTrigger,
   className = '',
 }) => {
   // Mode: 'idle' (compact), 'projects' (expanded project picker), 'project-chats' (project's past chats), 'claude-chats' (native Claude Code chats), 'usage' (expanded usage card)
@@ -476,6 +481,18 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const islandRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [contentHeight, setContentHeight] = useState(0);
+
+  useEffect(() => {
+    if (openProjectsTrigger && openProjectsTrigger > 0) {
+      setMode('projects');
+    }
+  }, [openProjectsTrigger]);
+
+  useEffect(() => {
+    if (openHistoryTrigger && openHistoryTrigger > 0) {
+      setMode('project-chats');
+    }
+  }, [openHistoryTrigger]);
 
   useLayoutEffect(() => {
     const node = contentRef.current;
@@ -716,16 +733,16 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const isListMode = mode === 'project-chats' || mode === 'claude-chats' || mode === 'projects';
   const targetWidth =
     mode === 'project-chats' || mode === 'claude-chats'
-      ? 372
+      ? 380
       : mode === 'projects'
-      ? 348
+      ? 350
       : mode === 'usage'
       ? 315
       : notification
       ? 320
-      : 275;
-  const targetHeight = isListMode ? Math.max(contentHeight, 60) : mode === 'usage' ? 180 : 36;
-  const targetRadius = mode === 'idle' ? 18 : 26;
+      : 196;
+  const targetHeight = isListMode ? Math.max(contentHeight, 60) : mode === 'usage' ? 180 : 34;
+  const targetRadius = mode === 'idle' ? 17 : 24;
   const viewMotion = {
     initial: { opacity: 0, y: -6 },
     animate: { opacity: 1, y: 0 },
@@ -753,24 +770,25 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         transformOrigin: 'top center',
         backgroundColor: isLight
           ? 'rgba(255, 255, 255, 0.94)'
-          : isGlass
-          ? 'rgba(10, 14, 26, 0.65)'
-          : 'rgba(3, 3, 3, 0.95)',
-        border: isLight
-          ? '1px solid rgba(0, 0, 0, 0.10)'
-          : isGlass
-          ? '1px solid rgba(255, 255, 255, 0.22)'
-          : '1px solid rgba(255, 255, 255, 0.08)',
-        backdropFilter: isGlass ? 'blur(16px) saturate(150%)' : undefined,
-        WebkitBackdropFilter: isGlass ? 'blur(16px) saturate(150%)' : undefined,
+          : 'rgba(12, 13, 16, 0.95)',
         boxShadow: isLight
-          ? '0 12px 32px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06)'
-          : isGlass
-          ? '0 16px 40px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3)'
-          : '0 16px 40px rgba(0, 0, 0, 0.85), 0 4px 12px rgba(0, 0, 0, 0.6)',
+          ? '0 8px 24px rgba(0, 0, 0, 0.08)'
+          : '0 10px 32px rgba(0, 0, 0, 0.65)',
       }}
     >
-      <div ref={contentRef} className="w-full" style={{ height: isListMode ? 'auto' : '100%' }}>
+      {/* Liquid Glass Specular Rim Border */}
+      <GlassBorder
+        radius={targetRadius}
+        strokeWidth={1}
+        align="inside"
+        light={{
+          angle: 303,
+          intensity: 0.28,
+          backIntensity: 0.18,
+        }}
+      />
+
+      <div ref={contentRef} className="w-full relative z-10" style={{ height: isListMode ? 'auto' : '100%' }}>
       <AnimatePresence mode="wait" initial={false}>
         {/* ===================================================================
             1. COMPACT IDLE STATE (Notification or Two clickable zones)
@@ -840,87 +858,56 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
             transition={{ duration: 0.12 }}
             className="flex items-center justify-between w-full h-full px-2"
           >
-            {/* Left Clickable Zone: Project Button */}
+            {/* Left Clickable Zone: History Clock Button */}
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                setMode('projects');
+                const activeProj = selectedProject || projects?.active || (projects?.projects && projects.projects.length > 0 ? projects.projects[0] : null);
+                if (activeProj) setSelectedProject(activeProj);
+                setMode('project-chats');
               }}
-              className={`flex items-center gap-2 h-[28px] px-2 rounded-full ${
-                isLight ? 'hover:bg-black/[0.06]' : 'hover:bg-white/[0.08]'
-              } active:scale-95 transition-all cursor-pointer min-w-0`}
-              title={`Project: ${displayedProjectName}\nClick to switch`}
+              style={{ ['--wails-draggable' as string]: 'no-drag' }}
+              className={`flex items-center justify-center w-[28px] h-[28px] rounded-full ${
+                isLight ? 'hover:bg-black/[0.06] text-black/60' : 'hover:bg-white/[0.08] text-white/50 hover:text-white'
+              } active:scale-95 transition-all cursor-pointer`}
+              title="Past Chats & History"
+              aria-label="Past Chats"
             >
-              <ProjectGlyph
-                projectId={displayedProjectId}
-                size={15}
-                glyph={
-                  <MaterialIcon name="folder" className="text-[15px] text-white/60 shrink-0"/>
-                }
-              />
-              <span className="text-[12.5px] font-medium text-white tracking-tight truncate max-w-[110px]">
-                {displayedProjectName}
-              </span>
-              {activeTaskBranch && viewMode === 'deck' && (
-                <span className="text-[10.5px] font-mono text-white/40 truncate max-w-[60px] hidden sm:inline">
-                  · {activeTaskBranch}
-                </span>
-              )}
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+                <path d="M12 7v5l4 2" />
+              </svg>
             </button>
 
-            {/* Middle Working Waveform (if active) */}
-            {anyBusyTask && (
-              <div className="flex items-center px-1">
-                <DynamicIslandWaveform />
-              </div>
-            )}
+            {/* Middle Window Drag Strip / Agent Waveform */}
+            <div
+              className="flex-1 h-full flex items-center justify-center cursor-default px-1"
+              style={{ ['--wails-draggable' as string]: 'drag' }}
+            >
+              {anyBusyTask && <DynamicIslandWaveform />}
+            </div>
 
-            {/* Right Clickable Zone: Model Usage Ring Button */}
+            {/* Right Clickable Zone: Model Usage Button */}
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 setMode('usage');
               }}
-              className={`flex items-center gap-1.5 h-[28px] px-2 rounded-full ${
+              style={{ ['--wails-draggable' as string]: 'no-drag' }}
+              className={`flex items-center justify-center w-[28px] h-[28px] rounded-full ${
                 isLight ? 'hover:bg-black/[0.06]' : 'hover:bg-white/[0.08]'
               } active:scale-95 transition-all cursor-pointer shrink-0`}
-              title={`${modelTheme.name} Usage: ${sessionUsedPercent}%\nClick for details`}
+              title={`${modelTheme.name} Quota & Usage\nClick to inspect`}
+              aria-label="Model Quota"
             >
-              <div className="relative w-[20px] h-[20px] flex items-center justify-center shrink-0">
-                {/* SVG Circular Ring */}
-                <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 20 20">
-                  <circle
-                    cx="10"
-                    cy="10"
-                    r="8"
-                    fill="none"
-                    stroke={isLight ? 'rgba(0, 0, 0, 0.14)' : 'rgba(255, 255, 255, 0.18)'}
-                    strokeWidth="2"
-                  />
-                  <circle
-                    cx="10"
-                    cy="10"
-                    r="8"
-                    fill="none"
-                    stroke={modelTheme.ringColor}
-                    strokeWidth="2"
-                    strokeDasharray={ringCircumference}
-                    strokeDashoffset={ringOffset}
-                    strokeLinecap="round"
-                    className="transition-[stroke-dashoffset] duration-300"
-                  />
-                </svg>
-                {/* Center model icon */}
-                <div className="flex items-center justify-center">
-                  {modelTheme.icon}
-                </div>
-              </div>
-
-              <span className="text-[11px] font-semibold text-white/90 tabular-nums font-(family-name:--app-font)">
-                {sessionUsedPercent}%
-              </span>
+              <img
+                src={providerIcon(driverName, isLight) || antigravityLogo}
+                alt={modelTheme.name}
+                className="w-[16px] h-[16px] object-contain"
+              />
             </button>
           </motion.div>
         )}
@@ -953,13 +940,28 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           </motion.div>
         )}
 
-        {mode === 'project-chats' && selectedProject && (
+        {mode === 'project-chats' && (
           <motion.div key="project-chats-view" {...viewMotion} className="w-full">
             <ProjectChatsView
               tone={tone}
-              project={selectedProject}
-              groups={groupChatHistoryItems(extractChatHistoryItems(historyEntries || [], selectedProject.path))}
-              archived={extractChatHistoryItems(historyEntries || [], selectedProject.path, { archived: 'only' })}
+              project={
+                selectedProject ||
+                projects?.active ||
+                (projects?.projects && projects.projects.length > 0
+                  ? projects.projects[0]
+                  : ({ id: 'default', name: 'Past Chats', path: '', isGit: false, addedAt: Date.now() } as Project))
+              }
+              groups={groupChatHistoryItems(
+                extractChatHistoryItems(
+                  historyEntries || [],
+                  (selectedProject || projects?.active || projects?.projects?.[0])?.path || '',
+                ),
+              )}
+              archived={extractChatHistoryItems(
+                historyEntries || [],
+                (selectedProject || projects?.active || projects?.projects?.[0])?.path || '',
+                { archived: 'only' },
+              )}
               runningThreadIds={runningThreadIds}
               renderIcon={(chat) => renderOverlappingChatIcons(chat, isLight)}
               subtitle={formatChatSubtitle}
@@ -967,16 +969,18 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               onClose={() => setMode('idle')}
               onNewChat={() => {
                 void (async () => {
-                  if (selectedProject.id !== projects?.active?.id) {
-                    await projects?.select(selectedProject.id);
+                  const proj = selectedProject || projects?.active;
+                  if (proj && proj.id !== projects?.active?.id) {
+                    await projects?.select(proj.id);
                   }
                   onNewChat?.();
                 })();
                 setMode('idle');
               }}
               onOpen={(chat) => {
-                if (selectedProject.id !== projects?.active?.id) {
-                  void projects?.select(selectedProject.id);
+                const proj = selectedProject || projects?.active;
+                if (proj && proj.id !== projects?.active?.id) {
+                  void projects?.select(proj.id);
                 }
                 if (chat.archived) onSetChatArchived?.(chat.workspaceId, chat.threadId, false);
                 onOpenHistory?.(chat.workspaceId, chat.threadId);

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GlassSquircle } from '../../ui/glass/GlassSquircle';
-import { Paperclip, ChevronRight, X } from '../common/icons';
+import { Paperclip, X } from '../common/icons';
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
 import { providerIcon } from '../orchestrator/providerIcons';
 import { ModelPicker } from '../orchestrator/ModelPicker';
@@ -32,7 +32,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [text]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -55,10 +55,10 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   const canSubmit = text.trim().length > 0 || (attachments && attachments.items.length > 0);
 
   return (
-    <div className="relative w-full max-w-[680px] mx-auto select-none font-(family-name:--app-font)">
+    <div className="relative w-full max-w-[640px] mx-auto select-none font-(family-name:--app-font)">
       {/* Model Picker Popup */}
       {isModelPickerOpen && (
-        <div className="absolute bottom-[calc(100%+12px)] left-0 z-50 animate-scale-in">
+        <div className="absolute bottom-[calc(100%+10px)] left-0 z-50 animate-scale-in">
           <ModelPicker
             selectedModelId={selectedModelId}
             onSelectModel={(id) => {
@@ -73,37 +73,37 @@ export const GlassInput: React.FC<GlassInputProps> = ({
       {/* Main Glass Input Squircle */}
       <GlassSquircle
         radius={22}
-        fill={isLight ? 'rgba(255, 255, 255, 0.92)' : 'rgba(16, 17, 20, 0.94)'}
+        fill={isLight ? 'rgba(255, 255, 255, 0.90)' : 'rgba(14, 15, 18, 0.88)'}
         frost={16}
         border={{
           strokeWidth: 1,
           align: 'inside',
           light: {
             angle: 303,
-            intensity: isLight ? 0.65 : 0.8,
-            backIntensity: 0.65,
+            intensity: isLight ? 0.35 : 0.35,
+            backIntensity: 0.22,
           },
         }}
         style={{
-          padding: '16px 18px 14px',
+          padding: '14px 18px 12px',
           display: 'flex',
           flexDirection: 'column',
-          gap: 12,
+          gap: 10,
           boxShadow: isLight
-            ? '0 12px 36px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04)'
-            : '0 16px 44px rgba(0, 0, 0, 0.55), 0 4px 12px rgba(0, 0, 0, 0.35)',
+            ? '0 12px 32px rgba(0, 0, 0, 0.06)'
+            : '0 14px 40px rgba(0, 0, 0, 0.55)',
         }}
       >
         {/* Attached files preview chips */}
         {attachments && attachments.items.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 pb-1">
+          <div className="flex flex-wrap gap-1.5 pb-0.5">
             {attachments.items.map((item) => (
               <span
                 key={item.id}
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] border ${
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] ${
                   isLight
-                    ? 'bg-black/[0.04] border-black/10 text-black/80'
-                    : 'bg-white/[0.06] border-white/10 text-white/80'
+                    ? 'bg-black/[0.04] text-black/80'
+                    : 'bg-white/[0.06] text-white/80'
                 }`}
               >
                 <span className="truncate max-w-[200px]">{item.name}</span>
@@ -127,24 +127,24 @@ export const GlassInput: React.FC<GlassInputProps> = ({
           onKeyDown={handleKeyDown}
           placeholder="Write a task, or have an agent handle something for you"
           rows={1}
-          className={`w-full bg-transparent border-0 outline-none resize-none text-[14.5px] leading-relaxed tracking-tight ${
+          className={`w-full bg-transparent border-0 outline-none resize-none text-[14px] leading-relaxed tracking-tight ${
             isLight
-              ? 'text-black placeholder:text-black/40'
-              : 'text-white/95 placeholder:text-white/35'
+              ? 'text-black placeholder:text-black/35'
+              : 'text-white/90 placeholder:text-white/35'
           }`}
-          style={{ minHeight: '38px', maxHeight: '200px' }}
+          style={{ minHeight: '34px', maxHeight: '180px' }}
         />
 
         {/* Bottom Action Bar */}
-        <div className="flex items-center justify-between pt-1">
+        <div className="flex items-center justify-between pt-0.5">
           {/* Left: Model Pill */}
           <button
             type="button"
             onClick={() => setIsModelPickerOpen(!isModelPickerOpen)}
-            className={`flex items-center gap-2 px-2.5 py-1.5 rounded-xl border transition-all duration-150 cursor-pointer active:scale-95 ${
+            className={`flex items-center gap-2 h-[26px] px-2.5 rounded-full transition-all duration-150 cursor-pointer active:scale-95 ${
               isLight
-                ? 'bg-black/[0.03] border-black/[0.08] text-black/80 hover:bg-black/[0.06]'
-                : 'bg-white/[0.04] border-white/[0.08] text-white/80 hover:bg-white/[0.08]'
+                ? 'hover:bg-black/[0.05] text-black/80'
+                : 'hover:bg-white/[0.06] text-white/85'
             }`}
             title="Switch Model"
           >
@@ -152,49 +152,62 @@ export const GlassInput: React.FC<GlassInputProps> = ({
               <img
                 src={icon}
                 alt={provider}
-                className="w-4 h-4 object-contain rounded-sm"
+                className="w-3.5 h-3.5 object-contain rounded-sm"
               />
             ) : (
-              <div className="w-3.5 h-3.5 rounded-full bg-blue-500/80" />
+              <div className="w-3 h-3 rounded-full bg-blue-500/80" />
             )}
-            <span className="text-[12.5px] font-medium tracking-tight">
+            <span className="text-[12px] font-medium tracking-tight">
               {selectedModel?.name ?? 'Gemini Carbon'}
             </span>
           </button>
 
           {/* Right: Attachments & Send Button */}
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
             {/* Paperclip */}
             {attachments && (
               <button
                 type="button"
                 onClick={() => attachments.browse()}
-                className={`w-[32px] h-[32px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
+                className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
                   isLight
-                    ? 'text-black/50 hover:text-black hover:bg-black/[0.05]'
-                    : 'text-white/50 hover:text-white hover:bg-white/[0.07]'
+                    ? 'text-black/40 hover:text-black hover:bg-black/[0.05]'
+                    : 'text-white/35 hover:text-white hover:bg-white/[0.06]'
                 }`}
                 title="Attach files"
                 aria-label="Attach files"
               >
-                <Paperclip size={18} />
+                <Paperclip size={16} />
               </button>
             )}
 
-            {/* Circular Send Button */}
+            {/* Circular Send Button with Curved Arrow from Screenshot */}
             <button
               type="button"
               disabled={!canSubmit}
               onClick={handleSend}
-              className={`w-[32px] h-[32px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
+              className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
                 canSubmit
-                  ? 'bg-[#1b3a5d] hover:bg-[#234d7d] text-white shadow-[0_2px_10px_rgba(27,58,93,0.5)]'
-                  : 'bg-white/[0.06] text-white/20 cursor-not-allowed'
+                  ? 'bg-[#1a2d40] hover:bg-[#233d57] text-white shadow-[0_2px_8px_rgba(26,45,64,0.6)]'
+                  : 'bg-[#1a2d40]/70 text-white/50 cursor-pointer hover:bg-[#1a2d40]'
               }`}
               title="Send task (Enter)"
               aria-label="Send"
             >
-              <ChevronRight size={18} strokeWidth={2.5} />
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="text-white"
+              >
+                <path d="M7 17v-5a4 4 0 0 1 4-4h6" />
+                <polyline points="14 5 17 8 14 11" />
+              </svg>
             </button>
           </div>
         </div>
