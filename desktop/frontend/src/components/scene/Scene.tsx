@@ -310,18 +310,23 @@ export const Scene: React.FC<SceneProps> = () => {
   return (
     <div
       className={`relative w-screen h-screen overflow-hidden flex select-none ${
-        isLight ? 'bg-[#f4f4f7] text-black' : 'bg-[#060709] text-white'
+        isLight ? 'bg-[#f4f4f7] text-black' : 'bg-[#070709] text-white'
       }`}
+      style={{
+        backgroundColor: isLight ? '#f4f4f7' : '#070709',
+      }}
     >
-      {/* Subtle Wallpaper Layer with 0% top to 8% bottom opacity mask */}
+      {/* Subtle Wallpaper Layer with top fade and bottom gradient set higher up */}
       <div
         className="absolute inset-0 pointer-events-none z-0 overflow-hidden transition-opacity duration-700"
         style={{
           backgroundImage: wallpaper.selected ? `url(${wallpaper.selected.url})` : undefined,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
-          maskImage: 'linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.08) 100%)',
-          WebkitMaskImage: 'linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.08) 100%)',
+          maskImage:
+            'linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.05) 15%, rgba(0, 0, 0, 0.25) 45%, rgba(0, 0, 0, 0.45) 80%, rgba(0, 0, 0, 0.55) 100%)',
+          WebkitMaskImage:
+            'linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.05) 15%, rgba(0, 0, 0, 0.25) 45%, rgba(0, 0, 0, 0.45) 80%, rgba(0, 0, 0, 0.55) 100%)',
         }}
       />
 
@@ -455,7 +460,7 @@ export const Scene: React.FC<SceneProps> = () => {
           >
             <GlassSquircle
               radius={14}
-              fill={isLight ? 'rgba(255, 255, 255, 0.72)' : 'rgba(14, 15, 18, 0.72)'}
+              fill={isLight ? 'rgba(255, 255, 255, 0.72)' : 'linear-gradient(135deg, #0B0A09 0%, #191616 100%)'}
               frost={16}
               border={{
                 strokeWidth: 1,
@@ -504,7 +509,7 @@ export const Scene: React.FC<SceneProps> = () => {
           >
             <GlassSquircle
               radius={14}
-              fill={isLight ? 'rgba(255, 255, 255, 0.72)' : 'rgba(14, 15, 18, 0.72)'}
+              fill={isLight ? 'rgba(255, 255, 255, 0.72)' : 'linear-gradient(135deg, #0B0A09 0%, #191616 100%)'}
               frost={16}
               border={{
                 strokeWidth: 1,

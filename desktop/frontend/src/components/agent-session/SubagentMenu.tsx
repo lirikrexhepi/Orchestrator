@@ -719,7 +719,7 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
       >
         <GlassSquircle
           radius={20}
-          fill={isLight ? 'rgba(255, 255, 255, 0.75)' : 'rgba(14, 15, 18, 0.72)'}
+          fill={isLight ? 'rgba(255, 255, 255, 0.75)' : 'linear-gradient(135deg, #0B0A09 0%, #191616 100%)'}
           frost={16}
           border={{
             strokeWidth: 1,

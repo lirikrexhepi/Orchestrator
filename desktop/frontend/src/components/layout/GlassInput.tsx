@@ -126,7 +126,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
       {/* Main Glass Input Squircle */}
       <GlassSquircle
         radius={22}
-        fill={isLight ? 'rgba(255, 255, 255, 0.90)' : 'rgba(14, 15, 18, 0.88)'}
+        fill={isLight ? 'rgba(255, 255, 255, 0.90)' : 'linear-gradient(135deg, #0B0A09 0%, #191616 100%)'}
         frost={16}
         border={{
           strokeWidth: 1,

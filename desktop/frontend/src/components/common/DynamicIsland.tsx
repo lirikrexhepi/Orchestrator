@@ -790,9 +790,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       style={{
         ['--wails-draggable' as string]: 'no-drag',
         transformOrigin: 'top center',
-        backgroundColor: isLight
+        background: isLight
           ? 'rgba(255, 255, 255, 0.94)'
-          : 'rgba(12, 13, 16, 0.95)',
+          : 'linear-gradient(135deg, #0B0A09 0%, #191616 100%)',
         boxShadow: isLight
           ? '0 8px 24px rgba(0, 0, 0, 0.08)'
           : '0 10px 32px rgba(0, 0, 0, 0.65)',
