@@ -1,12 +1,12 @@
 param(
-    [string]$ExePath = "$env:USERPROFILE\Desktop\Orchestrator.exe",
+    [string]$ExePath = "$env:USERPROFILE\Desktop\Orchestrator Beta.exe",
     [switch]$NoLaunch
 )
 
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $Desktop = Join-Path $Repo 'desktop'
-$Built = Join-Path $Desktop 'build\bin\orchestrator.exe'
+$Built = Join-Path $Desktop 'build\bin\Orchestrator Beta.exe'
 $TaskName = 'Orchestrator Headless'
 
 function Invoke-Step([string]$Name, [scriptblock]$Body) {
@@ -32,11 +32,16 @@ $headlessWasRunning = $taskWasRunning -or $backgroundWasRunning
 $desktopWasRunning = [bool](Get-OrchestratorProcesses | Where-Object { $_.MainWindowHandle -ne 0 })
 
 Invoke-Step 'Syncing picked icon into build' {
-    $StagedIco = Join-Path $env:APPDATA 'composer\icons\app.ico'
-    $StagedPng = Join-Path $env:APPDATA 'composer\icons\app-512.png'
-    if ((Test-Path $StagedIco) -and (Test-Path $StagedPng)) {
-        Copy-Item $StagedIco (Join-Path $Desktop 'build\windows\icon.ico') -Force
-        Copy-Item $StagedPng (Join-Path $Desktop 'build\appicon.png') -Force
+    $Frame4 = "$env:USERPROFILE\Desktop\Frame 4.png"
+    if (Test-Path $Frame4) {
+        python (Join-Path $Repo 'scripts\generate_beta_icons.py')
+    } else {
+        $StagedIco = Join-Path $env:APPDATA 'composer\icons\app.ico'
+        $StagedPng = Join-Path $env:APPDATA 'composer\icons\app-512.png'
+        if ((Test-Path $StagedIco) -and (Test-Path $StagedPng)) {
+            Copy-Item $StagedIco (Join-Path $Desktop 'build\windows\icon.ico') -Force
+            Copy-Item $StagedPng (Join-Path $Desktop 'build\appicon.png') -Force
+        }
     }
 }
 

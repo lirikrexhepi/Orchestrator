@@ -14,7 +14,6 @@ import { AttachmentsState, filesFromTransfer } from '../common/useAttachments';
 import { readChatDrag } from '../common/chatDrag';
 import { leaveChatContextTarget, markChatContextTarget } from '../common/ChatDragLayer';
 import { providerIcon } from './providerIcons';
-import { SkillTestPicker } from './SkillTestPicker';
 import type { QueuedMessage } from '../scene/QueuedMessages';
 import { SlashMenu } from './SlashMenu';
 import { ListSlashCommands } from '../../../wailsjs/go/main/App';
@@ -448,9 +447,6 @@ export const OrchestratorInput: React.FC<OrchestratorInputProps> = ({
         </div>
 
         <div className="flex items-center gap-0.5 shrink-0">
-          {onSkillTest && (
-            <SkillTestPicker cwd={projects?.active?.path ?? ''} selected={testSkills} onChange={setTestSkills} isLight={isLight} />
-          )}
           {/* Attach */}
           {attachments && (
             <button

@@ -13,7 +13,6 @@ import {claudeimport} from '../models';
 import {history} from '../models';
 import {devserver} from '../models';
 import {servers} from '../models';
-import {skills} from '../models';
 import {slashcmd} from '../models';
 import {files} from '../models';
 
@@ -143,8 +142,6 @@ export function ListSessions():Promise<Array<domain.Session>>;
 
 export function ListSessionsMeta(arg1:number):Promise<Array<domain.SessionRecord>>;
 
-export function ListSkills(arg1:string):Promise<Array<skills.Info>>;
-
 export function ListSlashCommands(arg1:string,arg2:string):Promise<Array<slashcmd.Command>>;
 
 export function ListWorkspaces():Promise<Array<domain.Workspace>>;
@@ -254,8 +251,6 @@ export function StartManagedServer(arg1:devserver.Spec):Promise<devserver.Snapsh
 export function StartRemoteServer(arg1:number):Promise<remote.RemoteInfo>;
 
 export function StartSession(arg1:string,arg2:domain.SessionStartInput):Promise<domain.Session>;
-
-export function StartSkillTest(arg1:main.SkillTestInput):Promise<session.SpawnResult>;
 
 export function StopManagedServer(arg1:string):Promise<void>;
 

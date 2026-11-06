@@ -1743,52 +1743,6 @@ export namespace main {
 	        this.exePath = source["exePath"];
 	    }
 	}
-	export class SkillTestInput {
-	    driver: string;
-	    prompt: string;
-	    files?: domain.FileRef[];
-	    skills: string[];
-	    cwd: string;
-	    account?: string;
-	    model?: string;
-	    options?: Record<string, any>;
-	    permissionMode?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new SkillTestInput(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.driver = source["driver"];
-	        this.prompt = source["prompt"];
-	        this.files = this.convertValues(source["files"], domain.FileRef);
-	        this.skills = source["skills"];
-	        this.cwd = source["cwd"];
-	        this.account = source["account"];
-	        this.model = source["model"];
-	        this.options = source["options"];
-	        this.permissionMode = source["permissionMode"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
 
 }
 
@@ -2334,29 +2288,6 @@ export namespace session {
 		    }
 		    return a;
 		}
-	}
-
-}
-
-export namespace skills {
-	
-	export class Info {
-	    name: string;
-	    description: string;
-	    source: string;
-	    path: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new Info(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.description = source["description"];
-	        this.source = source["source"];
-	        this.path = source["path"];
-	    }
 	}
 
 }

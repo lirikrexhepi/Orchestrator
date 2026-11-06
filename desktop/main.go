@@ -82,7 +82,7 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:            "Orchestrator",
+		Title:            "Orchestrator Beta",
 		WindowStartState: startState,
 		Width:            1440,
 		Height:           900,
