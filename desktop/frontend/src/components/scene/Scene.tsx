@@ -14,6 +14,7 @@ import { NavRail } from '../layout/NavRail';
 import { HomeStats } from '../layout/HomeStats';
 import { GlassInput } from '../layout/GlassInput';
 import { DynamicIsland, DynamicIslandNotification } from '../common/DynamicIsland';
+import { TitleBar } from '../common/TitleBar';
 import { SettingsPanel } from '../sidebar/SettingsPanel';
 import { RespondToQuestion } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime/runtime';
@@ -53,6 +54,17 @@ export const Scene: React.FC<SceneProps> = () => {
 
   // Active task object
   const activeTask = activeTasks[activeCardIndex] ?? null;
+
+  // Initial provider discovery and live listener
+  useEffect(() => {
+    void useOrchestratorStore.getState().loadProviders();
+    const off = EventsOn('providers:changed', () => {
+      void useOrchestratorStore.getState().loadProviders(true);
+    });
+    return () => {
+      off();
+    };
+  }, []);
 
   // Play completion sound and surface notification in Dynamic Island
   useEffect(() => {
@@ -222,8 +234,8 @@ export const Scene: React.FC<SceneProps> = () => {
 
       {/* Main Workspace Area */}
       <div className="relative flex-1 h-full overflow-hidden flex flex-col z-10">
-        {/* Dynamic Island at Top Center */}
-        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 pointer-events-auto">
+        {/* Top Window TitleBar with Drag Handle & Traffic Lights (Minimise / Maximise / Close) */}
+        <TitleBar>
           <DynamicIsland
             projects={projects}
             activeTaskProjectName={activeTask?.projectName}
@@ -260,7 +272,7 @@ export const Scene: React.FC<SceneProps> = () => {
               })();
             }}
           />
-        </div>
+        </TitleBar>
 
         {/* View Content */}
         {activeView === 'home' || !activeTask ? (

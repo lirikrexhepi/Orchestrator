@@ -1,8 +1,8 @@
-import { MaterialIcon } from '../common/icons';
-import React, { useEffect, useState } from 'react';
+import { Check, MaterialIcon } from '../common/icons';
+import React, { useEffect, useState, useRef } from 'react';
 import { motion } from 'motion/react';
 import { useOrchestratorStore } from './useOrchestratorStore';
-import { LiquidGlass } from '../../liquid-glass';
+import { GlassSquircle } from '../../ui/glass/GlassSquircle';
 import { ScrollArea } from '../common/ScrollArea';
 import { AIModel, CLIProvider } from './types';
 import { providerIcon } from './providerIcons';
@@ -115,6 +115,14 @@ const ModelRows: React.FC<ModelRowsProps> = ({
   scrollable,
   isLight,
 }) => {
+  if (models.length === 0) {
+    return (
+      <div className="py-4 text-center text-[12px] text-white/40 font-(family-name:--app-font)">
+        No models available
+      </div>
+    );
+  }
+
   const rows = models.map((model) => {
     const isSelected = model.id === selectedModelId;
     const provider = providers.find((p) => p.id === model.providerId);
@@ -142,9 +150,12 @@ const ModelRows: React.FC<ModelRowsProps> = ({
             draggable={false}
           />
         )}
-        <span className="text-[13px] font-medium font-(family-name:--app-font) tracking-tight truncate">
+        <span className="text-[13px] font-medium font-(family-name:--app-font) tracking-tight truncate flex-1">
           {model.name}
         </span>
+        {isSelected && (
+          <Check size={14} strokeWidth={2.2} className="text-white shrink-0" />
+        )}
       </button>
     );
   });
@@ -167,13 +178,20 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
 }) => {
   const store = useOrchestratorStore();
 
+  // Automatically trigger provider discovery if empty
+  useEffect(() => {
+    if (store.providers.length === 0) {
+      void store.loadProviders();
+    }
+  }, [store.providers.length]);
+
   const selectedModelId = propModelId !== undefined ? propModelId : store.selectedModelId;
   const [localProviderId, setLocalProviderId] = useState<string | null>(null);
 
   const selectedProviderId =
     propProviderId !== undefined
       ? (localProviderId || propProviderId)
-      : store.selectedProviderId;
+      : (store.selectedProviderId || store.providers[0]?.id || 'antigravity');
 
   const currentModels = store.getModelsForProvider(selectedProviderId);
   const choosesAccount = propModelId === undefined && propProviderId === undefined;
@@ -206,8 +224,8 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
       live = false;
     };
   }, [choosesAccount, setAccountProject]);
+
   const hasMoreThan5 = currentModels.length > 5;
-  const selectedProviderIndex = store.providers.findIndex((p) => p.id === selectedProviderId);
 
   const handleSelectModel = (modelId: string) => {
     if (propOnSelectModel) {
@@ -230,28 +248,32 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
   const isLight = currentTheme.id === 'light' || currentTheme.id === 'white';
 
   return (
-    <LiquidGlass
-      variant="panel"
-      surface="squircle"
+    <GlassSquircle
       radius={18}
-      bezelWidth={16}
-      glassThickness={28}
-      refractionScale={0.5}
-      blur={0.5}
-      frost={24}
-      frostSaturation={isLight ? 110 : 130}
-      specularOpacity={isLight ? 0.3 : 0.06}
-      tint="var(--theme-input-bg, rgba(10, 10, 10, 0.96))"
-      shadow={isLight ? 'subtle' : 'apple'}
-      border="1px solid var(--theme-input-border, rgba(255, 255, 255, 0.08))"
-      className="w-[230px] p-2 text-white shadow-2xl"
+      fill={isLight ? 'rgba(255, 255, 255, 0.96)' : 'rgba(14, 15, 18, 0.95)'}
+      frost={16}
+      border={{
+        strokeWidth: 1,
+        align: 'inside',
+        light: {
+          angle: 303,
+          intensity: 0.30,
+          backIntensity: 0.20,
+        },
+      }}
+      onClick={(e) => e.stopPropagation()}
       style={{
+        width: 250,
+        padding: 8,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
         boxShadow: isLight
-          ? '0 20px 48px -6px rgba(0, 0, 0, 0.15), 0 6px 18px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9)'
-          : '0 24px 50px -6px rgba(0, 0, 0, 0.82), 0 8px 24px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.09)',
+          ? '0 16px 40px rgba(0, 0, 0, 0.12)'
+          : '0 20px 48px rgba(0, 0, 0, 0.70)',
       }}
     >
-      {/* The selected row paints its own highlight. */}
+      {/* Model List */}
       <ModelRows
         models={currentModels}
         providers={store.providers}
@@ -263,7 +285,7 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
 
       {choosesAccount && accounts.length > 1 && (
         <>
-          <div className="h-[1px] bg-white/[0.08] my-1.5 mx-1" />
+          <div className="h-[1px] bg-white/[0.08] my-1 mx-1" />
           {confirmAccount && sessionAccount ? (
             <AccountSwitchConfirm
               current={accountLabel(sessionAccount)}
@@ -286,9 +308,9 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
       )}
 
       {/* Divider */}
-      {store.providers.length > 0 && <div className="h-[1px] bg-white/[0.08] my-1.5 mx-1" />}
+      {store.providers.length > 1 && <div className="h-[1px] bg-white/[0.08] my-1 mx-1" />}
 
-      {/* CLI Provider Switcher Bar with Fluid Motion Sliding Indicator */}
+      {/* CLI Provider Switcher Bar */}
       {store.providers.length > 0 ? (
         <div className="relative h-[34px] rounded-[10px] bg-white/[0.04] border border-white/[0.07] p-0.5 flex items-center gap-1">
           {store.providers.map((provider) => {
@@ -335,9 +357,9 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
         </div>
       ) : (
         <div className="py-2 text-center text-[11px] text-white/40 font-(family-name:--app-font)">
-          No providers enabled
+          {store.isLoadingProviders ? 'Loading providers...' : 'No providers detected'}
         </div>
       )}
-    </LiquidGlass>
+    </GlassSquircle>
   );
 };

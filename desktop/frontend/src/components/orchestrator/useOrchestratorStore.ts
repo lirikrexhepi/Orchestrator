@@ -228,15 +228,20 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       const ready = snapshots.filter(
         (snapshot) => snapshot.availability === 'ready' && snapshot.settings?.enabled,
       );
+      // If no providers are explicitly enabled, default to all ready/detected providers
+      const effectiveReady =
+        ready.length > 0
+          ? ready
+          : snapshots.filter((snapshot) => snapshot.availability === 'ready');
 
-      const providers = ready.map(toProvider);
-      const models = ready.flatMap((snapshot) =>
+      const providers = effectiveReady.map(toProvider);
+      const models = effectiveReady.flatMap((snapshot) =>
         (snapshot.models ?? []).map((model) => toModel(snapshot, model)),
       );
 
       const settings = { ...get().modelSettings };
       const savedEffortByModel = new Map<string, string>();
-      for (const snapshot of ready) {
+      for (const snapshot of effectiveReady) {
         const savedModel = snapshot.settings?.model;
         const savedEffort = (snapshot.settings as unknown as { options?: Record<string, unknown> })
           ?.options?.['effort'];
@@ -263,7 +268,7 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       const keep = models.find((model) => model.id === previous);
 
       const preferredModels: Record<string, string> = {};
-      for (const snapshot of ready) {
+      for (const snapshot of effectiveReady) {
         if (snapshot.settings?.model) {
           preferredModels[snapshot.driver] = snapshot.settings.model;
         }
@@ -272,7 +277,7 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       // A model the user pinned in Settings wins the initial choice. `defaultModel`
       // comes from the provider's saved settings, so a fresh run opens on the CLI
       // and model they chose rather than on whichever happens to sort first.
-      const preferred = ready
+      const preferred = effectiveReady
         .map((snapshot) => snapshot.settings?.model)
         .filter((id): id is string => !!id)
         .map((id) => models.find((model) => model.id === id))

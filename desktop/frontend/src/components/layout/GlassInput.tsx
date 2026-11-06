@@ -20,6 +20,26 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   const [text, setText] = useState('');
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
+
+  // Close ModelPicker on outside click or Escape
+  useEffect(() => {
+    if (!isModelPickerOpen) return;
+    const handleDown = (e: MouseEvent) => {
+      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
+        setIsModelPickerOpen(false);
+      }
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsModelPickerOpen(false);
+    };
+    document.addEventListener('mousedown', handleDown);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleDown);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [isModelPickerOpen]);
 
   const store = useOrchestratorStore();
   const selectedModel = store.getSelectedModel();
@@ -58,7 +78,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
     <div className="relative w-full max-w-[640px] mx-auto select-none font-(family-name:--app-font)">
       {/* Model Picker Popup */}
       {isModelPickerOpen && (
-        <div className="absolute bottom-[calc(100%+10px)] left-0 z-50 animate-scale-in">
+        <div ref={modelPickerRef} className="absolute bottom-[calc(100%+10px)] left-0 z-50 animate-scale-in">
           <ModelPicker
             selectedModelId={selectedModelId}
             onSelectModel={(id) => {

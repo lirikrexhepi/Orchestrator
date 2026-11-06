@@ -42,34 +42,27 @@ export const TitleBar: React.FC<TitleBarProps> = ({ children }) => {
   }, [syncMaximised]);
 
   return (
-    <div
-      className="fixed top-0 left-0 right-0 h-[52px] z-[60] flex items-center pointer-events-none"
-      // Wails turns any element carrying this attribute into a drag handle.
-      style={{ ['--wails-draggable' as string]: 'drag' }}
-    >
-      {/* Full-width drag surface. Double-click matches the native title bar.
-          It sits behind the controls and above the scene, so anything the app
-          places under 52px would be unreachable unless opting into pointer-events. */}
+    <div className="fixed top-0 left-0 right-0 h-[52px] z-[60] flex items-center pointer-events-none select-none">
+      {/* Full-width drag surface (stopping before the traffic lights). Double-click toggles maximise. */}
       <div
-        className="absolute inset-0 pointer-events-auto"
+        className="absolute left-[60px] right-[110px] top-0 h-[48px] pointer-events-auto"
         style={{ ['--wails-draggable' as string]: 'drag' }}
         onDoubleClick={toggleMaximise}
       />
 
-      {/* Center: Top Project Pill or other top-center chrome */}
+      {/* Center: Top Dynamic Island */}
       {children && (
         <div
-          className="absolute left-1/2 -translate-x-1/2 top-3 z-10 pointer-events-auto flex items-center justify-center"
+          className="absolute left-1/2 -translate-x-1/2 top-3 z-20 pointer-events-auto flex items-center justify-center"
           style={{ ['--wails-draggable' as string]: 'no-drag' }}
         >
           {children}
         </div>
       )}
 
-      {/* Traffic lights: right-aligned and horizontally centered with the 34px pill (center: 29px from top).
-          Must opt out of dragging, or the click is swallowed by the window move. */}
+      {/* Traffic lights: right-aligned and vertically centered with the 34px pill (Y ~ 14px from top) */}
       <div
-        className="absolute right-3.5 top-[23px] flex items-center gap-2 pointer-events-auto z-10"
+        className="absolute right-4 top-[14px] flex items-center gap-2 pointer-events-auto z-50"
         style={{ ['--wails-draggable' as string]: 'no-drag' }}
       >
         <TrafficLight
@@ -100,17 +93,18 @@ interface TrafficLightProps {
 
 /**
  * One 12px macOS-style window control.
- *
- * The title attribute still names it, so the control stays discoverable to a
- * screen reader and to anyone who pauses over it, without drawing anything.
  */
 const TrafficLight: React.FC<TrafficLightProps> = ({ label, className, onClick }) => (
   <button
     type="button"
     title={label}
     aria-label={label}
-    onClick={onClick}
-    className={`w-[12px] h-[12px] rounded-full transition-all duration-150 active:brightness-75 cursor-pointer ring-1 ring-inset ring-black/15 ${className}`}
+    onClick={(e) => {
+      e.stopPropagation();
+      onClick();
+    }}
+    style={{ ['--wails-draggable' as string]: 'no-drag' }}
+    className={`w-[12px] h-[12px] rounded-full transition-all duration-150 active:scale-90 cursor-pointer ring-1 ring-inset ring-black/20 ${className}`}
   />
 );
 
