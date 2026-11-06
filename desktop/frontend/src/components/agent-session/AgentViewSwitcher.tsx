@@ -75,6 +75,10 @@ export const AgentViewSwitcher: React.FC<AgentViewSwitcherProps> = ({ mode, onCh
     [available, mode],
   );
 
+  if (available.length <= 1) {
+    return null;
+  }
+
   return (
     <div style={isLight ? LIGHT : DARK} onClick={(e) => e.stopPropagation()} className="shrink-0 pointer-events-auto">
       <MorphButtons size={28} gap={6} anchor="end" items={items} />

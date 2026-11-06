@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GlassSquircle } from '../../ui/glass/GlassSquircle';
-import { Paperclip, X } from '../common/icons';
+import { Paperclip, X, Square } from '../common/icons';
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
 import { providerIcon } from '../orchestrator/providerIcons';
 import { ModelPicker } from '../orchestrator/ModelPicker';
@@ -8,12 +8,16 @@ import { AttachmentsState } from '../common/useAttachments';
 
 export interface GlassInputProps {
   onSubmit: (prompt: string, modelId?: string) => void;
+  onInterrupt?: () => void;
+  isBusy?: boolean;
   attachments?: AttachmentsState;
   isLight?: boolean;
 }
 
 export const GlassInput: React.FC<GlassInputProps> = ({
   onSubmit,
+  onInterrupt,
+  isBusy = false,
   attachments,
   isLight = false,
 }) => {
@@ -201,34 +205,46 @@ export const GlassInput: React.FC<GlassInputProps> = ({
               </button>
             )}
 
-            {/* Circular Send Button with Curved Arrow from Screenshot */}
-            <button
-              type="button"
-              disabled={!canSubmit}
-              onClick={handleSend}
-              className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
-                canSubmit
-                  ? 'bg-[#1a2d40] hover:bg-[#233d57] text-white shadow-[0_2px_8px_rgba(26,45,64,0.6)]'
-                  : 'bg-[#1a2d40]/70 text-white/50 cursor-pointer hover:bg-[#1a2d40]'
-              }`}
-              title="Send task (Enter)"
-              aria-label="Send"
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="text-white"
+            {/* Circular Send / Stop Button */}
+            {isBusy ? (
+              <button
+                type="button"
+                onClick={onInterrupt}
+                className="w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30"
+                title="Stop agent"
+                aria-label="Stop"
               >
-                <path d="M7 17v-5a4 4 0 0 1 4-4h6" />
-                <polyline points="14 5 17 8 14 11" />
-              </svg>
-            </button>
+                <Square size={11} className="fill-current" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={!canSubmit}
+                onClick={handleSend}
+                className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
+                  canSubmit
+                    ? 'bg-[#1a2d40] hover:bg-[#233d57] text-white shadow-[0_2px_8px_rgba(26,45,64,0.6)]'
+                    : 'bg-[#1a2d40]/70 text-white/50 cursor-pointer hover:bg-[#1a2d40]'
+                }`}
+                title="Send task (Enter)"
+                aria-label="Send"
+              >
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="text-white"
+                >
+                  <path d="M7 17v-5a4 4 0 0 1 4-4h6" />
+                  <polyline points="14 5 17 8 14 11" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
       </GlassSquircle>

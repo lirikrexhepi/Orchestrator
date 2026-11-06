@@ -165,11 +165,18 @@ export const Scene: React.FC<SceneProps> = () => {
     [providers],
   );
 
-  // Submit prompt from GlassInput (Home view)
+  // Submit prompt from GlassInput (Home view or Chat view)
   const handleSubmitPrompt = async (promptText: string, modelId?: string) => {
     const trimmed = promptText.trim();
     const refs = attachments.toRefs();
     if (!trimmed && refs.length === 0) return;
+
+    if (activeView === 'chat' && activeTask) {
+      attachments.release();
+      await spawner.sendWithModel(activeTask.threadId, trimmed, refs, modelId);
+      return;
+    }
+
     const threadId = await spawner.spawnAgent(
       trimmed,
       undefined,
@@ -275,59 +282,66 @@ export const Scene: React.FC<SceneProps> = () => {
         </TitleBar>
 
         {/* View Content */}
-        {activeView === 'home' || !activeTask ? (
-          /* Blank Chat / Home View */
-          <div className="relative flex-1 w-full h-full flex flex-col items-center justify-between pt-24 pb-8 px-6 overflow-y-auto">
-            {/* Centered Stats & Activity Heatmap */}
-            <div className="w-full flex-1 flex items-center justify-center">
+        <div className="relative flex-1 w-full h-full overflow-hidden">
+          {activeView === 'home' || !activeTask ? (
+            /* Blank Chat / Home View */
+            <div className="relative w-full h-full flex flex-col items-center justify-center pb-28 px-6 overflow-y-auto">
+              {/* Centered Stats & Activity Heatmap */}
               <HomeStats isLight={isLight} />
             </div>
-
-            {/* Bottom Liquid Glass Input */}
-            <div className="w-full pb-2">
-              <GlassInput
-                onSubmit={handleSubmitPrompt}
-                attachments={attachments}
-                isLight={isLight}
-              />
+          ) : (
+            /* Fullscreen Active Chat View */
+            <div className="relative w-full h-full overflow-hidden">
+              <Suspense fallback={null}>
+                <AgentWindow
+                  key={activeTask.threadId}
+                  id={activeTask.threadId}
+                  title={activeTask.title}
+                  subtitle={activeTask.branch}
+                  modelId={activeTask.model}
+                  driver={activeTask.driver}
+                  status={activeTask.isBusy ? 'working' : 'idle'}
+                  streamBlocks={activeTask.blocks}
+                  onSendMessage={(msg: string, mId: string, files?: domain.FileRef[]) =>
+                    spawner.sendWithModel(activeTask.threadId, msg, files, mId)
+                  }
+                  onInterrupt={() => spawner.interrupt(activeTask.threadId)}
+                  onAnswerQuestion={async (blockId, answers) => {
+                    const qId = blockId.replace(/^question-/, '');
+                    await RespondToQuestion(activeTask.threadId, qId, answers);
+                  }}
+                  onSkipQuestion={async (blockId) => {
+                    const qId = blockId.replace(/^question-/, '');
+                    await RespondToQuestion(activeTask.threadId, qId, []);
+                  }}
+                  onDeleteTurn={(turnId) => spawner.deleteTurn(activeTask.threadId, turnId)}
+                  onClose={() => handleCloseTask(activeTask.threadId)}
+                  onExitFullscreen={() => setActiveView('home')}
+                  projectName={activeTask.projectName}
+                  projectPath={activeTask.projectPath}
+                  accountName={accountLabel(activeTask.driver, activeTask.account)}
+                  isFullscreen={true}
+                  className="w-full h-full"
+                />
+              </Suspense>
             </div>
-          </div>
-        ) : (
-          /* Fullscreen Active Chat View */
-          <div className="relative flex-1 w-full h-full overflow-hidden">
-            <Suspense fallback={null}>
-              <AgentWindow
-                key={activeTask.threadId}
-                id={activeTask.threadId}
-                title={activeTask.title}
-                subtitle={activeTask.branch}
-                modelId={activeTask.model}
-                driver={activeTask.driver}
-                status={activeTask.isBusy ? 'working' : 'idle'}
-                streamBlocks={activeTask.blocks}
-                onSendMessage={(msg: string, mId: string, files?: domain.FileRef[]) =>
-                  spawner.sendWithModel(activeTask.threadId, msg, files, mId)
-                }
-                onInterrupt={() => spawner.interrupt(activeTask.threadId)}
-                onAnswerQuestion={async (blockId, answers) => {
-                  const qId = blockId.replace(/^question-/, '');
-                  await RespondToQuestion(activeTask.threadId, qId, answers);
-                }}
-                onSkipQuestion={async (blockId) => {
-                  const qId = blockId.replace(/^question-/, '');
-                  await RespondToQuestion(activeTask.threadId, qId, []);
-                }}
-                onDeleteTurn={(turnId) => spawner.deleteTurn(activeTask.threadId, turnId)}
-                onClose={() => handleCloseTask(activeTask.threadId)}
-                projectName={activeTask.projectName}
-                projectPath={activeTask.projectPath}
-                accountName={accountLabel(activeTask.driver, activeTask.account)}
-                isFullscreen={true}
-                className="w-full h-full"
-              />
-            </Suspense>
-          </div>
-        )}
+          )}
+        </div>
+
+        {/* Floating Bottom Liquid Glass Input (Home and Chat) */}
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-[640px] px-4 z-40 pointer-events-auto">
+          <GlassInput
+            onSubmit={handleSubmitPrompt}
+            onInterrupt={
+              activeView === 'chat' && activeTask?.isBusy
+                ? () => spawner.interrupt(activeTask.threadId)
+                : undefined
+            }
+            isBusy={activeView === 'chat' && Boolean(activeTask?.isBusy)}
+            attachments={attachments}
+            isLight={isLight}
+          />
+        </div>
       </div>
 
       {/* Settings Panel Flyout (Only for settings at the bottom) */}

@@ -571,7 +571,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
         specularOpacity={isLight ? 0.3 : 0.65}
         specularSaturation={6}
         lightAngle={-45}
-        tint={isFullscreen ? (isLight ? '#f7f7f9' : '#0b0b0d') : 'var(--theme-panel-bg)'}
+        tint={isFullscreen ? 'transparent' : 'var(--theme-panel-bg)'}
         shadow={isLight ? 'subtle' : 'apple'}
         border={
           isLight
@@ -585,7 +585,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 : 'group-hover/card:border-white/35 group-hover/card:shadow-[0_28px_64px_-12px_rgba(0,0,0,0.8),0_0_0_1px_rgba(255,255,255,0.15)]')
             : ''
         }`}
-        style={isLight ? {
+        style={isFullscreen ? { boxShadow: 'none' } : isLight ? {
           boxShadow: '0 20px 48px -12px rgba(0, 0, 0, 0.12), 0 4px 16px rgba(0, 0, 0, 0.06), inset 0 0.5px 0.5px rgba(255, 255, 255, 0.9)',
         } : PANEL_STYLE}
       >
