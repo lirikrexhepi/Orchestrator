@@ -464,7 +464,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   };
 
   const insetForDock = (base: React.CSSProperties): React.CSSProperties =>
-    immersive ? { ...base, bottom: 0, left: 0 } : isFullscreen ? { ...base, bottom: 'var(--input-dock-h, 140px)', left: 68 } : base;
+    immersive ? { ...base, bottom: 0, left: 0 } : isFullscreen ? { ...base, bottom: 0, left: 0 } : base;
 
   const getTabStyle = (modeKey: AgentCardMode): React.CSSProperties => {
     const diff = MODE_INDEX[modeKey] - MODE_INDEX[activeMode];
@@ -486,7 +486,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
 
   const feedVirtual = useMemo<VirtualFeedOptions>(
     () => ({
-      className: `absolute inset-0 overflow-y-auto overflow-x-hidden custom-scrollbar py-2.5 ${isFullscreen ? 'pb-[var(--input-dock-h,150px)] px-4' : 'pr-2'} ${
+      className: `absolute inset-0 overflow-y-auto overflow-x-hidden custom-scrollbar ${isFullscreen ? 'pt-4 pb-[140px] px-4' : 'py-2.5 pr-2'} ${
         isGrid ? 'pointer-events-none select-none' : ''
       }`,
       style: { ...FEED_SCROLL_STYLE },
@@ -699,30 +699,6 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
 
               {!isGrid && (subagents.length > 0 || (isFullscreen && isFocused)) && <SubagentMenu agents={subagents} isLight={isLight} driver={activeDriver} modelId={activeModel} dockable={isFullscreen && isFocused} workspace={workspaceSection} onOpenAgent={setOpenSubagentId} />}
 
-              <AgentViewSwitcher
-                mode={activeMode}
-                onChange={setMode}
-                tasks={{ done: completedTasksCount, total: totalTasksCount }}
-                servers={detectedServers.length}
-                changes={changesCount}
-                isLight={isLight}
-              />
-
-              {isFullscreen && onExitFullscreen && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onExitFullscreen();
-                  }}
-                  title="Exit full screen (Esc)"
-                  aria-label="Exit full screen"
-                  className={'w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 pointer-events-auto ' + (isLight ? 'bg-black/[0.06] text-black/60 hover:bg-black/[0.12] hover:text-black' : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white')}
-                >
-                  <Minimize size={14} strokeWidth={2} />
-                </button>
-              )}
-
               {/* Minimalist Borderless Close Button */}
               {onClose && (
                 <button
@@ -751,7 +727,17 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
               className={`absolute inset-0 flex flex-col pt-1 ${
                 isGrid ? 'pointer-events-none select-none' : ''
               }`}
-              style={insetForDock(getTabStyle('chat'))}
+              style={{
+                ...insetForDock(getTabStyle('chat')),
+                ...(isFullscreen
+                  ? {
+                      maskImage:
+                        'linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.4) 20px, black 80px, black calc(100% - 130px), rgba(0, 0, 0, 0.3) calc(100% - 40px), transparent 100%)',
+                      WebkitMaskImage:
+                        'linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.4) 20px, black 80px, black calc(100% - 130px), rgba(0, 0, 0, 0.3) calc(100% - 40px), transparent 100%)',
+                    }
+                  : {}),
+              }}
             >
               <div className="relative flex-1 min-h-0">
                 <AnimatePresence initial={false}>

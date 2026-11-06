@@ -1,14 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GlassSquircle } from '../../ui/glass/GlassSquircle';
-import { Paperclip, X, Square } from '../common/icons';
+import { Paperclip, Square, ChevronDown, Plus } from '../common/icons';
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
 import { providerIcon } from '../orchestrator/providerIcons';
 import { ModelPicker } from '../orchestrator/ModelPicker';
-import { AttachmentsState } from '../common/useAttachments';
+import { AttachmentsState, filesFromTransfer } from '../common/useAttachments';
+import { AttachmentStrip } from '../common/AttachmentStrip';
 
 export interface GlassInputProps {
   onSubmit: (prompt: string, modelId?: string) => void;
   onInterrupt?: () => void;
+  onNewChat?: () => void;
   isBusy?: boolean;
   attachments?: AttachmentsState;
   isLight?: boolean;
@@ -17,6 +19,7 @@ export interface GlassInputProps {
 export const GlassInput: React.FC<GlassInputProps> = ({
   onSubmit,
   onInterrupt,
+  onNewChat,
   isBusy = false,
   attachments,
   isLight = false,
@@ -66,6 +69,22 @@ export const GlassInput: React.FC<GlassInputProps> = ({
     }
   };
 
+  const handlePaste = (e: React.ClipboardEvent) => {
+    if (!attachments) return;
+    const files = filesFromTransfer(e.clipboardData);
+    if (files.length === 0) return;
+    e.preventDefault();
+    void attachments.accept(files);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    if (!attachments) return;
+    const files = filesFromTransfer(e.dataTransfer);
+    if (files.length === 0) return;
+    e.preventDefault();
+    void attachments.accept(files);
+  };
+
   const handleSend = () => {
     const trimmed = text.trim();
     if (!trimmed && (!attachments || attachments.items.length === 0)) return;
@@ -79,7 +98,10 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   const canSubmit = text.trim().length > 0 || (attachments && attachments.items.length > 0);
 
   return (
-    <div className="relative w-full max-w-[640px] mx-auto select-none font-(family-name:--app-font)">
+    <div
+      className="relative w-full max-w-[640px] mx-auto select-none font-(family-name:--app-font)"
+      onDrop={handleDrop}
+    >
       {/* Model Picker Popup */}
       {isModelPickerOpen && (
         <div ref={modelPickerRef} className="absolute bottom-[calc(100%+10px)] left-0 z-50 animate-scale-in">
@@ -118,28 +140,10 @@ export const GlassInput: React.FC<GlassInputProps> = ({
             : '0 14px 40px rgba(0, 0, 0, 0.55)',
         }}
       >
-        {/* Attached files preview chips */}
+        {/* Attached files preview strip */}
         {attachments && attachments.items.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 pb-0.5">
-            {attachments.items.map((item) => (
-              <span
-                key={item.id}
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] ${
-                  isLight
-                    ? 'bg-black/[0.04] text-black/80'
-                    : 'bg-white/[0.06] text-white/80'
-                }`}
-              >
-                <span className="truncate max-w-[200px]">{item.name}</span>
-                <button
-                  type="button"
-                  onClick={() => attachments.remove(item.id)}
-                  className="hover:text-red-400 cursor-pointer"
-                >
-                  <X size={12} />
-                </button>
-              </span>
-            ))}
+          <div className="pb-1">
+            <AttachmentStrip items={attachments.items} onRemove={attachments.remove} compact />
           </div>
         )}
 
@@ -149,6 +153,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder="Write a task, or have an agent handle something for you"
           rows={1}
           className={`w-full bg-transparent border-0 outline-none resize-none text-[14px] leading-relaxed tracking-tight ${
@@ -161,30 +166,50 @@ export const GlassInput: React.FC<GlassInputProps> = ({
 
         {/* Bottom Action Bar */}
         <div className="flex items-center justify-between pt-0.5">
-          {/* Left: Model Pill */}
-          <button
-            type="button"
-            onClick={() => setIsModelPickerOpen(!isModelPickerOpen)}
-            className={`flex items-center gap-2 h-[26px] px-2.5 rounded-full transition-all duration-150 cursor-pointer active:scale-95 ${
-              isLight
-                ? 'hover:bg-black/[0.05] text-black/80'
-                : 'hover:bg-white/[0.06] text-white/85'
-            }`}
-            title="Switch Model"
-          >
-            {icon ? (
-              <img
-                src={icon}
-                alt={provider}
-                className="w-3.5 h-3.5 object-contain rounded-sm"
-              />
-            ) : (
-              <div className="w-3 h-3 rounded-full bg-blue-500/80" />
+          {/* Left: Model Pill & + Button */}
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setIsModelPickerOpen(!isModelPickerOpen)}
+              className={`flex items-center gap-1.5 h-[26px] px-2.5 rounded-full transition-all duration-150 cursor-pointer active:scale-95 ${
+                isLight
+                  ? 'hover:bg-black/[0.05] text-black/80'
+                  : 'hover:bg-white/[0.06] text-white/85'
+              }`}
+              title="Select AI Model"
+            >
+              {icon ? (
+                <img
+                  src={icon}
+                  alt={provider}
+                  className="w-3.5 h-3.5 object-contain rounded-sm"
+                />
+              ) : (
+                <div className="w-3 h-3 rounded-full bg-blue-500/80" />
+              )}
+              <span className="text-[12px] font-medium tracking-tight">
+                {selectedModel?.name ?? 'Gemini Carbon'}
+              </span>
+              <ChevronDown size={11} className="opacity-60 shrink-0 ml-0.5" />
+            </button>
+
+            {/* + Button to open new chat */}
+            {onNewChat && (
+              <button
+                type="button"
+                onClick={onNewChat}
+                className={`w-[24px] h-[24px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
+                  isLight
+                    ? 'text-black/50 hover:text-black hover:bg-black/[0.06]'
+                    : 'text-white/50 hover:text-white hover:bg-white/[0.08]'
+                }`}
+                title="New Chat (Ctrl+N)"
+                aria-label="New Chat"
+              >
+                <Plus size={13} strokeWidth={2.2} />
+              </button>
             )}
-            <span className="text-[12px] font-medium tracking-tight">
-              {selectedModel?.name ?? 'Gemini Carbon'}
-            </span>
-          </button>
+          </div>
 
           {/* Right: Attachments & Send Button */}
           <div className="flex items-center gap-2">
@@ -205,12 +230,12 @@ export const GlassInput: React.FC<GlassInputProps> = ({
               </button>
             )}
 
-            {/* Circular Send / Stop Button */}
+            {/* Circular Send / Stop Button matching Screenshot (Glass #132B40 with border #A5BFD5) */}
             {isBusy ? (
               <button
                 type="button"
                 onClick={onInterrupt}
-                className="w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30"
+                className="w-[30px] h-[30px] rounded-[10px] flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 shadow-[0_2px_8px_rgba(239,68,68,0.3)]"
                 title="Stop agent"
                 aria-label="Stop"
               >
@@ -221,24 +246,30 @@ export const GlassInput: React.FC<GlassInputProps> = ({
                 type="button"
                 disabled={!canSubmit}
                 onClick={handleSend}
-                className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
+                style={{
+                  backgroundColor: '#132B40',
+                  borderColor: canSubmit ? '#A5BFD5' : 'rgba(165, 191, 213, 0.45)',
+                  boxShadow: canSubmit
+                    ? '0 3px 10px rgba(19, 43, 64, 0.6), inset 0 1px 1px rgba(165, 191, 213, 0.6), inset 0 -1px 1px rgba(0, 0, 0, 0.35)'
+                    : '0 2px 6px rgba(19, 43, 64, 0.4), inset 0 1px 1px rgba(165, 191, 213, 0.3)',
+                }}
+                className={`w-[30px] h-[30px] rounded-[10px] border flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
                   canSubmit
-                    ? 'bg-[#1a2d40] hover:bg-[#233d57] text-white shadow-[0_2px_8px_rgba(26,45,64,0.6)]'
-                    : 'bg-[#1a2d40]/70 text-white/50 cursor-pointer hover:bg-[#1a2d40]'
+                    ? 'opacity-100 hover:brightness-110 active:scale-95'
+                    : 'opacity-75 cursor-pointer hover:opacity-90'
                 }`}
                 title="Send task (Enter)"
                 aria-label="Send"
               >
                 <svg
-                  width="13"
-                  height="13"
+                  width="14"
+                  height="14"
                   viewBox="0 0 24 24"
                   fill="none"
-                  stroke="currentColor"
+                  stroke="#A5BFD5"
                   strokeWidth="2.5"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  className="text-white"
                 >
                   <path d="M7 17v-5a4 4 0 0 1 4-4h6" />
                   <polyline points="14 5 17 8 14 11" />

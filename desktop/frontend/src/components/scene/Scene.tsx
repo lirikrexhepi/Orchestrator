@@ -1,15 +1,19 @@
-import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useWallpaper } from '../sidebar/useWallpaper';
 import { useProjects } from '../orchestrator/useProjects';
 import { useSpawner } from '../orchestrator/useSpawner';
 import { useAttachments } from '../common/useAttachments';
 import { useHistory } from '../history/useHistory';
 import { useUsage } from '../sidebar/useUsage';
+import { useServers } from '../sidebar/useServers';
 import { useClaudeImport } from '../history/useClaudeImport';
 import { useDefaultModels } from '../sidebar/useDefaultModels';
 import { useTheme } from '../../themes';
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
-import { AgentWindow } from '../agent-session';
+import { AgentWindow, AgentCardMode } from '../agent-session';
+import type { TodoToolBlockData } from '../agent-session/types';
+import { collectThreadChanges } from '../agent-session/threadChanges';
+import { useGit } from '../git';
 import { NavRail } from '../layout/NavRail';
 import { HomeStats } from '../layout/HomeStats';
 import { GlassInput } from '../layout/GlassInput';
@@ -41,12 +45,15 @@ export const Scene: React.FC<SceneProps> = () => {
   const defaultModels = useDefaultModels(isSettingsOpen);
   const history = useHistory(true);
   const usage = useUsage(true);
+  const runningServers = useServers(true);
+  const git = useGit(true);
   const claudeImport = useClaudeImport();
   const activeTasks = spawner.tasks;
 
   // View state: 'home' (blank chat screen) or 'chat' (active fullscreen chat)
   const [activeView, setActiveView] = useState<'home' | 'chat'>('home');
   const [activeCardIndex, setActiveCardIndex] = useState(0);
+  const [cardMode, setCardMode] = useState<AgentCardMode>('chat');
 
   // Dynamic Island Notifications
   const [islandNotification, setIslandNotification] = useState<DynamicIslandNotification | null>(null);
@@ -54,6 +61,34 @@ export const Scene: React.FC<SceneProps> = () => {
 
   // Active task object
   const activeTask = activeTasks[activeCardIndex] ?? null;
+
+  // Map running dev servers back to an agent
+  const getTaskServers = useCallback(
+    (threadId?: string) => {
+      if (!threadId) return [];
+      const allGroups = runningServers.groups || [];
+      const matching = allGroups.find((g) => g.threadId && g.threadId === threadId);
+      if (matching && matching.servers && matching.servers.length > 0) {
+        const valid = matching.servers.filter((s) => !s.agent && s.port > 0);
+        if (valid.length > 0) return valid;
+      }
+      if (activeTasks.length !== 1) return [];
+      return allGroups
+        .filter((g) => !g.threadId)
+        .flatMap((g) => g.servers || [])
+        .filter((s) => !s.agent && s.port > 0);
+    },
+    [runningServers.groups, activeTasks.length],
+  );
+
+  // Mode availability for NavRail
+  const streamBlocks = activeTask?.blocks ?? [];
+  const todoBlock = [...streamBlocks].reverse().find((b): b is TodoToolBlockData => b.type === 'tool_todo');
+  const hasTasks = (todoBlock?.todos?.length ?? 0) > 0;
+  const currentTaskServers = getTaskServers(activeTask?.threadId);
+  const hasServers = currentTaskServers.length > 0;
+  const threadChanges = useMemo(() => collectThreadChanges(streamBlocks), [streamBlocks]);
+  const hasChanges = threadChanges.length > 0;
 
   // Initial provider discovery and live listener
   useEffect(() => {
@@ -237,6 +272,15 @@ export const Scene: React.FC<SceneProps> = () => {
         onSettingsClick={() => setIsSettingsOpen((prev) => !prev)}
         isSettingsOpen={isSettingsOpen}
         isLight={isLight}
+        cardMode={cardMode}
+        onModeSelect={(mode) => {
+          setCardMode(mode);
+          setActiveView('chat');
+        }}
+        hasPreview={hasServers}
+        hasServers={hasServers}
+        hasChanges={hasChanges}
+        hasTasks={hasTasks}
       />
 
       {/* Main Workspace Area */}
@@ -301,6 +345,14 @@ export const Scene: React.FC<SceneProps> = () => {
                   modelId={activeTask.model}
                   driver={activeTask.driver}
                   status={activeTask.isBusy ? 'working' : 'idle'}
+                  workStartedAt={activeTask.workStartedAt}
+                  lastTurnMs={activeTask.lastTurnMs}
+                  contextUsage={activeTask.context}
+                  cardMode={cardMode}
+                  onCardModeChange={setCardMode}
+                  detectedServers={currentTaskServers}
+                  onStopServer={runningServers.stop}
+                  git={git}
                   streamBlocks={activeTask.blocks}
                   onSendMessage={(msg: string, mId: string, files?: domain.FileRef[]) =>
                     spawner.sendWithModel(activeTask.threadId, msg, files, mId)
@@ -316,7 +368,6 @@ export const Scene: React.FC<SceneProps> = () => {
                   }}
                   onDeleteTurn={(turnId) => spawner.deleteTurn(activeTask.threadId, turnId)}
                   onClose={() => handleCloseTask(activeTask.threadId)}
-                  onExitFullscreen={() => setActiveView('home')}
                   projectName={activeTask.projectName}
                   projectPath={activeTask.projectPath}
                   accountName={accountLabel(activeTask.driver, activeTask.account)}
@@ -337,6 +388,7 @@ export const Scene: React.FC<SceneProps> = () => {
                 ? () => spawner.interrupt(activeTask.threadId)
                 : undefined
             }
+            onNewChat={() => setActiveView('home')}
             isBusy={activeView === 'chat' && Boolean(activeTask?.isBusy)}
             attachments={attachments}
             isLight={isLight}

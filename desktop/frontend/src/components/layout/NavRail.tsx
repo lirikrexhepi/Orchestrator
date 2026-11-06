@@ -1,5 +1,15 @@
 import React from 'react';
-import { House, Folder, Settings, MessageSquarePlus } from '../common/icons';
+import {
+  House,
+  Folder,
+  Settings,
+  MessageSquarePlus,
+  Globe,
+  Terminal,
+  GitBranch,
+  MaterialIcon,
+} from '../common/icons';
+import type { AgentCardMode } from '../agent-session';
 
 export interface NavRailProps {
   activeView: 'home' | 'chat';
@@ -9,6 +19,13 @@ export interface NavRailProps {
   onSettingsClick: () => void;
   isSettingsOpen?: boolean;
   isLight?: boolean;
+  // Card mode controls
+  cardMode?: AgentCardMode;
+  onModeSelect?: (mode: AgentCardMode) => void;
+  hasPreview?: boolean;
+  hasServers?: boolean;
+  hasChanges?: boolean;
+  hasTasks?: boolean;
 }
 
 export const NavRail: React.FC<NavRailProps> = ({
@@ -19,8 +36,15 @@ export const NavRail: React.FC<NavRailProps> = ({
   onSettingsClick,
   isSettingsOpen = false,
   isLight = false,
+  cardMode = 'chat',
+  onModeSelect,
+  hasPreview = false,
+  hasServers = false,
+  hasChanges = false,
+  hasTasks = false,
 }) => {
-  const iconBase = 'w-[28px] h-[28px] rounded-[7px] flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90';
+  const iconBase =
+    'w-[28px] h-[28px] rounded-[7px] flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90';
 
   const getIconClass = (isActive: boolean) => {
     if (isLight) {
@@ -37,10 +61,19 @@ export const NavRail: React.FC<NavRailProps> = ({
     }`;
   };
 
+  const getModeIconClass = (isActive: boolean, isAvailable: boolean) => {
+    if (!isAvailable) {
+      return `${iconBase} opacity-20 cursor-not-allowed pointer-events-none ${
+        isLight ? 'text-black' : 'text-white'
+      }`;
+    }
+    return getIconClass(isActive);
+  };
+
   return (
     <aside className="w-[36px] h-full shrink-0 flex flex-col items-center justify-between py-3 px-1 select-none z-30 bg-transparent">
       {/* Top action icons */}
-      <div className="flex flex-col items-center gap-2">
+      <div className="flex flex-col items-center gap-1.5">
         {/* Home icon */}
         <button
           type="button"
@@ -72,6 +105,68 @@ export const NavRail: React.FC<NavRailProps> = ({
           aria-label="Projects"
         >
           <Folder size={16} strokeWidth={1.8} />
+        </button>
+
+        {/* Subtle Divider */}
+        <div className={`w-3.5 h-[1px] my-1 ${isLight ? 'bg-black/10' : 'bg-white/10'}`} />
+
+        {/* Chat view icon */}
+        <button
+          type="button"
+          onClick={() => onModeSelect?.('chat')}
+          className={getIconClass(activeView === 'chat' && cardMode === 'chat')}
+          title="Chat"
+          aria-label="Chat"
+        >
+          <MaterialIcon name="chat" size="15px" />
+        </button>
+
+        {/* Preview / Browser view icon */}
+        <button
+          type="button"
+          disabled={!hasPreview}
+          onClick={() => onModeSelect?.('browser')}
+          className={getModeIconClass(activeView === 'chat' && cardMode === 'browser', hasPreview)}
+          title={hasPreview ? 'Preview (Web Browser)' : 'Preview (no web server detected)'}
+          aria-label="Preview"
+        >
+          <Globe size={15} strokeWidth={1.8} />
+        </button>
+
+        {/* Servers view icon */}
+        <button
+          type="button"
+          disabled={!hasServers}
+          onClick={() => onModeSelect?.('servers')}
+          className={getModeIconClass(activeView === 'chat' && cardMode === 'servers', hasServers)}
+          title={hasServers ? 'Servers' : 'Servers (none running)'}
+          aria-label="Servers"
+        >
+          <Terminal size={15} strokeWidth={1.8} />
+        </button>
+
+        {/* Changes / Git diff icon */}
+        <button
+          type="button"
+          disabled={!hasChanges}
+          onClick={() => onModeSelect?.('changes')}
+          className={getModeIconClass(activeView === 'chat' && cardMode === 'changes', hasChanges)}
+          title={hasChanges ? 'Git Changes' : 'Git Changes (working tree clean)'}
+          aria-label="Changes"
+        >
+          <GitBranch size={15} strokeWidth={1.8} />
+        </button>
+
+        {/* Tasks view icon */}
+        <button
+          type="button"
+          disabled={!hasTasks}
+          onClick={() => onModeSelect?.('tasklist')}
+          className={getModeIconClass(activeView === 'chat' && cardMode === 'tasklist', hasTasks)}
+          title={hasTasks ? 'Tasks' : 'Tasks (none in progress)'}
+          aria-label="Tasks"
+        >
+          <MaterialIcon name="checklist" size="15px" />
         </button>
       </div>
 
