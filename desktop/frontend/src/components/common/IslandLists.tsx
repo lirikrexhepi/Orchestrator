@@ -294,7 +294,7 @@ const ProjectRow = React.memo(function ProjectRow({
           >
             <button
               type="button"
-              onClick={onSelect}
+              onClick={onOpenChats}
               className="flex-1 min-w-0 h-full flex items-center gap-2.5 text-left cursor-pointer"
             >
               <span className="w-[18px] flex items-center justify-center shrink-0">

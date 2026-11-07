@@ -35,6 +35,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const projectPickerRef = useRef<HTMLDivElement>(null);
+  const projectButtonRef = useRef<HTMLButtonElement>(null);
 
   // Close popups on outside click or Escape
   useEffect(() => {
@@ -44,7 +45,11 @@ export const GlassInput: React.FC<GlassInputProps> = ({
       if (modelPickerRef.current && !modelPickerRef.current.contains(target)) {
         setIsModelPickerOpen(false);
       }
-      if (projectPickerRef.current && !projectPickerRef.current.contains(target)) {
+      if (
+        projectPickerRef.current &&
+        !projectPickerRef.current.contains(target) &&
+        !projectButtonRef.current?.contains(target)
+      ) {
         setIsProjectPickerOpen(false);
       }
     };
@@ -161,13 +166,6 @@ export const GlassInput: React.FC<GlassInputProps> = ({
         </div>
       )}
 
-      {/* Attached files side rail (2-column compact wrap layout so images don't stack way too high) */}
-      {attachments && attachments.items.length > 0 && (
-        <div className="absolute right-[calc(100%+14px)] bottom-0 max-h-[190px] max-w-[128px] overflow-y-auto overflow-x-hidden flex flex-wrap-reverse justify-end content-end gap-1.5 z-40 pointer-events-auto select-none custom-scrollbar">
-          <AttachmentStrip items={attachments.items} onRemove={attachments.remove} compact />
-        </div>
-      )}
-
       {/* Main Glass Input Squircle */}
       <GlassSquircle
         radius={22}
@@ -195,6 +193,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
         {projects && (
           <div className="relative flex items-center -mt-1 -mb-0.5">
             <button
+              ref={projectButtonRef}
               type="button"
               onClick={() => setIsProjectPickerOpen((prev) => !prev)}
               title="Select Project (Ctrl+;)"
@@ -211,11 +210,11 @@ export const GlassInput: React.FC<GlassInputProps> = ({
               <ChevronDown size={12} className="opacity-60" />
             </button>
 
-            {/* Floating Glass Project Picker Menu */}
+            {/* Floating Glass Project Picker Menu (opens upwards) */}
             {isProjectPickerOpen && (
               <div
                 ref={projectPickerRef}
-                className="absolute top-[calc(100%+6px)] left-0 z-50 min-w-[220px] max-w-[280px]"
+                className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[210px]"
               >
                 <GlassSquircle
                   radius={14}
@@ -299,6 +298,19 @@ export const GlassInput: React.FC<GlassInputProps> = ({
             )}
           </div>
         )}
+
+        {/* Attachments (Horizontal row of uniform 52px square tiles) */}
+        {attachments && attachments.items.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto custom-scrollbar py-0.5 -mt-1">
+            <AttachmentStrip
+              items={attachments.items}
+              onRemove={attachments.remove}
+              compact
+              asSquares
+            />
+          </div>
+        )}
+
         {/* Text Area */}
         <textarea
           ref={textareaRef}

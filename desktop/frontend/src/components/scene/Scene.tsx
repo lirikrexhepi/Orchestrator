@@ -271,7 +271,7 @@ export const Scene: React.FC<SceneProps> = () => {
           subtitle: 'Ctrl + ←',
           onClick: () => setActiveCardIndex((prev) => Math.max(0, prev - 1)),
         };
-      } else {
+      } else if (activeTasks.length >= 2) {
         return {
           title: 'Home',
           isBusy: undefined,
@@ -474,7 +474,7 @@ export const Scene: React.FC<SceneProps> = () => {
                   ? '0 6px 20px rgba(0, 0, 0, 0.08)'
                   : '0 8px 24px rgba(0, 0, 0, 0.45)',
               }}
-              className="flex items-center px-4 py-2 min-h-[44px] min-w-[110px] max-w-[220px]"
+              className="inline-flex items-center px-3.5 py-1.5 min-h-[38px] w-fit max-w-[220px]"
             >
               <div className="flex flex-col min-w-0 text-left">
                 <span className="truncate text-[12px] font-medium leading-tight text-white/90 group-hover:text-white transition-colors">
@@ -522,7 +522,7 @@ export const Scene: React.FC<SceneProps> = () => {
                   ? '0 6px 20px rgba(0, 0, 0, 0.08)'
                   : '0 8px 24px rgba(0, 0, 0, 0.45)',
               }}
-              className="flex items-center px-4 py-2 min-h-[44px] min-w-[110px] max-w-[220px]"
+              className="inline-flex items-center px-3.5 py-1.5 min-h-[38px] w-fit max-w-[220px]"
             >
               <div className="flex flex-col min-w-0 text-right w-full">
                 <span className="truncate text-[12px] font-medium leading-tight text-white/90 group-hover:text-white transition-colors">

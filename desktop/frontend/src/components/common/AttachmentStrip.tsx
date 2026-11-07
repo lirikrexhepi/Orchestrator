@@ -10,6 +10,7 @@ export interface AttachmentStripProps {
   /** Smaller tiles for the agent windows, which are narrower. */
   compact?: boolean;
   vertical?: boolean;
+  asSquares?: boolean;
   className?: string;
 }
 
@@ -75,14 +76,63 @@ function usePreview(item: Attachment): string | null {
 interface TileProps {
   item: Attachment;
   compact: boolean;
+  asSquares?: boolean;
   onRemove: (id: string) => void;
   onOpen: (item: Attachment, preview: string) => void;
 }
 
-const Tile: React.FC<TileProps> = ({ item, compact, onRemove, onOpen }) => {
+const Tile: React.FC<TileProps> = ({ item, compact, asSquares = false, onRemove, onOpen }) => {
   const preview = usePreview(item);
   const size = compact ? 52 : 64;
   const isImage = Boolean(item.mime?.startsWith('image/'));
+
+  if (asSquares && !isImage) {
+    const isChat = item.mime === 'application/x-orchestrator-chat' || item.id?.startsWith('chat:');
+    return (
+      <span className="relative group shrink-0 inline-block">
+        <div
+          title={`${item.name}${item.size ? ` · ${readableSize(item.size)}` : ''}`}
+          className={`flex flex-col items-center justify-center p-1 rounded-[10px] overflow-hidden border shadow-sm select-none ${
+            isChat
+              ? 'bg-sky-500/15 border-sky-400/30 text-sky-200'
+              : 'bg-white/[0.08] border-white/20 text-white/80'
+          }`}
+          style={{ width: size, height: size }}
+        >
+          <MaterialIcon
+            name={isChat ? 'forum' : iconFor(item.mime)}
+            className={`text-[20px] ${isChat ? 'text-sky-300' : 'text-white/60'} shrink-0`}
+          />
+          <span className="text-[9px] font-medium leading-tight truncate w-full text-center mt-1 opacity-90 px-0.5">
+            {item.name}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          title={`Remove ${item.name}`}
+          aria-label={`Remove ${item.name}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove(item.id);
+          }}
+          className="absolute top-1 right-1 w-[18px] h-[18px] rounded-full bg-black/80 hover:bg-black border border-white/30 flex items-center justify-center text-white/80 hover:text-white opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-all duration-150 cursor-pointer active:scale-90 shadow-md z-10"
+        >
+          <svg
+            className="w-2.5 h-2.5"
+            viewBox="0 0 10 10"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+          >
+            <line x1="2.5" y1="2.5" x2="7.5" y2="7.5" />
+            <line x1="7.5" y1="2.5" x2="2.5" y2="7.5" />
+          </svg>
+        </button>
+      </span>
+    );
+  }
 
   // An image shows itself; anything else keeps the icon-and-name chip, since a
   // thumbnail of a PDF or a log would say nothing useful.
@@ -186,6 +236,7 @@ export const AttachmentStrip: React.FC<AttachmentStripProps> = ({
   onRemove,
   compact = false,
   vertical = false,
+  asSquares = false,
   className = '',
 }) => {
   const [opened, setOpened] = useState<{ item: Attachment; preview: string } | null>(null);
@@ -210,6 +261,7 @@ export const AttachmentStrip: React.FC<AttachmentStripProps> = ({
             key={item.id}
             item={item}
             compact={compact}
+            asSquares={asSquares}
             onRemove={onRemove}
             onOpen={(opening, preview) => setOpened({ item: opening, preview })}
           />

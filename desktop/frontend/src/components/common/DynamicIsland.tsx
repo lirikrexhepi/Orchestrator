@@ -889,9 +889,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                const activeProj = selectedProject || projects?.active || (projects?.projects && projects.projects.length > 0 ? projects.projects[0] : null);
-                if (activeProj) setSelectedProject(activeProj);
-                setMode('project-chats');
+                setMode('projects');
               }}
               style={{ ['--wails-draggable' as string]: 'no-drag' }}
               className={`flex items-center justify-center w-[28px] h-[28px] rounded-full ${

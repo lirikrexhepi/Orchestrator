@@ -707,7 +707,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
               {!isGrid && (subagents.length > 0 || (isFullscreen && isFocused)) && <SubagentMenu agents={subagents} isLight={isLight} driver={activeDriver} modelId={activeModel} dockable={isFullscreen && isFocused} workspace={workspaceSection} onOpenAgent={setOpenSubagentId} />}
 
               {/* Minimalist Borderless Close Button */}
-              {onClose && (
+              {onClose && !isFullscreen && (
                 <button
                   type="button"
                   onClick={(e) => {
