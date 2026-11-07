@@ -60,7 +60,13 @@ export const OrchestratorCard: React.FC<OrchestratorCardProps> = ({
   };
 
   const hasLiveIndicator = blocks.some(
-    (block) => block.type === 'thinking' && block.isThinking,
+    (block) =>
+      (block.type === 'thinking' && block.isThinking) ||
+      (block.type === 'text' && block.isStreaming) ||
+      (block.type === 'tool_bash' && block.status === 'running') ||
+      (block.type === 'tool_search' && block.isSearching) ||
+      (block.type === 'tool_edit' && (block as any).status === 'running') ||
+      (block.type === 'tool_group' && block.items?.some((i) => i.status === 'running')),
   );
 
   return (

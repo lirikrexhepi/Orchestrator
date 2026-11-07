@@ -952,12 +952,91 @@ function closeStreaming(blocks: AgentStreamBlock[]): AgentStreamBlock[] {
   return blocks;
 }
 
+/**
+ * Settles every block that might have been left running or streaming, ensuring
+ * that no dangling status keeps the UI in busy/thinking mode after a turn ends.
+ */
+export function settleAllBlocks(blocks: AgentStreamBlock[], failed = false): AgentStreamBlock[] {
+  let changed = false;
+  const status: 'completed' | 'error' = failed ? 'error' : 'completed';
+  const next = blocks.map((b) => {
+    switch (b.type) {
+      case 'thinking':
+        if (b.isThinking) {
+          changed = true;
+          return { ...b, isThinking: false };
+        }
+        return b;
+      case 'text':
+        if (b.isStreaming) {
+          changed = true;
+          return { ...b, isStreaming: false, timestamp: b.timestamp || Date.now() };
+        }
+        return b;
+      case 'tool_bash':
+        if (b.status === 'running') {
+          changed = true;
+          return { ...b, status };
+        }
+        return b;
+      case 'tool_search':
+        if (b.isSearching) {
+          changed = true;
+          return { ...b, isSearching: false };
+        }
+        return b;
+      case 'tool_edit':
+        if (b.status === 'running') {
+          changed = true;
+          return { ...b, status };
+        }
+        return b;
+      case 'tool_group': {
+        const hasRunning = b.items?.some((it) => it.status === 'running');
+        if (hasRunning) {
+          changed = true;
+          return {
+            ...b,
+            items: b.items.map((it) =>
+              it.status === 'running' ? { ...it, status } : it,
+            ),
+          };
+        }
+        return b;
+      }
+      case 'subagent': {
+        const isRunning = b.status === 'running';
+        const hasRunningEntries = b.entries?.some((e) => e.kind === 'tool' && e.status === 'running');
+        if (isRunning || hasRunningEntries) {
+          changed = true;
+          return {
+            ...b,
+            status: isRunning ? status : b.status,
+            entries: hasRunningEntries
+              ? b.entries.map((e) =>
+                  e.kind === 'tool' && e.status === 'running'
+                    ? { ...e, status }
+                    : e,
+                )
+              : b.entries,
+          };
+        }
+        return b;
+      }
+      default:
+        return b;
+    }
+  });
+  return changed ? next : blocks;
+}
+
 // Closes out any streaming indicators so the feed does not keep pulsing after
 // the turn ends.
 function settle(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStreamBlock[] {
-  const cleaned = closeThinking(closeStreaming(blocks));
+  const isFailed = event.kind === 'turn.failed';
+  const cleaned = settleAllBlocks(blocks, isFailed);
 
-  if (event.kind === 'turn.failed' && event.error) {
+  if (isFailed && event.error) {
     if (friendlyError(event.error)) return cleaned;
     return [...cleaned, { type: 'text', id: `error-${event.seq}`, content: `⚠ ${event.error}`, timestamp: event.at || Date.now(), variant: 'error' }];
   }

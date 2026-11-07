@@ -247,7 +247,7 @@ export const Scene: React.FC<SceneProps> = () => {
 
   const isTaskWorking = useCallback((task?: (typeof activeTasks)[0] | null) => {
     if (!task) return false;
-    if (task.isBusy) return true;
+    if (task.isBusy !== undefined) return task.isBusy;
     return Boolean(
       task.blocks?.some(
         (b) =>

@@ -23,7 +23,7 @@ import {
 import { domain, history, main, session } from '../../../wailsjs/go/models';
 import { AgentStreamBlock } from '../agent-session';
 import type { ChatDragPayload } from '../common/chatDrag';
-import { reduceEvent, RuntimeEvent, userBlock } from '../agent-session/eventReducer';
+import { reduceEvent, RuntimeEvent, settleAllBlocks, userBlock } from '../agent-session/eventReducer';
 import { ContextUsage, latestContext, nextContext } from '../agent-session/contextUsage';
 import { useOrchestratorStore } from './useOrchestratorStore';
 import { EventsOn } from '../../../wailsjs/runtime/runtime';
@@ -133,7 +133,7 @@ function threadBlocks(
   const rawTasks = meta.tasks ? [...meta.tasks] : [];
   const { tasks: loadedTasks, transcripts } = normalizeSessionTasks(rawTasks, rawTranscripts);
   const t = loadedTasks.find((item) => item.threadId === threadId) as any;
-  const replayed: AgentStreamBlock[] = (t && t.blocks) || replay(transcripts[threadId]);
+  const replayed: AgentStreamBlock[] = settleAllBlocks((t && t.blocks) || replay(transcripts[threadId]));
   const firstNonNotice = replayed.find((b) => b.type !== 'notice');
   const prompt = t?.prompt || meta.workspace?.prompt;
   return firstNonNotice?.type !== 'user' && prompt
@@ -1021,7 +1021,11 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       // The turn may already have finished; the state update below still applies.
     }
     setTasks((previous) =>
-      previous.map((task) => (task.threadId === threadId ? { ...task, isBusy: false } : task)),
+      previous.map((task) =>
+        task.threadId === threadId
+          ? { ...task, isBusy: false, blocks: settleAllBlocks(task.blocks) }
+          : task,
+      ),
     );
   }, []);
 

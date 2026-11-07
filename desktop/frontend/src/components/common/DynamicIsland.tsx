@@ -524,13 +524,14 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     () =>
       activeTasks.find(
         (t) =>
-          t.isBusy ||
-          t.blocks?.some(
-            (b: any) =>
-              (b.type === 'thinking' && b.isThinking) ||
-              (b.type === 'tool_bash' && b.status === 'running') ||
-              (b.type === 'tool_search' && b.isSearching),
-          ),
+          t.isBusy !== undefined
+            ? t.isBusy
+            : t.blocks?.some(
+                (b: any) =>
+                  (b.type === 'thinking' && b.isThinking) ||
+                  (b.type === 'tool_bash' && b.status === 'running') ||
+                  (b.type === 'tool_search' && b.isSearching),
+              ),
       ),
     [activeTasks],
   );
@@ -569,13 +570,14 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     const ids = new Set<string>();
     for (const task of activeTasks) {
       const isWorking =
-        task.isBusy ||
-        task.blocks?.some(
-          (b: any) =>
-            (b.type === 'thinking' && b.isThinking) ||
-            (b.type === 'tool_bash' && b.status === 'running') ||
-            (b.type === 'tool_search' && b.isSearching),
-        );
+        task.isBusy !== undefined
+          ? task.isBusy
+          : task.blocks?.some(
+              (b: any) =>
+                (b.type === 'thinking' && b.isThinking) ||
+                (b.type === 'tool_bash' && b.status === 'running') ||
+                (b.type === 'tool_search' && b.isSearching),
+            );
       if (!isWorking) continue;
       ids.add(task.threadId);
       const root = task.threadId.split('-cont-')[0];

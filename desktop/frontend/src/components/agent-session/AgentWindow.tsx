@@ -415,7 +415,13 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
       ));
 
   const hasLiveIndicator = streamBlocks.some(
-    (block) => block.type === 'thinking' && block.isThinking,
+    (block) =>
+      (block.type === 'thinking' && block.isThinking) ||
+      (block.type === 'text' && block.isStreaming) ||
+      (block.type === 'tool_bash' && block.status === 'running') ||
+      (block.type === 'tool_search' && block.isSearching) ||
+      (block.type === 'tool_edit' && (block as any).status === 'running') ||
+      (block.type === 'tool_group' && block.items?.some((i) => i.status === 'running')),
   );
 
   usePinnedScroll(feedScrollRef, [streamBlocks, isWorking], {
