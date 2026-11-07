@@ -1,4 +1,5 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence, type Variants } from 'motion/react';
 import { useWallpaper } from '../sidebar/useWallpaper';
 import { useProjects } from '../orchestrator/useProjects';
 import { useSpawner } from '../orchestrator/useSpawner';
@@ -26,6 +27,39 @@ import { playTaskComplete } from '../../sound';
 import { domain } from '../../../wailsjs/go/models';
 
 const SettingsWindow = React.lazy(() => import('../sidebar/SettingsWindow'));
+
+const chatSlideVariants: Variants = {
+  enter: (dir: number) => ({
+    x: dir > 0 ? 80 : dir < 0 ? -80 : 0,
+    opacity: 0,
+    scale: 0.99,
+    transition: {
+      x: { type: 'spring' as const, stiffness: 380, damping: 30, mass: 0.8 },
+      opacity: { duration: 0.2, ease: [0.16, 1, 0.3, 1] as const },
+      scale: { duration: 0.2, ease: [0.16, 1, 0.3, 1] as const },
+    },
+  }),
+  center: {
+    x: 0,
+    opacity: 1,
+    scale: 1,
+    transition: {
+      x: { type: 'spring' as const, stiffness: 380, damping: 30, mass: 0.8 },
+      opacity: { duration: 0.2, ease: [0.16, 1, 0.3, 1] as const },
+      scale: { duration: 0.2, ease: [0.16, 1, 0.3, 1] as const },
+    },
+  },
+  exit: (dir: number) => ({
+    x: dir > 0 ? -80 : dir < 0 ? 80 : 0,
+    opacity: 0,
+    scale: 0.99,
+    transition: {
+      x: { duration: 0.14, ease: [0.32, 0.72, 0, 1] as const },
+      opacity: { duration: 0.12, ease: 'easeOut' as const },
+      scale: { duration: 0.14, ease: [0.32, 0.72, 0, 1] as const },
+    },
+  }),
+};
 
 export interface SceneProps {
   children?: React.ReactNode;
@@ -55,6 +89,7 @@ export const Scene: React.FC<SceneProps> = () => {
   // View state: 'home' (blank chat screen) or 'chat' (active fullscreen chat)
   const [activeView, setActiveView] = useState<'home' | 'chat'>('home');
   const [activeCardIndex, setActiveCardIndex] = useState(0);
+  const [direction, setDirection] = useState(0);
   const [cardMode, setCardMode] = useState<AgentCardMode>('chat');
 
   // Dynamic Island Notifications
@@ -152,6 +187,7 @@ export const Scene: React.FC<SceneProps> = () => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'n' || e.key === 'N')) {
         e.preventDefault();
+        setDirection(-1);
         setActiveView('home');
         return;
       }
@@ -159,31 +195,34 @@ export const Scene: React.FC<SceneProps> = () => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'ArrowRight') {
         e.preventDefault();
         if (activeView === 'home' && activeTasks.length > 0) {
-          setActiveCardIndex(0);
+          setDirection(1);
           setActiveView('chat');
-        } else if (activeView === 'chat') {
-          if (activeCardIndex < activeTasks.length - 1) {
-            setActiveCardIndex((prev) => prev + 1);
-          }
+        } else if (activeView === 'chat' && activeCardIndex < activeTasks.length - 1) {
+          setDirection(1);
+          setActiveCardIndex((prev) => prev + 1);
         }
         return;
       }
 
       if ((e.ctrlKey || e.metaKey) && e.key === 'ArrowLeft') {
         e.preventDefault();
-        if (activeView === 'chat') {
-          if (activeCardIndex > 0) {
-            setActiveCardIndex((prev) => prev - 1);
-          } else {
-            setActiveView('home');
-          }
+        if (activeView === 'chat' && activeCardIndex > 0) {
+          setDirection(-1);
+          setActiveCardIndex((prev) => prev - 1);
         }
         return;
       }
 
       if (e.key === 'Escape') {
-        setIsSettingsOpen(false);
-        return;
+        if (isSettingsOpen) {
+          setIsSettingsOpen(false);
+          return;
+        }
+        if (activeView === 'home' && activeTasks.length > 0) {
+          setDirection(1);
+          setActiveView('chat');
+          return;
+        }
       }
     };
 
@@ -214,6 +253,7 @@ export const Scene: React.FC<SceneProps> = () => {
       return;
     }
 
+    const prevCount = activeTasks.length;
     const threadId = await spawner.spawnAgent(
       trimmed,
       undefined,
@@ -223,6 +263,8 @@ export const Scene: React.FC<SceneProps> = () => {
     );
     attachments.release();
     if (threadId) {
+      setDirection(1);
+      setActiveCardIndex(prevCount);
       setActiveView('chat');
     }
   };
@@ -230,9 +272,11 @@ export const Scene: React.FC<SceneProps> = () => {
   const handleCloseTask = (threadId: string) => {
     spawner.close(threadId);
     if (activeTasks.length <= 1) {
+      setDirection(-1);
       setActiveView('home');
       setActiveCardIndex(0);
     } else if (activeCardIndex >= activeTasks.length - 1) {
+      setDirection(-1);
       setActiveCardIndex(Math.max(0, activeCardIndex - 1));
     }
   };
@@ -240,6 +284,7 @@ export const Scene: React.FC<SceneProps> = () => {
   const handleOpenHistorySession = async (workspaceId: string, threadId?: string) => {
     const targetIndex = await spawner.openHistorySession(workspaceId, threadId);
     if (targetIndex >= 0) {
+      setDirection(targetIndex >= activeCardIndex ? 1 : -1);
       setActiveCardIndex(targetIndex);
       setActiveView('chat');
     }
@@ -262,36 +307,30 @@ export const Scene: React.FC<SceneProps> = () => {
   const activeTaskWorking = isTaskWorking(activeTask);
 
   const leftTarget = useMemo(() => {
-    if (activeView === 'chat') {
-      if (activeCardIndex > 0) {
-        const neighbor = activeTasks[activeCardIndex - 1];
-        return {
-          title: neighbor?.title || 'Agent',
-          isBusy: isTaskWorking(neighbor),
-          subtitle: 'Ctrl + ←',
-          onClick: () => setActiveCardIndex((prev) => Math.max(0, prev - 1)),
-        };
-      } else if (activeTasks.length >= 2) {
-        return {
-          title: 'Home',
-          isBusy: undefined,
-          subtitle: 'Ctrl + ←',
-          onClick: () => setActiveView('home'),
-        };
-      }
+    if (activeView === 'chat' && activeCardIndex > 0) {
+      const neighbor = activeTasks[activeCardIndex - 1];
+      return {
+        title: neighbor?.title || 'Agent',
+        isBusy: isTaskWorking(neighbor),
+        subtitle: 'Ctrl + ←',
+        onClick: () => {
+          setDirection(-1);
+          setActiveCardIndex((prev) => Math.max(0, prev - 1));
+        },
+      };
     }
     return null;
   }, [activeView, activeCardIndex, activeTasks, isTaskWorking]);
 
   const rightTarget = useMemo(() => {
     if (activeView === 'home' && activeTasks.length > 0) {
-      const neighbor = activeTasks[0];
+      const neighbor = activeTasks[activeCardIndex] || activeTasks[0];
       return {
-        title: neighbor?.title || 'Agent',
+        title: neighbor?.title || 'Back to Chat',
         isBusy: isTaskWorking(neighbor),
         subtitle: 'Ctrl + →',
         onClick: () => {
-          setActiveCardIndex(0);
+          setDirection(1);
           setActiveView('chat');
         },
       };
@@ -301,7 +340,10 @@ export const Scene: React.FC<SceneProps> = () => {
         title: neighbor?.title || 'Agent',
         isBusy: isTaskWorking(neighbor),
         subtitle: 'Ctrl + →',
-        onClick: () => setActiveCardIndex((prev) => Math.min(activeTasks.length - 1, prev + 1)),
+        onClick: () => {
+          setDirection(1);
+          setActiveCardIndex((prev) => Math.min(activeTasks.length - 1, prev + 1));
+        },
       };
     }
     return null;
@@ -333,8 +375,12 @@ export const Scene: React.FC<SceneProps> = () => {
       {/* Left Navigation Rail (Floating icons, no vertical line, no bulky background) */}
       <NavRail
         activeView={activeView}
-        onHomeClick={() => setActiveView('home')}
+        onHomeClick={() => {
+          setDirection(-1);
+          setActiveView('home');
+        }}
         onNewChatClick={() => {
+          setDirection(-1);
           setActiveView('home');
         }}
         onProjectsClick={() => setProjectsTrigger((p) => p + 1)}
@@ -386,6 +432,7 @@ export const Scene: React.FC<SceneProps> = () => {
               void (async () => {
                 const targetIdx = await spawner.openHistorySession('', filePath);
                 if (targetIdx >= 0) {
+                  setDirection(targetIdx >= activeCardIndex ? 1 : -1);
                   setActiveCardIndex(targetIdx);
                   setActiveView('chat');
                 }
@@ -396,57 +443,75 @@ export const Scene: React.FC<SceneProps> = () => {
 
         {/* View Content */}
         <div className="relative flex-1 w-full h-full overflow-hidden">
-          {activeView === 'home' || !activeTask ? (
-            /* Blank Chat / Home View */
-            <div className="relative w-full h-full flex flex-col items-center justify-center pb-28 px-6 overflow-y-auto">
-              {/* Centered Stats & Activity Heatmap */}
-              <HomeStats isLight={isLight} />
-            </div>
-          ) : (
-            /* Fullscreen Active Chat View */
-            <div className="relative w-full h-full overflow-hidden">
-              <Suspense fallback={null}>
-                <AgentWindow
-                  key={activeTask.threadId}
-                  id={activeTask.threadId}
-                  title={activeTask.title}
-                  subtitle={activeTask.branch}
-                  modelId={activeTask.model}
-                  driver={activeTask.driver}
-                  status={activeTaskWorking ? 'working' : 'idle'}
-                  workStartedAt={activeTask.workStartedAt}
-                  lastTurnMs={activeTask.lastTurnMs}
-                  contextUsage={activeTask.context}
-                  cardMode={cardMode}
-                  onCardModeChange={setCardMode}
-                  detectedServers={currentTaskServers}
-                  onStopServer={runningServers.stop}
-                  git={git}
-                  streamBlocks={activeTask.blocks}
-                  onSendMessage={(msg: string, mId: string, files?: domain.FileRef[]) =>
-                    spawner.sendWithModel(activeTask.threadId, msg, files, mId)
-                  }
-                  onInterrupt={() => spawner.interrupt(activeTask.threadId)}
-                  onAnswerQuestion={async (blockId, answers) => {
-                    const qId = blockId.replace(/^question-/, '');
-                    await RespondToQuestion(activeTask.threadId, qId, answers);
-                  }}
-                  onSkipQuestion={async (blockId) => {
-                    const qId = blockId.replace(/^question-/, '');
-                    await RespondToQuestion(activeTask.threadId, qId, []);
-                  }}
-                  onDeleteTurn={(turnId) => spawner.deleteTurn(activeTask.threadId, turnId)}
-                  onClose={() => handleCloseTask(activeTask.threadId)}
-                  projectName={activeTask.projectName}
-                  projectPath={activeTask.projectPath}
-                  accountName={accountLabel(activeTask.driver, activeTask.account)}
-                  isFullscreen={true}
-                  isFocused={true}
-                  className="w-full h-full"
-                />
-              </Suspense>
-            </div>
-          )}
+          <AnimatePresence mode="wait" custom={direction} initial={false}>
+            {activeView === 'home' || !activeTask ? (
+              /* Blank Chat / Home View */
+              <motion.div
+                key="home-view"
+                custom={direction}
+                variants={chatSlideVariants}
+                initial="enter"
+                animate="center"
+                exit="exit"
+                className="relative w-full h-full flex flex-col items-center justify-center pb-28 px-6 overflow-y-auto"
+              >
+                {/* Centered Stats & Activity Heatmap */}
+                <HomeStats isLight={isLight} />
+              </motion.div>
+            ) : (
+              /* Fullscreen Active Chat View */
+              <motion.div
+                key={activeTask.threadId}
+                custom={direction}
+                variants={chatSlideVariants}
+                initial="enter"
+                animate="center"
+                exit="exit"
+                className="relative w-full h-full overflow-hidden"
+              >
+                <Suspense fallback={null}>
+                  <AgentWindow
+                    key={activeTask.threadId}
+                    id={activeTask.threadId}
+                    title={activeTask.title}
+                    subtitle={activeTask.branch}
+                    modelId={activeTask.model}
+                    driver={activeTask.driver}
+                    status={activeTaskWorking ? 'working' : 'idle'}
+                    workStartedAt={activeTask.workStartedAt}
+                    lastTurnMs={activeTask.lastTurnMs}
+                    contextUsage={activeTask.context}
+                    cardMode={cardMode}
+                    onCardModeChange={setCardMode}
+                    detectedServers={currentTaskServers}
+                    onStopServer={runningServers.stop}
+                    git={git}
+                    streamBlocks={activeTask.blocks}
+                    onSendMessage={(msg: string, mId: string, files?: domain.FileRef[]) =>
+                      spawner.sendWithModel(activeTask.threadId, msg, files, mId)
+                    }
+                    onInterrupt={() => spawner.interrupt(activeTask.threadId)}
+                    onAnswerQuestion={async (blockId, answers) => {
+                      const qId = blockId.replace(/^question-/, '');
+                      await RespondToQuestion(activeTask.threadId, qId, answers);
+                    }}
+                    onSkipQuestion={async (blockId) => {
+                      const qId = blockId.replace(/^question-/, '');
+                      await RespondToQuestion(activeTask.threadId, qId, []);
+                    }}
+                    onDeleteTurn={(turnId) => spawner.deleteTurn(activeTask.threadId, turnId)}
+                    onClose={() => handleCloseTask(activeTask.threadId)}
+                    projectName={activeTask.projectName}
+                    projectPath={activeTask.projectPath}
+                    accountName={accountLabel(activeTask.driver, activeTask.account)}
+                    isFullscreen={true}
+                    isFocused={true}
+                    className="w-full h-full"
+                  />
+                </Suspense>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Bottom Left Navigation Indicator */}
@@ -459,7 +524,7 @@ export const Scene: React.FC<SceneProps> = () => {
             className="fixed bottom-7 left-[64px] z-30 pointer-events-auto cursor-pointer transition-transform duration-150 active:scale-95 group hidden md:flex"
           >
             <GlassSquircle
-              radius={16}
+              radius={18}
               fill={isLight ? 'rgba(255, 255, 255, 0.72)' : 'linear-gradient(135deg, #0B0A09 0%, #191616 100%)'}
               frost={16}
               border={{
@@ -474,13 +539,13 @@ export const Scene: React.FC<SceneProps> = () => {
                   ? '0 6px 20px rgba(0, 0, 0, 0.08)'
                   : '0 8px 24px rgba(0, 0, 0, 0.45)',
               }}
-              className="inline-flex items-center px-3.5 py-1.5 min-h-[38px] w-fit max-w-[220px]"
+              className="inline-flex items-center px-4 py-2 min-h-[46px] w-fit max-w-[240px]"
             >
               <div className="flex flex-col min-w-0 text-left">
-                <span className="truncate text-[12px] font-medium leading-tight text-white/90 group-hover:text-white transition-colors">
+                <span className="truncate text-[12.5px] font-medium leading-tight text-white/90 group-hover:text-white transition-colors">
                   {leftTarget.title}
                 </span>
-                <span className="flex items-center gap-1.5 text-[10px] text-white/50 leading-tight mt-0.5">
+                <span className="flex items-center gap-2 text-[10.5px] text-white/50 leading-tight mt-1">
                   {leftTarget.isBusy !== undefined && (
                     <span
                       className={`w-1.5 h-1.5 rounded-full shrink-0 ${
@@ -507,7 +572,7 @@ export const Scene: React.FC<SceneProps> = () => {
             className="fixed bottom-7 right-6 z-30 pointer-events-auto cursor-pointer transition-transform duration-150 active:scale-95 group hidden md:flex"
           >
             <GlassSquircle
-              radius={16}
+              radius={18}
               fill={isLight ? 'rgba(255, 255, 255, 0.72)' : 'linear-gradient(135deg, #0B0A09 0%, #191616 100%)'}
               frost={16}
               border={{
@@ -522,13 +587,13 @@ export const Scene: React.FC<SceneProps> = () => {
                   ? '0 6px 20px rgba(0, 0, 0, 0.08)'
                   : '0 8px 24px rgba(0, 0, 0, 0.45)',
               }}
-              className="inline-flex items-center px-3.5 py-1.5 min-h-[38px] w-fit max-w-[220px]"
+              className="inline-flex items-center px-4 py-2 min-h-[46px] w-fit max-w-[240px]"
             >
               <div className="flex flex-col min-w-0 text-right w-full">
-                <span className="truncate text-[12px] font-medium leading-tight text-white/90 group-hover:text-white transition-colors">
+                <span className="truncate text-[12.5px] font-medium leading-tight text-white/90 group-hover:text-white transition-colors">
                   {rightTarget.title}
                 </span>
-                <span className="flex items-center justify-end gap-1.5 text-[10px] text-white/50 leading-tight mt-0.5">
+                <span className="flex items-center justify-end gap-2 text-[10.5px] text-white/50 leading-tight mt-1">
                   <span>{rightTarget.subtitle}</span>
                   {rightTarget.isBusy !== undefined && (
                     <span
@@ -554,7 +619,10 @@ export const Scene: React.FC<SceneProps> = () => {
                 ? () => spawner.interrupt(activeTask.threadId)
                 : undefined
             }
-            onNewChat={() => setActiveView('home')}
+            onNewChat={() => {
+              setDirection(-1);
+              setActiveView('home');
+            }}
             isBusy={activeView === 'chat' && activeTaskWorking}
             attachments={attachments}
             isLight={isLight}
