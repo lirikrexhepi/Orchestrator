@@ -346,26 +346,36 @@ export function ProjectsView({
   chatCounts,
   claudeCount,
   recentClaude = [],
+  recentChats = [],
+  runningThreadIds,
   relativeTime,
+  renderIcon,
+  subtitle,
   onOpenClaudeSession,
   onClose,
   onPicked,
   onOpenProjectChats,
   onOpenClaude,
   onMoveChat,
+  onOpenChat,
 }: {
   tone: IslandTone;
   projects?: ProjectsState;
   chatCounts: Record<string, number>;
   claudeCount: number;
   recentClaude?: claudeimport.ExternalSession[];
+  recentChats?: ChatHistoryItem[];
+  runningThreadIds?: Set<string>;
   relativeTime?: (timestamp: number) => string;
+  renderIcon?: (chat: ChatHistoryItem) => React.ReactNode;
+  subtitle?: (chat: ChatHistoryItem) => string;
   onOpenClaudeSession?: (session: claudeimport.ExternalSession) => void;
   onClose: () => void;
   onPicked: () => void;
   onOpenProjectChats: (project: Project) => void;
   onOpenClaude: () => void;
   onMoveChat?: (payload: ChatDragPayload, project: Project) => void;
+  onOpenChat?: (chat: ChatHistoryItem) => void;
 }) {
   const list = projects?.projects ?? [];
   const [order, setOrder] = useState<string[]>(() => list.map((p) => p.id));
@@ -408,7 +418,7 @@ export function ProjectsView({
           </>
         }
       />
-      <ScrollArea maxHeight={300} className="-mr-1 pr-1">
+      <ScrollArea maxHeight={360} className="-mr-1 pr-1">
         {list.length === 0 ? (
           <EmptyState tone={tone}>No projects yet</EmptyState>
         ) : (
@@ -470,6 +480,50 @@ export function ProjectsView({
                 )}
               </button>
             ))}
+          </div>
+        )}
+        {recentChats && recentChats.length > 0 && (
+          <div className="flex flex-col mt-1">
+            <div className={`h-px mx-2 my-1.5 ${tone.divider}`} />
+            <span className={`px-2 pt-0.5 pb-1 text-[10.5px] font-medium tracking-tight ${tone.faint}`}>
+              Recent chats
+            </span>
+            <div className="flex flex-col gap-0.5">
+              {recentChats.slice(0, 3).map((chat) => {
+                const running = runningThreadIds?.has(chat.threadId);
+                const sub = subtitle
+                  ? subtitle(chat)
+                  : `${chat.projectName ? `${chat.projectName} · ` : ''}${relativeTime ? relativeTime(chat.updatedAt) : ''}`;
+                return (
+                  <button
+                    key={chat.id}
+                    type="button"
+                    onClick={() => onOpenChat?.(chat)}
+                    className={`w-full group flex items-center gap-2.5 h-[40px] px-2 rounded-[11px] text-left transition-colors duration-150 cursor-pointer ${tone.hover}`}
+                  >
+                    <span className="shrink-0">
+                      {renderIcon ? renderIcon(chat) : (
+                        <MaterialIcon name="chat" className="text-[14px] text-white/60 shrink-0" />
+                      )}
+                    </span>
+                    <span className="flex flex-col min-w-0 flex-1 gap-[1px]">
+                      <span className={`text-[12px] font-medium tracking-tight truncate leading-[14px] ${tone.fg}`}>
+                        {chat.title}
+                      </span>
+                      <span className={`flex items-center gap-1.5 text-[10.5px] leading-[13px] min-w-0 ${tone.sub}`}>
+                        {running && (
+                          <span className="flex items-center gap-1 text-emerald-400 font-medium shrink-0">
+                            <span className="w-[5px] h-[5px] rounded-full bg-emerald-400 animate-pulse" />
+                            Running
+                          </span>
+                        )}
+                        <span className="truncate">{sub}</span>
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
       </ScrollArea>

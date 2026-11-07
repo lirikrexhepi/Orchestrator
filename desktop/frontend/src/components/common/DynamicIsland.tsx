@@ -38,6 +38,7 @@ export interface DynamicIslandProps {
     title: string;
     branch?: string;
     model?: string;
+    driver?: string;
     isBusy?: boolean;
     projectName?: string;
     blocks?: any[];
@@ -130,6 +131,8 @@ export interface ChatHistoryItem {
   models?: string[];
   updatedAt: number;
   archived?: boolean;
+  projectPath?: string;
+  projectName?: string;
 }
 
 export interface ChatHistoryGroup {
@@ -207,6 +210,8 @@ export function extractChatHistoryItems(
 
   for (const meta of metas) {
     const wid = meta.workspace?.id || '';
+    const cwd = meta.workspace?.cwd || '';
+    const projName = cwd ? cwd.replace(/\\/g, '/').split('/').filter(Boolean).pop() : undefined;
     const tasks = meta.tasks || [];
 
     // Group tasks by root thread ID to merge continuations
@@ -234,6 +239,8 @@ export function extractChatHistoryItems(
         models: ['Orchestrator'],
         updatedAt: meta.workspace?.updatedAt || meta.workspace?.createdAt || 0,
         archived: Boolean(meta.workspace?.archived),
+        projectPath: cwd,
+        projectName: projName,
       });
     } else {
       for (const rootId of order) {
@@ -294,6 +301,8 @@ export function extractChatHistoryItems(
             meta.workspace?.createdAt ||
             0,
           archived: Boolean(meta.workspace?.archived) || groupTasks.every((gt: any) => gt.archived),
+          projectPath: cwd || primary.worktree?.path,
+          projectName: projName,
         });
       }
     }
@@ -585,6 +594,44 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
     return ids;
   }, [activeTasks]);
+
+  const recentChats = useMemo(() => {
+    const fromHistory = extractChatHistoryItems(historyEntries || [], undefined, { archived: 'exclude' });
+    const historyThreadIds = new Set(fromHistory.map((h) => h.threadId));
+    const activeUnsaved: ChatHistoryItem[] = [];
+    for (const t of activeTasks || []) {
+      if (t.threadId && !historyThreadIds.has(t.threadId)) {
+        activeUnsaved.push({
+          id: t.threadId,
+          workspaceId: activeWorkspaceId || '',
+          threadId: t.threadId,
+          title: t.title || 'Agent',
+          model: t.model,
+          driver: t.driver,
+          drivers: t.driver ? [t.driver] : [],
+          models: t.model ? [t.model] : [],
+          updatedAt: Date.now(),
+          projectName: t.projectName,
+        });
+      }
+    }
+    const combined = [...activeUnsaved, ...fromHistory];
+    for (const chat of combined) {
+      if (chat.projectPath && projects?.projects) {
+        const found = projects.projects.find((p) => isSamePath(p.path, chat.projectPath!));
+        if (found) chat.projectName = found.name;
+      }
+    }
+    return combined.slice(0, 3);
+  }, [historyEntries, activeTasks, activeWorkspaceId, projects?.projects]);
+
+  const getChatProjectName = (chat: ChatHistoryItem) => {
+    if (chat.projectPath && projects?.projects) {
+      const found = projects.projects.find((p) => isSamePath(p.path, chat.projectPath!));
+      if (found) return found.name;
+    }
+    return chat.projectName || '';
+  };
 
   // Identify model vendor from selectedProviderId, selectedModelId, activeTask or usageReport
   type UsageDriverName = 'claude' | 'codex' | 'antigravity' | 'opencode';
@@ -960,6 +1007,27 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 setMode('claude-chats');
               }}
               onMoveChat={onMoveChat}
+              recentChats={recentChats}
+              runningThreadIds={runningThreadIds}
+              renderIcon={(chat) => renderOverlappingChatIcons(chat, isLight)}
+              subtitle={formatChatSubtitle}
+              onOpenChat={(chat) => {
+                if (chat.projectPath) {
+                  const proj =
+                    projects?.projects.find((p) => isSamePath(p.path, chat.projectPath!)) ||
+                    (chat.projectName
+                      ? projects?.projects.find(
+                          (p) => p.name.toLowerCase() === chat.projectName!.toLowerCase(),
+                        )
+                      : undefined);
+                  if (proj && proj.id !== projects?.active?.id) {
+                    void projects?.select(proj.id);
+                  }
+                }
+                if (chat.archived) onSetChatArchived?.(chat.workspaceId, chat.threadId, false);
+                onOpenHistory?.(chat.workspaceId, chat.threadId);
+                setMode('idle');
+              }}
             />
           </motion.div>
         )}

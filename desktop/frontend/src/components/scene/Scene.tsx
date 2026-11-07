@@ -18,6 +18,7 @@ import { useGit } from '../git';
 import { NavRail } from '../layout/NavRail';
 import { HomeStats } from '../layout/HomeStats';
 import { GlassInput } from '../layout/GlassInput';
+import { parseSwitchNotice } from '../agent-session/NoticeDivider';
 import { DynamicIsland, DynamicIslandNotification } from '../common/DynamicIsland';
 import { TitleBar } from '../common/TitleBar';
 import { GlassSquircle } from '../../ui/glass/GlassSquircle';
@@ -126,6 +127,38 @@ export const Scene: React.FC<SceneProps> = () => {
   const hasServers = currentTaskServers.length > 0;
   const threadChanges = useMemo(() => collectThreadChanges(streamBlocks), [streamBlocks]);
   const hasChanges = threadChanges.length > 0;
+
+  const activeTaskModel = useMemo(() => {
+    if (!activeTask) return undefined;
+    if (activeTask.blocks) {
+      for (let i = activeTask.blocks.length - 1; i >= 0; i--) {
+        const b = activeTask.blocks[i];
+        if (b.type === 'notice' && b.label) {
+          const parsed = parseSwitchNotice(b.label);
+          if (parsed?.toModel) return parsed.toModel;
+        }
+      }
+    }
+    const models = activeTask.models;
+    if (models && models.length > 0) return models[models.length - 1];
+    return activeTask.model;
+  }, [activeTask]);
+
+  const activeTaskDriver = useMemo(() => {
+    if (!activeTask) return undefined;
+    if (activeTask.blocks) {
+      for (let i = activeTask.blocks.length - 1; i >= 0; i--) {
+        const b = activeTask.blocks[i];
+        if (b.type === 'notice' && b.label) {
+          const parsed = parseSwitchNotice(b.label);
+          if (parsed?.toDriver) return parsed.toDriver;
+        }
+      }
+    }
+    const drivers = activeTask.drivers;
+    if (drivers && drivers.length > 0) return drivers[drivers.length - 1];
+    return activeTask.driver;
+  }, [activeTask]);
 
   // Initial provider discovery and live listener
   useEffect(() => {
@@ -627,6 +660,9 @@ export const Scene: React.FC<SceneProps> = () => {
             attachments={attachments}
             isLight={isLight}
             projects={activeView === 'home' ? projects : undefined}
+            activeChatKey={activeView === 'chat' ? (activeTask?.threadId || String(activeCardIndex)) : '__home__'}
+            activeChatModel={activeView === 'chat' ? activeTaskModel : undefined}
+            activeChatDriver={activeView === 'chat' ? activeTaskDriver : undefined}
           />
         </div>
       </div>

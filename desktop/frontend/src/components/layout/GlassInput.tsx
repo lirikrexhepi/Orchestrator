@@ -9,6 +9,68 @@ import { AttachmentStrip } from '../common/AttachmentStrip';
 import { ProjectsState } from '../orchestrator/useProjects';
 import { readChatDrag, isChatDrag } from '../common/chatDrag';
 import { markChatContextTarget, leaveChatContextTarget } from '../common/ChatDragLayer';
+import { AIModel } from '../orchestrator/types';
+
+export function resolveMatchingModel(
+  models: AIModel[],
+  taskModel?: string,
+  taskDriver?: string,
+): AIModel | undefined {
+  if (!models || models.length === 0 || (!taskModel && !taskDriver)) return undefined;
+
+  const raw = (taskModel || '').trim();
+  const lower = raw.toLowerCase();
+  const driverLower = (taskDriver || '').toLowerCase();
+  const strip = (s: string) => s.replace(/^(opencode|anthropic|openai|google)[\/:]/, '').toLowerCase();
+
+  // 1. Exact ID match
+  if (raw) {
+    const exact = models.find((m) => m.id === raw || strip(m.id) === strip(raw));
+    if (exact) return exact;
+
+    // 2. Case-insensitive ID match
+    const caseInsensitive = models.find((m) => m.id.toLowerCase() === lower || strip(m.id) === strip(lower));
+    if (caseInsensitive) return caseInsensitive;
+
+    // 3. Match by name exact or case-insensitive
+    const nameMatch = models.find((m) => m.name.toLowerCase() === lower);
+    if (nameMatch) return nameMatch;
+  }
+
+  // 4. If driver is specified, prioritize models for that provider
+  const providerModels = driverLower
+    ? models.filter((m) => m.providerId.toLowerCase() === driverLower)
+    : [];
+
+  const candidatePool = providerModels.length > 0 ? providerModels : models;
+
+  // Check specific keywords (opus, sonnet, haiku, flash, pro, gpt-4o, o3-mini, o1, muse)
+  if (lower) {
+    const keywords = ['opus', 'sonnet', 'haiku', 'flash', 'pro', 'gpt-4o', 'o3-mini', 'o1', 'muse'];
+    for (const kw of keywords) {
+      if (lower.includes(kw)) {
+        const match =
+          candidatePool.find((m) => m.id.toLowerCase().includes(kw) || m.name.toLowerCase().includes(kw)) ||
+          models.find((m) => m.id.toLowerCase().includes(kw) || m.name.toLowerCase().includes(kw));
+        if (match) return match;
+      }
+    }
+
+    // 5. Contains match on id or name
+    const containsMatch =
+      candidatePool.find((m) => m.id.toLowerCase().includes(lower) || lower.includes(m.id.toLowerCase())) ||
+      candidatePool.find((m) => m.name.toLowerCase().includes(lower) || lower.includes(m.name.toLowerCase())) ||
+      models.find((m) => m.id.toLowerCase().includes(lower) || lower.includes(m.id.toLowerCase())) ||
+      models.find((m) => m.name.toLowerCase().includes(lower) || lower.includes(m.name.toLowerCase()));
+
+    if (containsMatch) return containsMatch;
+  }
+
+  // 6. If provider matched, fallback to first model of that provider
+  if (providerModels.length > 0) return providerModels[0];
+
+  return undefined;
+}
 
 export interface GlassInputProps {
   onSubmit: (prompt: string, modelId?: string) => void;
@@ -18,6 +80,9 @@ export interface GlassInputProps {
   attachments?: AttachmentsState;
   isLight?: boolean;
   projects?: ProjectsState;
+  activeChatKey?: string;
+  activeChatModel?: string;
+  activeChatDriver?: string;
 }
 
 export const GlassInput: React.FC<GlassInputProps> = ({
@@ -28,6 +93,9 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   attachments,
   isLight = false,
   projects,
+  activeChatKey,
+  activeChatModel,
+  activeChatDriver,
 }) => {
   const [text, setText] = useState('');
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
@@ -36,6 +104,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const projectPickerRef = useRef<HTMLDivElement>(null);
   const projectButtonRef = useRef<HTMLButtonElement>(null);
+  const lastSyncedKeyRef = useRef<string | null>(null);
 
   // Close popups on outside click or Escape
   useEffect(() => {
@@ -72,6 +141,31 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   const selectedModelId = selectedModel?.id;
   const provider = selectedModel?.providerId ?? 'antigravity';
   const icon = providerIcon(provider, isLight);
+
+  // Sync selected model to current chat's model when switching chats with an empty input
+  useEffect(() => {
+    if (!activeChatKey || activeChatKey === '__home__') {
+      lastSyncedKeyRef.current = activeChatKey ?? null;
+      return;
+    }
+
+    if (lastSyncedKeyRef.current === activeChatKey && store.selectedModelId) return;
+
+    if (text.trim().length > 0) return;
+
+    const models = store.models;
+    if (!models || models.length === 0) return;
+
+    const target = resolveMatchingModel(models, activeChatModel, activeChatDriver);
+    if (target) {
+      lastSyncedKeyRef.current = activeChatKey;
+      if (target.id !== store.selectedModelId) {
+        store.selectModelSilently(target.id);
+      }
+    } else {
+      lastSyncedKeyRef.current = activeChatKey;
+    }
+  }, [activeChatKey, activeChatModel, activeChatDriver, store.models, store.selectedModelId, text]);
 
   // Auto-resize textarea
   useEffect(() => {
