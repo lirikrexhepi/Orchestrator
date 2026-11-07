@@ -524,9 +524,10 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
         path={projectPath}
         lane={matchingLane ?? null}
         onOpenChanges={openChanges}
+        onClose={onClose}
       />
     ),
-    [isLight, projectName, projectPath, matchingLane, openChanges],
+    [isLight, projectName, projectPath, matchingLane, openChanges, onClose],
   );
 
   const projectMeta = (

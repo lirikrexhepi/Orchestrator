@@ -2,8 +2,8 @@ import { RuntimeEvent, editBlockFields } from './eventReducer';
 import { AgentStreamBlock, SubagentBlockData, SubagentEntry } from './types';
 import { isEditToolName } from './threadChanges';
 
-const SPAWN_TOOLS = new Set(['task', 'agent']);
-const TARGET_KEYS = ['file_path', 'command', 'pattern', 'path', 'url', 'query', 'description', 'prompt'];
+const SPAWN_TOOLS = new Set(['task', 'agent', 'invoke_subagent', 'subagent', 'spawn', 'sub_agent']);
+const TARGET_KEYS = ['file_path', 'command', 'pattern', 'path', 'url', 'query', 'description', 'prompt', 'Prompt', 'Role', 'TypeName'];
 
 export function isSubagentEvent(event: RuntimeEvent): boolean {
   return event.kind.startsWith('subagent.');
@@ -92,11 +92,11 @@ function setEntry(entries: SubagentEntry[], entry: SubagentEntry): SubagentEntry
 }
 
 function describe(input: Record<string, unknown>): { title: string; agentType: string | undefined; prompt: string | undefined } {
-  const rawTitle = input.description ?? input.subagent_type ?? input.title;
+  const rawTitle = input.Role ?? input.role ?? input.description ?? input.subagent_type ?? input.title ?? input.TypeName ?? input.name;
   const title = typeof rawTitle === 'string' ? rawTitle.trim() : '';
-  const rawType = input.subagent_type ?? input.agent;
+  const rawType = input.TypeName ?? input.typeName ?? input.subagent_type ?? input.agent ?? input.role ?? input.Role;
   const agentType = typeof rawType === 'string' && rawType.trim() ? rawType : undefined;
-  const rawPrompt = input.prompt;
+  const rawPrompt = input.Prompt ?? input.prompt ?? input.instruction ?? input.instructions ?? input.task;
   const prompt = typeof rawPrompt === 'string' && rawPrompt ? rawPrompt : undefined;
   return { title, agentType, prompt };
 }

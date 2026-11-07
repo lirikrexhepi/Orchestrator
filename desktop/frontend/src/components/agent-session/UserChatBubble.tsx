@@ -78,6 +78,20 @@ const UserImageThumbnail: React.FC<ThumbnailProps> = ({ file, onOpen }) => {
     );
   }
 
+  const isChat = file.mime === 'application/x-orchestrator-chat' || file.path?.startsWith('chat:');
+
+  if (isChat) {
+    return (
+      <div
+        title={file.path}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] bg-white/20 border border-white/30 text-white text-[11.5px] max-w-[280px] shadow-sm backdrop-blur-sm"
+      >
+        <MaterialIcon name="forum" className="text-[15px] text-sky-200 shrink-0" />
+        <span className="truncate font-medium">{name}</span>
+      </div>
+    );
+  }
+
   if (error || !dataUrl) {
     return (
       <div

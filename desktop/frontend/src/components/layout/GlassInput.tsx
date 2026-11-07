@@ -1,11 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GlassSquircle } from '../../ui/glass/GlassSquircle';
-import { Paperclip, Square, ChevronDown, Plus } from '../common/icons';
+import { Paperclip, Square, ChevronDown, Plus, MaterialIcon } from '../common/icons';
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
 import { providerIcon } from '../orchestrator/providerIcons';
 import { ModelPicker } from '../orchestrator/ModelPicker';
 import { AttachmentsState, filesFromTransfer } from '../common/useAttachments';
 import { AttachmentStrip } from '../common/AttachmentStrip';
+import { ProjectsState } from '../orchestrator/useProjects';
+import { readChatDrag, isChatDrag } from '../common/chatDrag';
+import { markChatContextTarget, leaveChatContextTarget } from '../common/ChatDragLayer';
 
 export interface GlassInputProps {
   onSubmit: (prompt: string, modelId?: string) => void;
@@ -14,6 +17,7 @@ export interface GlassInputProps {
   isBusy?: boolean;
   attachments?: AttachmentsState;
   isLight?: boolean;
+  projects?: ProjectsState;
 }
 
 export const GlassInput: React.FC<GlassInputProps> = ({
@@ -23,22 +27,32 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   isBusy = false,
   attachments,
   isLight = false,
+  projects,
 }) => {
   const [text, setText] = useState('');
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
+  const [isProjectPickerOpen, setIsProjectPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  const projectPickerRef = useRef<HTMLDivElement>(null);
 
-  // Close ModelPicker on outside click or Escape
+  // Close popups on outside click or Escape
   useEffect(() => {
-    if (!isModelPickerOpen) return;
+    if (!isModelPickerOpen && !isProjectPickerOpen) return;
     const handleDown = (e: MouseEvent) => {
-      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (modelPickerRef.current && !modelPickerRef.current.contains(target)) {
         setIsModelPickerOpen(false);
+      }
+      if (projectPickerRef.current && !projectPickerRef.current.contains(target)) {
+        setIsProjectPickerOpen(false);
       }
     };
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setIsModelPickerOpen(false);
+      if (e.key === 'Escape') {
+        setIsModelPickerOpen(false);
+        setIsProjectPickerOpen(false);
+      }
     };
     document.addEventListener('mousedown', handleDown);
     document.addEventListener('keydown', handleKey);
@@ -46,7 +60,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
       document.removeEventListener('mousedown', handleDown);
       document.removeEventListener('keydown', handleKey);
     };
-  }, [isModelPickerOpen]);
+  }, [isModelPickerOpen, isProjectPickerOpen]);
 
   const store = useOrchestratorStore();
   const selectedModel = store.getSelectedModel();
@@ -63,6 +77,13 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   }, [text]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === ';' || e.key === 'p')) {
+      if (projects) {
+        e.preventDefault();
+        setIsProjectPickerOpen((prev) => !prev);
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -77,8 +98,30 @@ export const GlassInput: React.FC<GlassInputProps> = ({
     void attachments.accept(files);
   };
 
+  const handleDragOver = (e: React.DragEvent) => {
+    if (isChatDrag(e.dataTransfer)) {
+      markChatContextTarget(e);
+      return;
+    }
+    if (e.dataTransfer.types.includes('Files')) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    leaveChatContextTarget(e);
+  };
+
   const handleDrop = (e: React.DragEvent) => {
+    leaveChatContextTarget(e);
     if (!attachments) return;
+    const chat = readChatDrag(e.dataTransfer);
+    if (chat) {
+      e.preventDefault();
+      attachments.addChat(chat);
+      return;
+    }
     const files = filesFromTransfer(e.dataTransfer);
     if (files.length === 0) return;
     e.preventDefault();
@@ -100,6 +143,8 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   return (
     <div
       className="relative w-full max-w-[640px] mx-auto select-none font-(family-name:--app-font)"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       {/* Model Picker Popup */}
@@ -116,10 +161,10 @@ export const GlassInput: React.FC<GlassInputProps> = ({
         </div>
       )}
 
-      {/* Attached files side rail (positioned on the side so the input height never expands upwards or blocks chat) */}
+      {/* Attached files side rail (2-column compact wrap layout so images don't stack way too high) */}
       {attachments && attachments.items.length > 0 && (
-        <div className="absolute right-[calc(100%+14px)] bottom-0 max-h-[380px] overflow-y-auto overflow-x-hidden flex flex-col items-end gap-1.5 z-40 pointer-events-auto select-none custom-scrollbar">
-          <AttachmentStrip items={attachments.items} onRemove={attachments.remove} compact vertical />
+        <div className="absolute right-[calc(100%+14px)] bottom-0 max-h-[190px] max-w-[128px] overflow-y-auto overflow-x-hidden flex flex-wrap-reverse justify-end content-end gap-1.5 z-40 pointer-events-auto select-none custom-scrollbar">
+          <AttachmentStrip items={attachments.items} onRemove={attachments.remove} compact />
         </div>
       )}
 
@@ -146,6 +191,114 @@ export const GlassInput: React.FC<GlassInputProps> = ({
             : '0 14px 40px rgba(0, 0, 0, 0.55)',
         }}
       >
+        {/* Top: Project Selector (Visible only when projects prop is provided, e.g. Home view before sending first chat) */}
+        {projects && (
+          <div className="relative flex items-center -mt-1 -mb-0.5">
+            <button
+              type="button"
+              onClick={() => setIsProjectPickerOpen((prev) => !prev)}
+              title="Select Project (Ctrl+;)"
+              className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[8px] text-[12px] font-medium transition-colors cursor-pointer ${
+                isLight
+                  ? 'text-black/60 hover:text-black hover:bg-black/[0.05]'
+                  : 'text-white/60 hover:text-white hover:bg-white/[0.06]'
+              }`}
+            >
+              <MaterialIcon name="folder" size={14} className="opacity-70" />
+              <span className="truncate max-w-[200px]">
+                {projects.active?.name || 'No Project'}
+              </span>
+              <ChevronDown size={12} className="opacity-60" />
+            </button>
+
+            {/* Floating Glass Project Picker Menu */}
+            {isProjectPickerOpen && (
+              <div
+                ref={projectPickerRef}
+                className="absolute top-[calc(100%+6px)] left-0 z-50 min-w-[220px] max-w-[280px]"
+              >
+                <GlassSquircle
+                  radius={14}
+                  fill={isLight ? 'rgba(255, 255, 255, 0.95)' : 'linear-gradient(135deg, #11100F 0%, #1D1A1A 100%)'}
+                  frost={20}
+                  border={{
+                    strokeWidth: 1,
+                    align: 'inside',
+                    gradient: isLight
+                      ? 'linear-gradient(135deg, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0.05) 50%, rgba(0, 0, 0, 0.15) 100%)'
+                      : 'linear-gradient(135deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0.05) 50%, rgba(255, 255, 255, 0.2) 100%)',
+                  }}
+                  style={{
+                    borderRadius: 14,
+                    boxShadow: isLight
+                      ? '0 10px 30px rgba(0,0,0,0.12)'
+                      : '0 12px 36px rgba(0,0,0,0.6)',
+                    overflow: 'hidden',
+                  }}
+                  className="flex flex-col p-1.5 text-[12px]"
+                >
+                  <div className="px-2 py-1 text-[10.5px] uppercase tracking-wider font-semibold opacity-40">
+                    Projects
+                  </div>
+                  <div className="max-h-[220px] overflow-y-auto custom-scrollbar flex flex-col gap-0.5">
+                    {projects.projects.length === 0 ? (
+                      <div className="px-2 py-1.5 text-[11.5px] opacity-50">
+                        No projects yet
+                      </div>
+                    ) : (
+                      projects.projects.map((p) => {
+                        const isCurrent = projects.active?.id === p.id;
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => {
+                              void projects.select(p.id);
+                              setIsProjectPickerOpen(false);
+                            }}
+                            className={`flex items-center justify-between gap-2 px-2 py-1.5 rounded-[8px] text-left transition-colors cursor-pointer ${
+                              isCurrent
+                                ? isLight
+                                  ? 'bg-black/[0.08] font-semibold text-black'
+                                  : 'bg-white/15 font-semibold text-white'
+                                : isLight
+                                  ? 'hover:bg-black/[0.05] text-black/80'
+                                  : 'hover:bg-white/[0.07] text-white/80'
+                            }`}
+                          >
+                            <span className="flex items-center gap-2 truncate">
+                              <MaterialIcon name="folder" size={14} className="opacity-70 shrink-0" />
+                              <span className="truncate">{p.name}</span>
+                            </span>
+                            {isCurrent && (
+                              <MaterialIcon name="check" size={14} className="text-blue-400 shrink-0" />
+                            )}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                  <div className="my-1 border-t border-white/10" />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setIsProjectPickerOpen(false);
+                      await projects.choose();
+                    }}
+                    className={`flex items-center gap-2 px-2 py-1.5 rounded-[8px] text-left transition-colors cursor-pointer ${
+                      isLight
+                        ? 'hover:bg-black/[0.05] text-black/80'
+                        : 'hover:bg-white/[0.07] text-white/80'
+                    }`}
+                  >
+                    <Plus size={14} className="opacity-70 shrink-0" />
+                    <span>Open Folder…</span>
+                  </button>
+                </GlassSquircle>
+              </div>
+            )}
+          </div>
+        )}
         {/* Text Area */}
         <textarea
           ref={textareaRef}

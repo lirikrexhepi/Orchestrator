@@ -262,7 +262,7 @@ export const Scene: React.FC<SceneProps> = () => {
   const activeTaskWorking = isTaskWorking(activeTask);
 
   const leftTarget = useMemo(() => {
-    if (activeView === 'chat' && activeTasks.length >= 2) {
+    if (activeView === 'chat') {
       if (activeCardIndex > 0) {
         const neighbor = activeTasks[activeCardIndex - 1];
         return {
@@ -459,7 +459,7 @@ export const Scene: React.FC<SceneProps> = () => {
             className="fixed bottom-7 left-[64px] z-30 pointer-events-auto cursor-pointer transition-transform duration-150 active:scale-95 group hidden md:flex"
           >
             <GlassSquircle
-              radius={14}
+              radius={16}
               fill={isLight ? 'rgba(255, 255, 255, 0.72)' : 'linear-gradient(135deg, #0B0A09 0%, #191616 100%)'}
               frost={16}
               border={{
@@ -474,16 +474,13 @@ export const Scene: React.FC<SceneProps> = () => {
                   ? '0 6px 20px rgba(0, 0, 0, 0.08)'
                   : '0 8px 24px rgba(0, 0, 0, 0.45)',
               }}
-              className="flex items-center gap-2.5 px-3 py-1.5 max-w-[210px]"
+              className="flex items-center px-4 py-2 min-h-[44px] min-w-[110px] max-w-[220px]"
             >
-              <span className="text-[14px] leading-none text-white/50 group-hover:text-white/90 transition-colors">
-                ←
-              </span>
               <div className="flex flex-col min-w-0 text-left">
-                <span className="truncate text-[11.5px] font-medium leading-tight text-white/85 group-hover:text-white transition-colors">
+                <span className="truncate text-[12px] font-medium leading-tight text-white/90 group-hover:text-white transition-colors">
                   {leftTarget.title}
                 </span>
-                <span className="flex items-center gap-1.5 text-[9.5px] text-white/50 leading-tight">
+                <span className="flex items-center gap-1.5 text-[10px] text-white/50 leading-tight mt-0.5">
                   {leftTarget.isBusy !== undefined && (
                     <span
                       className={`w-1.5 h-1.5 rounded-full shrink-0 ${
@@ -510,7 +507,7 @@ export const Scene: React.FC<SceneProps> = () => {
             className="fixed bottom-7 right-6 z-30 pointer-events-auto cursor-pointer transition-transform duration-150 active:scale-95 group hidden md:flex"
           >
             <GlassSquircle
-              radius={14}
+              radius={16}
               fill={isLight ? 'rgba(255, 255, 255, 0.72)' : 'linear-gradient(135deg, #0B0A09 0%, #191616 100%)'}
               frost={16}
               border={{
@@ -525,13 +522,13 @@ export const Scene: React.FC<SceneProps> = () => {
                   ? '0 6px 20px rgba(0, 0, 0, 0.08)'
                   : '0 8px 24px rgba(0, 0, 0, 0.45)',
               }}
-              className="flex items-center gap-2.5 px-3 py-1.5 max-w-[210px]"
+              className="flex items-center px-4 py-2 min-h-[44px] min-w-[110px] max-w-[220px]"
             >
-              <div className="flex flex-col min-w-0 text-right">
-                <span className="truncate text-[11.5px] font-medium leading-tight text-white/85 group-hover:text-white transition-colors">
+              <div className="flex flex-col min-w-0 text-right w-full">
+                <span className="truncate text-[12px] font-medium leading-tight text-white/90 group-hover:text-white transition-colors">
                   {rightTarget.title}
                 </span>
-                <span className="flex items-center justify-end gap-1.5 text-[9.5px] text-white/50 leading-tight">
+                <span className="flex items-center justify-end gap-1.5 text-[10px] text-white/50 leading-tight mt-0.5">
                   <span>{rightTarget.subtitle}</span>
                   {rightTarget.isBusy !== undefined && (
                     <span
@@ -544,9 +541,6 @@ export const Scene: React.FC<SceneProps> = () => {
                   )}
                 </span>
               </div>
-              <span className="text-[14px] leading-none text-white/50 group-hover:text-white/90 transition-colors">
-                →
-              </span>
             </GlassSquircle>
           </button>
         )}
@@ -564,6 +558,7 @@ export const Scene: React.FC<SceneProps> = () => {
             isBusy={activeView === 'chat' && activeTaskWorking}
             attachments={attachments}
             isLight={isLight}
+            projects={activeView === 'home' ? projects : undefined}
           />
         </div>
       </div>

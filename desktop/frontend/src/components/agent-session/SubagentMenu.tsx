@@ -34,7 +34,7 @@ const TRANSCRIPT_HEIGHT = 420;
 const EDGE = 12;
 const DOCK_WIDTH = 340;
 const DOCK_MIN_WINDOW = 1100;
-const DOCK_TOP = 56;
+const DOCK_TOP = 84;
 const DOCK_RIGHT = 24;
 
 const TOOL_ICONS: Record<string, string> = {
