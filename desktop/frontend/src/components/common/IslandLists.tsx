@@ -304,14 +304,9 @@ const ProjectRow = React.memo(function ProjectRow({
                   glyph={<MaterialIcon name="folder" className={`text-[16px] ${tone.sub}`}/>}
                 />
               </span>
-              <span className="flex flex-col min-w-0 gap-[1px]">
-                <span className={`flex items-center gap-1.5 text-[12.5px] font-medium tracking-tight leading-[15px] ${tone.fg}`}>
-                  <span className="truncate">{project.name}</span>
-                  {isActive && <span className="w-[5px] h-[5px] rounded-full bg-[#0A84FF] shrink-0" />}
-                </span>
-                <span className={`text-[10.5px] font-['Geist_Mono',monospace] truncate leading-[13px] ${tone.sub}`} title={project.path}>
-                  {shortenPath(project.path)}
-                </span>
+              <span className={`flex items-center gap-1.5 text-[12.5px] font-medium tracking-tight leading-[15px] truncate ${tone.fg}`}>
+                <span className="truncate">{project.name}</span>
+                {isActive && <span className="w-[5px] h-[5px] rounded-full bg-[#0A84FF] shrink-0" />}
               </span>
             </button>
             {canRemove && (
@@ -328,10 +323,9 @@ const ProjectRow = React.memo(function ProjectRow({
               type="button"
               title={`${chatCount} chat${chatCount === 1 ? '' : 's'}`}
               onClick={onOpenChats}
-              className={`h-[30px] ml-0.5 mr-1.5 pl-2.5 pr-1.5 rounded-full flex items-center gap-1 ${tone.sub} ${tone.hover} transition-colors duration-150 cursor-pointer shrink-0`}
+              className={`h-[30px] ml-0.5 mr-2 px-1.5 rounded-full flex items-center shrink-0 cursor-pointer ${tone.sub} ${tone.hover} transition-colors duration-150`}
             >
               <span className="text-[11.5px] tabular-nums font-medium">{chatCount}</span>
-              <ChevronRight size={14} strokeWidth={2} />
             </button>
           </motion.div>
         )}

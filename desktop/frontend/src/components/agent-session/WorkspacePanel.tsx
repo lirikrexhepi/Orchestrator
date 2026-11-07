@@ -176,22 +176,6 @@ export const WorkspaceSection = React.memo(function WorkspaceSection({
         label={projectName || root.split(/[\\/]/).filter(Boolean).pop() || 'Project'}
         title={root}
         onClick={() => root && void run('reveal', () => OpenInEditor(root, 'explorer'))}
-        trailing={
-          onClose ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose();
-              }}
-              title="Close chat"
-              aria-label="Close chat"
-              className={`w-6 h-6 rounded-full flex items-center justify-center transition-all cursor-pointer opacity-70 hover:opacity-100 hover:bg-white/10 ${tone.close}`}
-            >
-              <MaterialIcon name="close" size={14} />
-            </button>
-          ) : undefined
-        }
       />
       {root && (
         <>

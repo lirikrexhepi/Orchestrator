@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { LiquidGlass } from '../../liquid-glass';
 import { useTheme } from '../../themes';
@@ -706,7 +707,28 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
 
               {!isGrid && (subagents.length > 0 || (isFullscreen && isFocused)) && <SubagentMenu agents={subagents} isLight={isLight} driver={activeDriver} modelId={activeModel} dockable={isFullscreen && isFocused} workspace={workspaceSection} onOpenAgent={setOpenSubagentId} />}
 
-              {/* Minimalist Borderless Close Button */}
+              {/* Minimalist Close Button for Fullscreen: Fixed directly above the docked workspace card */}
+              {onClose && isFullscreen && createPortal(
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onClose();
+                  }}
+                  title="Close chat"
+                  aria-label="Close chat"
+                  className={`fixed right-6 top-[48px] z-50 w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 pointer-events-auto shadow-sm backdrop-blur-md ${
+                    isLight
+                      ? 'bg-black/[0.06] text-black/60 hover:bg-black/[0.12] hover:text-black border border-black/10'
+                      : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white border border-white/15'
+                  }`}
+                >
+                  <X size={14} strokeWidth={2} />
+                </button>,
+                document.body
+              )}
+
+              {/* Minimalist Borderless Close Button for Grid/Cards */}
               {onClose && !isFullscreen && (
                 <button
                   type="button"
@@ -714,8 +736,8 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                     e.stopPropagation();
                     onClose();
                   }}
-                  title="Close and terminate agent"
-                  aria-label="Close and terminate agent"
+                  title="Close chat"
+                  aria-label="Close chat"
                   className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 pointer-events-auto ${
                     isLight
                       ? 'bg-black/[0.06] text-black/60 hover:bg-black/[0.12] hover:text-black'
