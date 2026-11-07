@@ -1,5 +1,5 @@
 import { createElement, forwardRef, useRef, type CSSProperties, type HTMLAttributes } from 'react'
-import type { CornerRadii } from '../geometry/squircle'
+import { cornerList, type CornerRadii } from '../geometry/squircle'
 import { useElementSize } from '../geometry/useElementSize'
 import { useMergedRef } from '../geometry/useMergedRef'
 import { useShapeStyle } from '../geometry/useShapeStyle'
@@ -60,6 +60,8 @@ export const GlassSquircle = forwardRef<HTMLElement, GlassSquircleProps>(functio
   const press = pressOptions(pressable, as, disabled)
   usePressGel(own, glow, press)
   const glowSize = size ? Math.min(size.width, size.height) * 2 : 0
+  const [tl, tr, br, bl] = cornerList(radius)
+  const borderRadius = `${tl}px ${tr}px ${br}px ${bl}px`
 
   return createElement(
     as,
@@ -71,6 +73,7 @@ export const GlassSquircle = forwardRef<HTMLElement, GlassSquircleProps>(functio
       style: {
         position: 'relative',
         isolation: 'isolate',
+        borderRadius,
         width,
         height,
         touchAction: press && press.drag !== false ? 'none' : undefined,

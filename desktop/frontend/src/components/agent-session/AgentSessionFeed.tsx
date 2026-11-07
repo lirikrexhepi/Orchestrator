@@ -522,7 +522,12 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
               </div>
             ) : undefined
           }
-          ListFooterComponent={virtual.footer ? <div className={virtual.itemClassName}>{virtual.footer}</div> : undefined}
+          ListFooterComponent={
+            <div className={virtual.itemClassName}>
+              {virtual.footer}
+              <div className="h-[200px] shrink-0 pointer-events-none" aria-hidden="true" />
+            </div>
+          }
         />
       </TimelineAnimateContext.Provider>
     );
@@ -532,6 +537,7 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
     <TimelineAnimateContext.Provider value={drawLines}>
     <div className={`flex flex-col ${className}`}>
       {segments.map((segment, index) => renderRow(segment, index, segments, 'feed-segment w-full'))}
+      <div className="h-[200px] shrink-0 pointer-events-none" aria-hidden="true" />
     </div>
     </TimelineAnimateContext.Provider>
   );

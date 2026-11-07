@@ -250,20 +250,19 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
   return (
     <GlassSquircle
       radius={18}
-      fill={isLight ? 'rgba(255, 255, 255, 0.96)' : 'rgba(14, 15, 18, 0.95)'}
+      fill={isLight ? 'rgba(255, 255, 255, 0.96)' : 'linear-gradient(135deg, #0B0A09 0%, #191616 100%)'}
       frost={16}
       border={{
         strokeWidth: 1,
         align: 'inside',
-        light: {
-          angle: 303,
-          intensity: 0.30,
-          backIntensity: 0.20,
-        },
+        gradient: isLight
+          ? 'linear-gradient(135deg, rgba(0, 0, 0, 0.22) 0%, rgba(0, 0, 0, 0.05) 25%, rgba(0, 0, 0, 0) 45%, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.04) 75%, rgba(0, 0, 0, 0.16) 100%)'
+          : 'linear-gradient(135deg, rgba(255, 255, 255, 0.40) 0%, rgba(255, 255, 255, 0.08) 25%, rgba(255, 255, 255, 0) 45%, rgba(255, 255, 255, 0) 55%, rgba(255, 255, 255, 0.06) 75%, rgba(255, 255, 255, 0.28) 100%)',
       }}
       onClick={(e) => e.stopPropagation()}
       style={{
         width: 250,
+        borderRadius: 18,
         padding: 8,
         display: 'flex',
         flexDirection: 'column',

@@ -486,7 +486,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
 
   const feedVirtual = useMemo<VirtualFeedOptions>(
     () => ({
-      className: `absolute inset-0 overflow-y-auto overflow-x-hidden custom-scrollbar ${isFullscreen ? 'pt-4 pb-[140px] px-4' : 'py-2.5 pr-2'} ${
+      className: `absolute inset-0 overflow-y-auto overflow-x-hidden custom-scrollbar ${isFullscreen ? 'pt-4 pb-[180px] px-4' : 'py-2.5 pr-2'} ${
         isGrid ? 'pointer-events-none select-none' : ''
       }`,
       style: { ...FEED_SCROLL_STYLE },

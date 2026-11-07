@@ -262,7 +262,7 @@ export const Scene: React.FC<SceneProps> = () => {
   const activeTaskWorking = isTaskWorking(activeTask);
 
   const leftTarget = useMemo(() => {
-    if (activeView === 'chat') {
+    if (activeView === 'chat' && activeTasks.length >= 2) {
       if (activeCardIndex > 0) {
         const neighbor = activeTasks[activeCardIndex - 1];
         return {
@@ -316,7 +316,7 @@ export const Scene: React.FC<SceneProps> = () => {
         backgroundColor: isLight ? '#f4f4f7' : '#070709',
       }}
     >
-      {/* Subtle Wallpaper Layer with top fade and bottom gradient set higher up */}
+      {/* Subtle Wallpaper Layer with top fade and bottom gradient set at 40% - 60% */}
       <div
         className="absolute inset-0 pointer-events-none z-0 overflow-hidden transition-opacity duration-700"
         style={{
@@ -324,9 +324,9 @@ export const Scene: React.FC<SceneProps> = () => {
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           maskImage:
-            'linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.05) 15%, rgba(0, 0, 0, 0.25) 45%, rgba(0, 0, 0, 0.45) 80%, rgba(0, 0, 0, 0.55) 100%)',
+            'linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.25) 60%, rgba(0, 0, 0, 0.45) 85%, rgba(0, 0, 0, 0.55) 100%)',
           WebkitMaskImage:
-            'linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.05) 15%, rgba(0, 0, 0, 0.25) 45%, rgba(0, 0, 0, 0.45) 80%, rgba(0, 0, 0, 0.55) 100%)',
+            'linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.25) 60%, rgba(0, 0, 0, 0.45) 85%, rgba(0, 0, 0, 0.55) 100%)',
         }}
       />
 
@@ -465,7 +465,9 @@ export const Scene: React.FC<SceneProps> = () => {
               border={{
                 strokeWidth: 1,
                 align: 'inside',
-                light: { angle: 303, intensity: 0.35, backIntensity: 0.2 },
+                gradient: isLight
+                  ? 'linear-gradient(135deg, rgba(0, 0, 0, 0.22) 0%, rgba(0, 0, 0, 0.05) 25%, rgba(0, 0, 0, 0) 45%, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.04) 75%, rgba(0, 0, 0, 0.16) 100%)'
+                  : 'linear-gradient(135deg, rgba(255, 255, 255, 0.40) 0%, rgba(255, 255, 255, 0.08) 25%, rgba(255, 255, 255, 0) 45%, rgba(255, 255, 255, 0) 55%, rgba(255, 255, 255, 0.06) 75%, rgba(255, 255, 255, 0.28) 100%)',
               }}
               style={{
                 boxShadow: isLight
@@ -514,7 +516,9 @@ export const Scene: React.FC<SceneProps> = () => {
               border={{
                 strokeWidth: 1,
                 align: 'inside',
-                light: { angle: 303, intensity: 0.35, backIntensity: 0.2 },
+                gradient: isLight
+                  ? 'linear-gradient(135deg, rgba(0, 0, 0, 0.22) 0%, rgba(0, 0, 0, 0.05) 25%, rgba(0, 0, 0, 0) 45%, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.04) 75%, rgba(0, 0, 0, 0.16) 100%)'
+                  : 'linear-gradient(135deg, rgba(255, 255, 255, 0.40) 0%, rgba(255, 255, 255, 0.08) 25%, rgba(255, 255, 255, 0) 45%, rgba(255, 255, 255, 0) 55%, rgba(255, 255, 255, 0.06) 75%, rgba(255, 255, 255, 0.28) 100%)',
               }}
               style={{
                 boxShadow: isLight

@@ -131,13 +131,12 @@ export const GlassInput: React.FC<GlassInputProps> = ({
         border={{
           strokeWidth: 1,
           align: 'inside',
-          light: {
-            angle: 303,
-            intensity: isLight ? 0.35 : 0.35,
-            backIntensity: 0.22,
-          },
+          gradient: isLight
+            ? 'linear-gradient(135deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0.06) 25%, rgba(0, 0, 0, 0) 45%, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.04) 75%, rgba(0, 0, 0, 0.18) 100%)'
+            : 'linear-gradient(135deg, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 0.10) 25%, rgba(255, 255, 255, 0) 45%, rgba(255, 255, 255, 0) 55%, rgba(255, 255, 255, 0.08) 75%, rgba(255, 255, 255, 0.32) 100%)',
         }}
         style={{
+          borderRadius: 22,
           padding: '14px 18px 12px',
           display: 'flex',
           flexDirection: 'column',
@@ -235,7 +234,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
               <button
                 type="button"
                 onClick={onInterrupt}
-                className="w-[32px] h-[32px] rounded-[10px] flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 shadow-[0_2px_8px_rgba(239,68,68,0.3)]"
+                className="w-[32px] h-[32px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 shadow-[0_2px_8px_rgba(239,68,68,0.3)]"
                 title="Stop agent"
                 aria-label="Stop"
               >
@@ -251,7 +250,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
                   borderColor: canSubmit ? 'rgba(165, 191, 213, 0.45)' : 'rgba(165, 191, 213, 0.2)',
                   boxShadow: '0 2px 4px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12)',
                 }}
-                className={`w-[32px] h-[32px] rounded-[10px] border flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
+                className={`w-[32px] h-[32px] rounded-full border flex items-center justify-center transition-all duration-150 cursor-pointer active:scale-90 ${
                   canSubmit
                     ? 'opacity-100 hover:brightness-110 active:scale-95'
                     : 'opacity-70 cursor-pointer hover:opacity-85'

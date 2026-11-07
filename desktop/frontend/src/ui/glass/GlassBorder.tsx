@@ -9,6 +9,7 @@ export interface GlassBorderStyle {
   align?: StrokeAlign
   light?: Partial<RimLight>
   glow?: RingGlow
+  gradient?: string
 }
 
 export interface GlassBorderProps extends GlassBorderStyle {
@@ -29,6 +30,7 @@ export const GlassBorder = memo(function GlassBorder({
   align = 'inside',
   light,
   glow,
+  gradient,
   className,
   style,
 }: GlassBorderProps) {
@@ -47,7 +49,7 @@ export const GlassBorder = memo(function GlassBorder({
     const shape = { width: w, height: h, radius, smoothing }
     const mask = cachedRingMask(shape, strokeWidth, align, glow)
     return {
-      backgroundImage: cachedRimGradient(shape, rim),
+      backgroundImage: gradient ?? cachedRimGradient(shape, rim),
       WebkitMaskImage: mask,
       maskImage: mask,
       WebkitMaskSize: '100% 100%',
@@ -55,7 +57,7 @@ export const GlassBorder = memo(function GlassBorder({
       WebkitMaskRepeat: 'no-repeat',
       maskRepeat: 'no-repeat',
     }
-  }, [w, h, key, smoothing, lightKey, strokeWidth, align, glow?.width, glow?.opacity])
+  }, [w, h, key, smoothing, lightKey, strokeWidth, align, glow?.width, glow?.opacity, gradient])
 
   return (
     <div

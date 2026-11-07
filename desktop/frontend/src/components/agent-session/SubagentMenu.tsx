@@ -724,13 +724,12 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
           border={{
             strokeWidth: 1,
             align: 'inside',
-            light: {
-              angle: 303,
-              intensity: 0.38,
-              backIntensity: 0.22,
-            },
+            gradient: isLight
+              ? 'linear-gradient(135deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0.06) 25%, rgba(0, 0, 0, 0) 45%, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.04) 75%, rgba(0, 0, 0, 0.18) 100%)'
+              : 'linear-gradient(135deg, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 0.10) 25%, rgba(255, 255, 255, 0) 45%, rgba(255, 255, 255, 0) 55%, rgba(255, 255, 255, 0.08) 75%, rgba(255, 255, 255, 0.32) 100%)',
           }}
           style={{
+            borderRadius: 20,
             boxShadow: isLight
               ? '0 10px 30px rgba(0, 0, 0, 0.08)'
               : '0 14px 40px rgba(0, 0, 0, 0.55)',
