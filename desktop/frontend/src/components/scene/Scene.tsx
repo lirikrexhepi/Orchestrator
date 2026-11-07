@@ -385,27 +385,13 @@ export const Scene: React.FC<SceneProps> = () => {
   return (
     <div
       className={`relative w-screen h-screen overflow-hidden flex select-none ${
-        isLight ? 'bg-[#f4f4f7] text-black' : 'bg-[#070709] text-white'
+        isLight ? 'bg-[#e6e6eb] text-black' : 'bg-[#141414] text-white'
       }`}
       style={{
-        backgroundColor: isLight ? '#f4f4f7' : '#070709',
+        backgroundColor: isLight ? '#e6e6eb' : '#141414',
       }}
     >
-      {/* Subtle Wallpaper Layer with top fade and bottom gradient set at 40% - 60% */}
-      <div
-        className="absolute inset-0 pointer-events-none z-0 overflow-hidden transition-opacity duration-700"
-        style={{
-          backgroundImage: wallpaper.selected ? `url(${wallpaper.selected.url})` : undefined,
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          maskImage:
-            'linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.25) 60%, rgba(0, 0, 0, 0.45) 85%, rgba(0, 0, 0, 0.55) 100%)',
-          WebkitMaskImage:
-            'linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.25) 60%, rgba(0, 0, 0, 0.45) 85%, rgba(0, 0, 0, 0.55) 100%)',
-        }}
-      />
-
-      {/* Left Navigation Rail (Floating icons, no vertical line, no bulky background) */}
+      {/* Left Navigation Rail (width 36px, #141414) */}
       <NavRail
         activeView={activeView}
         onHomeClick={() => {
@@ -431,8 +417,30 @@ export const Scene: React.FC<SceneProps> = () => {
         hasTasks={hasTasks}
       />
 
-      {/* Main Workspace Area */}
-      <div className="relative flex-1 h-full overflow-hidden flex flex-col z-10">
+      {/* Main Workspace Area with reverse radius corner against #141414 sidebar */}
+      <div
+        className={`relative flex-1 h-full overflow-hidden flex flex-col z-10 rounded-tl-[12px] rounded-bl-[12px] ${
+          isLight ? 'bg-[#f4f4f7]' : 'bg-[#070709]'
+        }`}
+        style={{
+          backgroundColor: isLight ? '#f4f4f7' : '#070709',
+        }}
+      >
+        {/* Subtle Wallpaper Layer with 180deg linear alpha mask: 0% at top to 8% at bottom over #070709 */}
+        {wallpaper.selected && (
+          <div
+            className="absolute inset-0 pointer-events-none z-0 overflow-hidden transition-opacity duration-700"
+            style={{
+              backgroundImage: `url(${wallpaper.selected.url})`,
+              backgroundSize: 'cover',
+              backgroundPosition: 'center',
+              maskImage:
+                'linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.08) 100%)',
+              WebkitMaskImage:
+                'linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.08) 100%)',
+            }}
+          />
+        )}
         {/* Top Window TitleBar with Drag Handle & Traffic Lights (Minimise / Maximise / Close) */}
         <TitleBar>
           <DynamicIsland
