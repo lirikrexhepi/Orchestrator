@@ -1697,6 +1697,21 @@ export namespace instructions {
 
 export namespace main {
 	
+	export class BrowserEndpointInfo {
+	    wsUrl: string;
+	    token: string;
+
+	    static createFrom(source: any = {}) {
+	        return new BrowserEndpointInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.wsUrl = source["wsUrl"];
+	        this.token = source["token"];
+	    }
+	}
+
 	export class TerminalEndpointInfo {
 	    wsUrl: string;
 	    token: string;
@@ -2352,6 +2367,39 @@ export namespace slashcmd {
 	        this.source = source["source"];
 	        this.kind = source["kind"];
 	        this.prompt = source["prompt"];
+	    }
+	}
+
+}
+
+export namespace browser {
+	
+	export class SessionInfo {
+	    id: string;
+	    threadId: string;
+	    url: string;
+	    title: string;
+	    loading: boolean;
+	    canGoBack: boolean;
+	    canGoForward: boolean;
+	    width: number;
+	    height: number;
+
+	    static createFrom(source: any = {}) {
+	        return new SessionInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.threadId = source["threadId"];
+	        this.url = source["url"];
+	        this.title = source["title"];
+	        this.loading = source["loading"];
+	        this.canGoBack = source["canGoBack"];
+	        this.canGoForward = source["canGoForward"];
+	        this.width = source["width"];
+	        this.height = source["height"];
 	    }
 	}
 

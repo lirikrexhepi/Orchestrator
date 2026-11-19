@@ -7,6 +7,7 @@ import { servers } from '../../../wailsjs/go/models';
 import { Maximize } from '../common/icons';
 import { useWebBookmarks, getDomain, getFaviconUrl, type WebBookmark } from './useWebBookmarks';
 import { BookmarkModal } from './BookmarkModal';
+import { CdpBrowserSurface } from '../browser/CdpBrowserSurface';
 
 export interface AgentBrowserViewProps {
   threadId?: string;
@@ -102,15 +103,22 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
   // Find web dev servers
   const webServers = detectedServers.filter((s) => !s.agent && s.port > 0);
   const primaryServer = webServers[0];
-  const defaultUrl = targetUrl || 'https://www.google.com';
+  const defaultUrl = targetUrl || (primaryServer ? `http://localhost:${primaryServer.port}` : 'https://www.google.com');
 
   const [currentUrl, setCurrentUrl] = useState<string>(defaultUrl);
   const [inputUrl, setInputUrl] = useState<string>(defaultUrl);
-  const [reloadNonce, setReloadNonce] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [isBlocked, setIsBlocked] = useState<boolean>(false);
-  const [historyStack, setHistoryStack] = useState<string[]>([defaultUrl]);
-  const [historyIndex, setHistoryIndex] = useState<number>(0);
+  const [canGoBack, setCanGoBack] = useState<boolean>(false);
+  const [canGoForward, setCanGoForward] = useState<boolean>(false);
+  const [browserError, setBrowserError] = useState<string | null>(null);
+
+  const isInputEditingRef = useRef<boolean>(false);
+  const surfaceActionRef = useRef<{
+    back(): void;
+    forward(): void;
+    reload(): void;
+    navigate(url: string): void;
+  } | null>(null);
 
   const [islandSlot, setIslandSlot] = useState<HTMLElement | null>(() =>
     typeof document !== 'undefined' ? document.getElementById('dynamic-island-browser-slot') : null,
@@ -133,74 +141,14 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
     return () => clearInterval(timer);
   }, [islandSlot]);
 
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const blockTimerRef = useRef<number | null>(null);
-
-  // When card regains focus, dispatch synthetic resize to refresh WebGL viewport buffer
-  useEffect(() => {
-    if (isFocused && iframeRef.current) {
-      const timer = setTimeout(() => {
-        try {
-          iframeRef.current?.contentWindow?.dispatchEvent(new Event('resize'));
-        } catch {
-          // Cross-origin safety
-        }
-      }, 60);
-      return () => clearTimeout(timer);
-    }
-  }, [isFocused]);
-
-  // Keep inputUrl in sync when currentUrl changes
-  useEffect(() => {
-    setInputUrl(currentUrl === 'about:blank' ? '' : currentUrl);
-  }, [currentUrl]);
-
-  // Handle iframe load detection & block probe
-  useEffect(() => {
-    if (blockTimerRef.current !== null) {
-      window.clearTimeout(blockTimerRef.current);
-      blockTimerRef.current = null;
-    }
-
-    if (!currentUrl || currentUrl === 'about:blank') {
-      setIsLoading(false);
-      setIsBlocked(false);
-      return;
-    }
-
-    setIsLoading(true);
-    setIsBlocked(false);
-
-    blockTimerRef.current = window.setTimeout(() => {
-      setIsLoading(false);
-      const frame = iframeRef.current;
-      if (!frame) return;
-      try {
-        const doc = frame.contentDocument;
-        if (doc && doc.body && doc.body.childElementCount === 0) {
-          setIsBlocked(true);
-        }
-      } catch {
-        // Cross-origin means it rendered successfully
-      }
-    }, 3200);
-
-    return () => {
-      if (blockTimerRef.current !== null) {
-        window.clearTimeout(blockTimerRef.current);
-      }
-    };
-  }, [currentUrl, reloadNonce]);
-
   const navigateTo = useCallback(
     (target: string) => {
       const normalized = smartNormalizeUrl(target, primaryServer?.port);
       setCurrentUrl(normalized);
       setInputUrl(normalized === 'about:blank' ? '' : normalized);
-      setHistoryStack((prev) => [...prev.slice(0, historyIndex + 1), normalized]);
-      setHistoryIndex((prev) => prev + 1);
+      surfaceActionRef.current?.navigate(normalized);
     },
-    [primaryServer, historyIndex],
+    [primaryServer],
   );
 
   // Navigate when external targetUrl / targetUrlNonce changes (e.g. clicking Git in rail)
@@ -220,27 +168,15 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
   };
 
   const handleBack = () => {
-    if (historyIndex > 0) {
-      const newIdx = historyIndex - 1;
-      setHistoryIndex(newIdx);
-      const prevUrl = historyStack[newIdx];
-      setCurrentUrl(prevUrl);
-      setInputUrl(prevUrl === 'about:blank' ? '' : prevUrl);
-    }
+    surfaceActionRef.current?.back();
   };
 
   const handleForward = () => {
-    if (historyIndex < historyStack.length - 1) {
-      const newIdx = historyIndex + 1;
-      setHistoryIndex(newIdx);
-      const nextUrl = historyStack[newIdx];
-      setCurrentUrl(nextUrl);
-      setInputUrl(nextUrl === 'about:blank' ? '' : nextUrl);
-    }
+    surfaceActionRef.current?.forward();
   };
 
   const handleReload = () => {
-    setReloadNonce((prev) => prev + 1);
+    surfaceActionRef.current?.reload();
   };
 
   const handleOpenExternal = () => {
@@ -301,15 +237,14 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
   };
 
   const isCurrentBookmarked = isBookmarked(currentUrl);
-
   const effectiveHost = islandSlot || toolbarHost;
 
   const toolbar = (
     <div className="flex items-center gap-1.5 w-full h-full min-w-0 select-none">
       <div className="flex items-center gap-0.5 shrink-0">
         {[
-          { title: 'Back', icon: 'arrow_back', enabled: historyIndex > 0, run: handleBack, spin: false },
-          { title: 'Forward', icon: 'arrow_forward', enabled: historyIndex < historyStack.length - 1, run: handleForward, spin: false },
+          { title: 'Back', icon: 'arrow_back', enabled: canGoBack, run: handleBack, spin: false },
+          { title: 'Forward', icon: 'arrow_forward', enabled: canGoForward, run: handleForward, spin: false },
           { title: 'Reload', icon: 'refresh', enabled: true, run: handleReload, spin: isLoading },
         ].map((action) => (
           <button
@@ -342,7 +277,13 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
             placeholder="Search or enter URL…"
             onChange={(e) => setInputUrl(e.target.value)}
             onKeyDown={handleInputKeyDown}
-            onFocus={(e) => e.target.select()}
+            onFocus={(e) => {
+              isInputEditingRef.current = true;
+              e.target.select();
+            }}
+            onBlur={() => {
+              isInputEditingRef.current = false;
+            }}
             className="w-full bg-transparent text-[11.5px] font-medium font-(family-name:--app-font) text-white/90 placeholder:text-white/35 focus:outline-none tracking-tight select-text text-center focus:text-left"
           />
           {isLoading && <span className="w-2.5 h-2.5 rounded-full border border-white/60 border-t-transparent animate-spin shrink-0" />}
@@ -407,7 +348,7 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
       >
         {currentUrl && currentUrl !== 'about:blank' ? (
           <>
-            {/* Unfocused Click Shield: captures clicks to focus card and prevents mousemove/drag from hijacking 3D WebGL */}
+            {/* Unfocused Click Shield: captures clicks to focus card and prevents mousemove/drag from hijacking */}
             {!isFocused && (
               <div
                 onClick={(e) => {
@@ -424,7 +365,7 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
               <div className="absolute inset-0 z-40 pointer-events-none bg-transparent" />
             )}
 
-            {/* Paused Overlay: shown when unfocused with Power Save enabled */}
+            {/* Paused Overlay: shown when unfocused */}
             {shouldPause && (
               <div
                 onClick={(e) => {
@@ -438,10 +379,10 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
                 </div>
                 <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] font-mono font-medium mb-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                  <span>3D Preview Paused • State Preserved</span>
+                  <span>CDP Browser Stream Paused</span>
                 </div>
                 <p className="text-[12px] font-medium font-(family-name:--app-font) text-white/50 max-w-xs mb-3 leading-relaxed">
-                  WebGL rendering halted to maintain silky 120 FPS across your agent cards.
+                  Headless Chromium screencast halted to save 0% CPU across inactive cards.
                 </p>
                 <div className="px-3.5 py-1.5 rounded-[8px] bg-white/[0.08] hover:bg-white/15 border border-white/15 text-white text-[12px] font-medium flex items-center gap-1.5 transition-all shadow-md group-hover:border-white/30">
                   <span>Click to Resume Preview</span>
@@ -450,19 +391,23 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
               </div>
             )}
 
-            <iframe
-              key={`${currentUrl}-${reloadNonce}`}
-              ref={iframeRef}
-              src={currentUrl}
-              title="Agent Web Preview"
-              onLoad={() => setIsLoading(false)}
-              className="w-full h-full border-none bg-white"
-              style={{
-                visibility: shouldPause ? 'hidden' : 'visible',
-                pointerEvents: isFocused && !isAnimating ? 'auto' : 'none',
+            <CdpBrowserSurface
+              threadId={threadId}
+              initialUrl={currentUrl}
+              paused={shouldPause}
+              isFocused={isFocused && !isAnimating}
+              actionRef={surfaceActionRef}
+              onStateChange={(state) => {
+                setCurrentUrl(state.url);
+                if (!isInputEditingRef.current) {
+                  setInputUrl(state.url === 'about:blank' ? '' : state.url);
+                }
+                setIsLoading(state.loading);
+                setCanGoBack(state.canGoBack);
+                setCanGoForward(state.canGoForward);
               }}
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation"
-              allow="clipboard-read; clipboard-write; fullscreen; camera; microphone"
+              onError={(err) => setBrowserError(err)}
+              className="w-full h-full"
             />
 
             {isLoading && (
@@ -471,16 +416,16 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
               </div>
             )}
 
-            {isBlocked && (
+            {browserError && (
               <div className="absolute inset-0 bg-[#16181d] flex flex-col items-center justify-center text-center p-6 z-20">
-                <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center mb-3">
-                  <MaterialIcon name="public_off" className="text-white/60 text-xl"/>
+                <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center mb-3">
+                  <MaterialIcon name="public_off" className="text-amber-400 text-xl"/>
                 </div>
                 <h4 className="text-[13.5px] font-semibold font-(family-name:--app-font) text-white/90 mb-1">
-                  Site embedding restricted
+                  Chromium Browser Unavailable
                 </h4>
                 <p className="text-[12px] text-white/50 max-w-sm mb-4 leading-relaxed font-(family-name:--app-font)">
-                  This site restricts iframe embedding for security reasons. You can view it directly in your browser.
+                  {browserError}
                 </p>
                 <button
                   type="button"

@@ -16,6 +16,7 @@ import {servers} from '../models';
 import {slashcmd} from '../models';
 import {files} from '../models';
 import {terminal} from '../models';
+import {browser} from '../models';
 
 export function AccountStatus(arg1:string,arg2:string):Promise<provider.AccountStatus>;
 
@@ -28,6 +29,12 @@ export function AddAccount(arg1:string,arg2:string,arg3:boolean):Promise<main.Ac
 export function AddProject(arg1:string):Promise<projects.Project>;
 
 export function AvailableEditors():Promise<Array<string>>;
+
+export function BrowserClose(arg1:string):Promise<void>;
+
+export function BrowserEndpoint():Promise<main.BrowserEndpointInfo>;
+
+export function BrowserOpen(arg1:string,arg2:string,arg3:number,arg4:number):Promise<browser.SessionInfo>;
 
 export function ChooseAttachments():Promise<Array<attachments.Attachment>>;
 

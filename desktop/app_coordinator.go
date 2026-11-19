@@ -214,6 +214,9 @@ func (a *App) OrchestratorStopAgent(threadID string) error {
 	if a.terminals != nil {
 		a.terminals.CloseThread(threadID)
 	}
+	if a.browsers != nil {
+		a.browsers.CloseThread(threadID)
+	}
 	return nil
 }
 

@@ -26,6 +26,18 @@ export function AvailableEditors() {
   return window['go']['main']['App']['AvailableEditors']();
 }
 
+export function BrowserClose(arg1) {
+  return window['go']['main']['App']['BrowserClose'](arg1);
+}
+
+export function BrowserEndpoint() {
+  return window['go']['main']['App']['BrowserEndpoint']();
+}
+
+export function BrowserOpen(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['BrowserOpen'](arg1, arg2, arg3, arg4);
+}
+
 export function ChooseAttachments() {
   return window['go']['main']['App']['ChooseAttachments']();
 }

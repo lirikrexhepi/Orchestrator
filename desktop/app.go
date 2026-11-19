@@ -10,6 +10,7 @@ import (
 
 	"composer/internal/activity"
 	"composer/internal/attachments"
+	"composer/internal/browser"
 	"composer/internal/claude"
 	"composer/internal/devserver"
 	"composer/internal/domain"
@@ -82,6 +83,8 @@ type App struct {
 	mcpServer      *mcp.Server
 	terminals      *terminal.Manager
 	terminalServer *terminal.Server
+	browsers       *browser.Manager
+	browserServer  *browser.Server
 	stopFeed       func()
 
 	// headless is set when the app runs without a window (see headless.go).
@@ -192,6 +195,7 @@ func NewApp() *App {
 		activityRepo:   activityRepo,
 		prefRepo:       prefRepo,
 		terminals:      terminal.NewManager(),
+		browsers:       browser.NewManager(filepath.Join(configRoot(), "browser-profile")),
 	}
 	if activityRepo != nil {
 		app.activity = activity.NewTracker(activityRepo, app.activityThread)
@@ -256,6 +260,13 @@ func (a *App) startCore(ctx context.Context) {
 		logger.Infof("App", "Loopback terminal server bound to %s", wsURL)
 	}
 	traceStartup("terminal server started")
+	a.browserServer = browser.NewServer(a.browsers)
+	if wsURL, _, err := a.browserServer.Start(ctx); err != nil {
+		logger.Errorf("App", "Failed to start loopback browser server: %v", err)
+	} else {
+		logger.Infof("App", "Loopback browser server bound to %s", wsURL)
+	}
+	traceStartup("browser server started")
 	a.orchestrator.SetOnSpawn(func(result session.SpawnResult) {
 		if a.sessionService != nil {
 			for _, task := range result.Tasks {
@@ -420,6 +431,14 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.terminals != nil {
 		a.terminals.CloseAll()
+	}
+	if a.browserServer != nil {
+		browserCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = a.browserServer.Close(browserCtx)
+		cancel()
+	}
+	if a.browsers != nil {
+		a.browsers.CloseAll()
 	}
 	if a.stopFeed != nil {
 		a.stopFeed()
