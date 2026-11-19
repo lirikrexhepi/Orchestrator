@@ -15,6 +15,7 @@ import {devserver} from '../models';
 import {servers} from '../models';
 import {slashcmd} from '../models';
 import {files} from '../models';
+import {terminal} from '../models';
 
 export function AccountStatus(arg1:string,arg2:string):Promise<provider.AccountStatus>;
 
@@ -269,6 +270,16 @@ export function SwitchTaskProvider(arg1:string,arg2:string,arg3:string):Promise<
 export function SwitchTaskProviderWithOptions(arg1:string,arg2:string,arg3:string,arg4:domain.ModelOptions,arg5:string,arg6:string,arg7:string,arg8:Array<domain.FileRef>):Promise<domain.Task>;
 
 export function TaskHandoff(arg1:string):Promise<domain.TaskHandoff>;
+
+export function TerminalClose(arg1:string):Promise<void>;
+
+export function TerminalEndpoint():Promise<main.TerminalEndpointInfo>;
+
+export function TerminalList(arg1:string):Promise<Array<terminal.SessionInfo>>;
+
+export function TerminalOpen(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<terminal.SessionInfo>;
+
+export function TerminalResize(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function ThreadHistory(arg1:string):Promise<Array<domain.RuntimeEvent>>;
 

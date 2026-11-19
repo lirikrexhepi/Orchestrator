@@ -1697,6 +1697,21 @@ export namespace instructions {
 
 export namespace main {
 	
+	export class TerminalEndpointInfo {
+	    wsUrl: string;
+	    token: string;
+
+	    static createFrom(source: any = {}) {
+	        return new TerminalEndpointInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.wsUrl = source["wsUrl"];
+	        this.token = source["token"];
+	    }
+	}
+	
 	export class FileRepoScope {
 	    root: string;
 	    name: string;
@@ -2341,4 +2356,40 @@ export namespace slashcmd {
 	}
 
 }
+
+export namespace terminal {
+	
+	export class SessionInfo {
+	    id: string;
+	    threadId: string;
+	    title: string;
+	    cwd: string;
+	    shell: string;
+	    cols: number;
+	    rows: number;
+	    running: boolean;
+	    exitCode?: number;
+	    createdAt: number;
+
+	    static createFrom(source: any = {}) {
+	        return new SessionInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.threadId = source["threadId"];
+	        this.title = source["title"];
+	        this.cwd = source["cwd"];
+	        this.shell = source["shell"];
+	        this.cols = source["cols"];
+	        this.rows = source["rows"];
+	        this.running = source["running"];
+	        this.exitCode = source["exitCode"];
+	        this.createdAt = source["createdAt"];
+	    }
+	}
+
+}
+
 

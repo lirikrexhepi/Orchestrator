@@ -26,6 +26,7 @@ import (
 	"composer/internal/service"
 	"composer/internal/session"
 	"composer/internal/storage/sqlite"
+	"composer/internal/terminal"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -77,9 +78,11 @@ type App struct {
 	projects      *projects.Store
 	attachments   *attachments.Store
 	memory        *memory.Store
-	remoteServer  *remote.Server
-	mcpServer     *mcp.Server
-	stopFeed      func()
+	remoteServer   *remote.Server
+	mcpServer      *mcp.Server
+	terminals      *terminal.Manager
+	terminalServer *terminal.Server
+	stopFeed       func()
 
 	// headless is set when the app runs without a window (see headless.go).
 	// Window-bound calls check it, since Wails' runtime exits the process when
@@ -188,6 +191,7 @@ func NewApp() *App {
 		prefService:    prefService,
 		activityRepo:   activityRepo,
 		prefRepo:       prefRepo,
+		terminals:      terminal.NewManager(),
 	}
 	if activityRepo != nil {
 		app.activity = activity.NewTracker(activityRepo, app.activityThread)
@@ -245,6 +249,13 @@ func (a *App) startCore(ctx context.Context) {
 		a.manager.SetMCPProvider(&appMCPProvider{server: a.mcpServer})
 	}
 	traceStartup("mcp server started")
+	a.terminalServer = terminal.NewServer(a.terminals)
+	if wsURL, _, err := a.terminalServer.Start(ctx); err != nil {
+		logger.Errorf("App", "Failed to start loopback terminal server: %v", err)
+	} else {
+		logger.Infof("App", "Loopback terminal server bound to %s", wsURL)
+	}
+	traceStartup("terminal server started")
 	a.orchestrator.SetOnSpawn(func(result session.SpawnResult) {
 		if a.sessionService != nil {
 			for _, task := range result.Tasks {
@@ -401,6 +412,14 @@ func (a *App) shutdown(ctx context.Context) {
 		mcpCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = a.mcpServer.Close(mcpCtx)
 		cancel()
+	}
+	if a.terminalServer != nil {
+		termCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = a.terminalServer.Close(termCtx)
+		cancel()
+	}
+	if a.terminals != nil {
+		a.terminals.CloseAll()
 	}
 	if a.stopFeed != nil {
 		a.stopFeed()

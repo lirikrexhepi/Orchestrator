@@ -510,6 +510,26 @@ export function TaskHandoff(arg1) {
   return window['go']['main']['App']['TaskHandoff'](arg1);
 }
 
+export function TerminalClose(arg1) {
+  return window['go']['main']['App']['TerminalClose'](arg1);
+}
+
+export function TerminalEndpoint() {
+  return window['go']['main']['App']['TerminalEndpoint']();
+}
+
+export function TerminalList(arg1) {
+  return window['go']['main']['App']['TerminalList'](arg1);
+}
+
+export function TerminalOpen(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['TerminalOpen'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function TerminalResize(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TerminalResize'](arg1, arg2, arg3);
+}
+
 export function ThreadHistory(arg1) {
   return window['go']['main']['App']['ThreadHistory'](arg1);
 }
