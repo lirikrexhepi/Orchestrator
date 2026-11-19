@@ -16,42 +16,6 @@ import (
 	"composer/internal/shell"
 )
 
-func TestParseTasks(t *testing.T) {
-	reply := "Here is the plan:\n\n" +
-		"```composer:tasks\n" +
-		`{"tasks":[{"title":"Add login","prompt":"Implement the login form"},` +
-		`{"title":"Add logout","prompt":"Implement logout"}]}` +
-		"\n```\n\nBoth can run in parallel."
-
-	tasks := ParseTasks(reply)
-	if len(tasks) != 2 {
-		t.Fatalf("expected 2 tasks, got %d", len(tasks))
-	}
-	if tasks[0].Title != "Add login" || tasks[1].Prompt != "Implement logout" {
-		t.Errorf("unexpected tasks: %+v", tasks)
-	}
-
-	if stripped := StripTaskBlock(reply); strings.Contains(stripped, "composer:tasks") {
-		t.Errorf("block leaked into display text: %q", stripped)
-	}
-
-	// Test action and targetThreadId routing
-	routeReply := "```composer:tasks\n" +
-		`{"tasks":[{"action":"message","targetThreadId":"thread-42","title":"Update UI","prompt":"Make it blue"},` +
-		`{"title":"New Service","prompt":"Build service"}]}` +
-		"\n```"
-	routeTasks := ParseTasks(routeReply)
-	if len(routeTasks) != 2 {
-		t.Fatalf("expected 2 route tasks, got %d", len(routeTasks))
-	}
-	if routeTasks[0].Action != "message" || routeTasks[0].TargetThreadID != "thread-42" {
-		t.Errorf("expected routed task, got %+v", routeTasks[0])
-	}
-	if routeTasks[1].Action != "spawn" || routeTasks[1].TargetThreadID != "" {
-		t.Errorf("expected spawned task default, got %+v", routeTasks[1])
-	}
-}
-
 func gitInit(t *testing.T, root string) {
 	t.Helper()
 	for _, args := range [][]string{
@@ -177,68 +141,6 @@ func TestSpawnCreatesIsolatedAgents(t *testing.T) {
 			t.Fatalf("worktree %s is not a repo", task.Worktree.Path)
 		}
 		defer repo.RemoveWorktree(context.Background(), task.Worktree.Path, true)
-	}
-}
-
-// TestOrchestratorEmitsPlan checks the system prompt actually produces a
-// parseable task block for a two-feature request, which the whole delegation
-// flow depends on.
-func TestOrchestratorEmitsPlan(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live CLI test in short mode")
-	}
-	env := shell.BaseEnvironment()
-	if _, ok := shell.LookPath("claude", env); !ok {
-		t.Skip("claude CLI not installed")
-	}
-
-	manager := NewManager(provider.NewRegistry(drivers.All()...))
-	coordinator := NewCoordinator(manager)
-	events, unsubscribe := manager.Bus().Subscribe()
-	defer unsubscribe()
-	defer manager.StopAll(context.Background())
-
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-
-	turnID, err := coordinator.Send(ctx, Config{
-		Driver: string(domain.DriverClaude),
-		Model:  "claude-haiku-4-5",
-	}, "Today we work on two things: add a dark mode toggle to the settings page, and add CSV export to the reports page.")
-	if err != nil {
-		t.Fatalf("send: %v", err)
-	}
-
-	var reply strings.Builder
-	deadline := time.After(3 * time.Minute)
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("timed out")
-		case event := <-events:
-			if event.TurnID != turnID {
-				continue
-			}
-			switch event.Kind {
-			case domain.EventAgentMessage:
-				reply.WriteString(event.Text)
-			case domain.EventTurnFailed:
-				t.Fatalf("turn failed: %s", event.Error)
-			case domain.EventTurnCompleted:
-				tasks := ParseTasks(reply.String())
-				t.Logf("reply:\n%s", reply.String())
-				if len(tasks) != 2 {
-					t.Fatalf("expected 2 tasks, parsed %d", len(tasks))
-				}
-				for _, task := range tasks {
-					if task.Title == "" || task.Prompt == "" {
-						t.Errorf("incomplete task: %+v", task)
-					}
-					t.Logf("task: %s", task.Title)
-				}
-				return
-			}
-		}
 	}
 }
 

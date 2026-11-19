@@ -6,9 +6,7 @@ import {
   IsGitRepo,
   LoadHistory,
   LoadHistoryTail,
-  OrchestratorLatest,
   OrchestratorMessageAgent,
-  ParseTasks,
   ResumeHistoryThread,
   SendTurn,
   DeleteTurn,
@@ -28,11 +26,6 @@ import { ContextUsage, latestContext, nextContext } from '../agent-session/conte
 import { useOrchestratorStore } from './useOrchestratorStore';
 import { EventsOn } from '../../../wailsjs/runtime/runtime';
 import { toModelOptions } from './orchestratorData';
-
-export interface PendingPlan {
-  tasks: session.TaskRequest[];
-  canUseWorktree: boolean;
-}
 
 export interface SpawnedTask {
   threadId: string;
@@ -64,27 +57,14 @@ export interface SpawnedTask {
 }
 
 export interface Spawner {
-  plan: PendingPlan | null;
   tasks: SpawnedTask[];
   backgroundTasks: SpawnedTask[];
   allActiveTasks: SpawnedTask[];
   error: string | null;
   workspaceId: string | null;
   canUseWorktree: boolean;
-  /** Plan keys The Orchestrator already launched backend-side (status, not confirm). */
-  launchedKeys: string[];
-  /** Detects a delegation plan in an orchestrator reply. */
-  inspect: (text: string) => Promise<void>;
-  confirm: (useWorktree: boolean, modelIds?: string[]) => Promise<void>;
-  confirmTasks: (
-    tasks: { title: string; prompt: string; cwd?: string; action?: string; targetThreadId?: string }[],
-    useWorktree: boolean,
-    modelIds?: string[],
-    project?: { name: string; path: string },
-  ) => Promise<void>;
   /** Adopts agents The Orchestrator launched itself into the deck. */
   adoptSpawned: (result: session.SpawnResult) => void;
-  dismiss: () => void;
   send: (threadId: string, text: string, files?: domain.FileRef[]) => Promise<void>;
   sendWithModel: (
     threadId: string,
@@ -277,33 +257,17 @@ const EARLY_EVENT_TTL_MS = 60_000;
 const EARLY_EVENT_LIMIT = 500;
 
 /** Stable key for a plan so the card can show launched status, not confirm. */
-export function planKey(titles: string[]): string {
-  return titles.join('\n');
-}
-
-/**
- * Owns the delegation half of the orchestrator: recognising a plan, asking
- * about isolation, spawning the agents, and keeping each spawned session's
- * transcript up to date.
- *
- * The Orchestrator backend is source of truth for launches: it executes
- * coordinator plans itself and announces them over orchestrator:spawned. This
- * hook adopts those into the deck; manual confirm remains only as an override
- * for launching the same plan with different models.
- */
 function rootThreadId(threadId: string): string {
   const index = threadId.indexOf('-cont-');
   return index === -1 ? threadId : threadId.slice(0, index);
 }
 
 export function useSpawner(options?: UseSpawnerOptions): Spawner {
-  const [plan, setPlan] = useState<PendingPlan | null>(null);
   const [tasks, setTasks] = useState<SpawnedTask[]>([]);
   const [backgroundTasks, setBackgroundTasks] = useState<SpawnedTask[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [canUseWorktree, setCanUseWorktree] = useState(false);
-  const [launchedKeys, setLaunchedKeys] = useState<string[]>([]);
   const currentWorkspaceId = useRef<string | null>(null);
   const threads = useRef<Set<string>>(new Set());
   // Events for threads the UI has not registered yet. Spawning starts the
@@ -367,22 +331,6 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
     [retitle],
   );
 
-  const inspect = useCallback(async (text: string) => {
-    try {
-      const parsed = await ParseTasks(text);
-      if (!parsed || parsed.length === 0) return;
-
-      // An empty path resolves to the active project on the backend, so the
-      // worktree question is asked about the directory the agents will really
-      // start in rather than about Composer's own folder.
-      const isRepo = await IsGitRepo('').catch(() => false);
-      setCanUseWorktree(isRepo);
-      setPlan({ tasks: parsed, canUseWorktree: isRepo });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  }, []);
-
   useEffect(() => {
     const off = onRuntimeEvents((batch) => {
       const byThread = new Map<string, RuntimeEvent[]>();
@@ -416,161 +364,6 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
     });
     return off;
   }, []);
-
-  const confirmTasks = useCallback(
-    async (
-      planTasks: { title: string; prompt: string; cwd?: string; action?: string; targetThreadId?: string }[],
-      useWorktree: boolean,
-      modelIds: string[] = [],
-      project?: { name: string; path: string },
-    ) => {
-      if (!planTasks || planTasks.length === 0) return;
-
-      // The Orchestrator backend is source of truth: if it already executed
-      // this plan, confirming again would spawn duplicates. Just surface the
-      // agents instead of relaunching.
-      try {
-        const latest = await OrchestratorLatest().catch(() => null);
-        if (latest?.executed && latest.tasks?.length === planTasks.length) {
-          const latestTitles = latest.tasks.map((t) => t.title);
-          const same = planTasks.every((task, index) => task.title === latestTitles[index]);
-          if (same) {
-            setPlan(null);
-            setLaunchedKeys((previous) =>
-              previous.includes(planKey(latestTitles))
-                ? previous
-                : [...previous, planKey(latestTitles)],
-            );
-            return;
-          }
-        }
-      } catch {
-        // Fall through to manual launch when the check itself fails.
-      }
-
-      const store = useOrchestratorStore.getState();
-      const fallback = store.getSelectedModel();
-      if (!fallback) {
-        setError('No agent CLI available');
-        return;
-      }
-
-      setPlan(null);
-      setError(null);
-
-      try {
-        const currentProj = project || (await ActiveProject().catch(() => null));
-        const projCwd = currentProj?.path || planTasks.find((task) => task.cwd)?.cwd || '';
-        if (!projCwd) {
-          setError('Choose a project folder before starting an agent');
-          return;
-        }
-
-        // Separate message routing tasks from new spawn tasks
-        const messageTasks = planTasks.filter((t) => t.action === 'message' && t.targetThreadId);
-        const spawnTasks = planTasks.filter((t) => t.action !== 'message' || !t.targetThreadId);
-
-        // Execute message tasks directly to existing agents
-        for (const msgTask of messageTasks) {
-          const targetId = msgTask.targetThreadId!;
-          await OrchestratorMessageAgent(targetId, msgTask.prompt);
-          setTasks((previous) =>
-            previous.map((t) =>
-              t.threadId === targetId
-                ? {
-                    ...t,
-                    isBusy: true,
-                    blocks: [
-                      ...t.blocks,
-                      userBlock(msgTask.prompt, `user-${Date.now()}`, [], Date.now()),
-                    ],
-                  }
-                : t,
-            ),
-          );
-        }
-
-        // Execute spawn tasks if any exist
-        if (spawnTasks.length > 0) {
-          const result = await SpawnTasks(
-            spawnTasks.map((task) => {
-              const originalIndex = planTasks.indexOf(task);
-              const chosen = store.models.find((m) => m.id === modelIds[originalIndex]) ?? fallback;
-              return session.SpawnRequest.createFrom({
-                title: task.title,
-                prompt: task.prompt,
-                cwd: task.cwd || projCwd,
-                driver: chosen.providerId,
-                account: store.accountFor(chosen.providerId, projCwd),
-                model: chosen.id,
-                options: toModelOptions(chosen, store.getCurrentModelSettings(chosen.id)),
-              });
-            }),
-            {
-              driver: fallback.providerId,
-              account: store.accountFor(fallback.providerId, projCwd),
-              model: fallback.id,
-              options: toModelOptions(fallback, store.getCurrentModelSettings(fallback.id)),
-              cwd: projCwd,
-              useWorktree,
-              title: spawnTasks[0]?.title ?? 'Tasks',
-              prompt: spawnTasks.map((task) => task.title).join(', '),
-              workspaceId: currentWorkspaceId.current || '',
-              permissionMode: store.autoApprovePermissions ? 'bypassPermissions' : 'default',
-            },
-          );
-
-          if (result.workspace?.id) {
-            currentWorkspaceId.current = result.workspace.id;
-            setWorkspaceId(result.workspace.id);
-          }
-
-          for (const task of result.tasks) {
-            const returned = store.models.find((m) => m.id === task.model);
-            if (returned) {
-              lastSentOptions.current[task.threadId] = JSON.stringify(
-                toModelOptions(returned, store.getCurrentModelSettings(returned.id)),
-              );
-            }
-          }
-          const created = result.tasks.map((task, index) => {
-            const initialPrompt = spawnTasks[index]?.prompt || task.prompt;
-            return withEarlyEvents({
-              threadId: task.threadId,
-              cardKey: task.threadId,
-              title: task.title,
-              branch: task.worktree?.branch,
-              model: task.model,
-              driver: task.driver,
-              account: task.account,
-              blocks: initialPrompt
-                ? [userBlock(initialPrompt, `orch-prompt-${task.threadId}`, [], task.createdAt || Date.now())]
-                : ([] as AgentStreamBlock[]),
-              isBusy: true,
-              projectName: currentProj?.name,
-              projectPath: currentProj?.path,
-            });
-          });
-          setTasks((previous) => [...previous, ...created]);
-
-          if (result.errors?.length) setError(result.errors.join('\n'));
-        }
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause));
-      }
-    },
-    [withEarlyEvents],
-  );
-
-  const confirm = useCallback(
-    async (useWorktree: boolean, modelIds: string[] = []) => {
-      if (!plan) return;
-      await confirmTasks(plan.tasks, useWorktree, modelIds);
-    },
-    [plan, confirmTasks],
-  );
-
-  const dismiss = useCallback(() => setPlan(null), []);
 
   function describeSwitch(
     prevProviderName: string | undefined,
@@ -1365,9 +1158,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
     threads.current = new Set();
     setTasks([]);
     setBackgroundTasks([]);
-    setPlan(null);
     setError(null);
-    setLaunchedKeys([]);
     currentWorkspaceId.current = null;
     setWorkspaceId(null);
   }, []);
@@ -1389,12 +1180,6 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       currentWorkspaceId.current = result.workspace.id;
       setWorkspaceId(result.workspace.id);
     }
-    const key = planKey(result.tasks.map((task) => task.title));
-    setLaunchedKeys((previous) => (previous.includes(key) ? previous : [...previous, key]));
-    setPlan((previous) => {
-      if (!previous) return previous;
-      return planKey(previous.tasks.map((task) => task.title)) === key ? null : previous;
-    });
     if (result.errors?.length) setError(result.errors.join('\n'));
     for (const task of result.tasks) {
       const storedOptions = (task as any).options;
@@ -1433,19 +1218,13 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
 
   return useMemo(
     () => ({
-      plan,
       tasks,
       backgroundTasks,
       allActiveTasks,
       error,
       workspaceId,
       canUseWorktree,
-      launchedKeys,
-      inspect,
-      confirm,
-      confirmTasks,
       adoptSpawned,
-      dismiss,
       send,
       sendWithModel,
       interrupt,
@@ -1461,8 +1240,8 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       renameChat,
     }),
     [
-      plan, tasks, backgroundTasks, allActiveTasks, error, workspaceId, canUseWorktree, launchedKeys,
-      inspect, confirm, confirmTasks, adoptSpawned, dismiss, send, sendWithModel, interrupt, close,
+      tasks, backgroundTasks, allActiveTasks, error, workspaceId, canUseWorktree,
+      adoptSpawned, send, sendWithModel, interrupt, close,
       terminate, spawnAgent, openDraft, openHistorySession, loadEarlier, clear, deleteTurn, moveChat, renameChat,
     ],
   );

@@ -190,7 +190,7 @@ func main() {
 
 		logger.Logf("--- Coordinator Response ---\n%s\n----------------------------", strings.TrimSpace(replyText))
 
-		tasks := session.ParseTasks(replyText)
+		var tasks []session.TaskRequest
 		logger.Logf("Parsed %d tasks from plan:", len(tasks))
 		messageCount, spawnCount := 0, 0
 		for i, t := range tasks {

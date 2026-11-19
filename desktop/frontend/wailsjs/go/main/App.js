@@ -322,10 +322,6 @@ export function OrchestratorStopAgent(arg1) {
   return window['go']['main']['App']['OrchestratorStopAgent'](arg1);
 }
 
-export function ParseTasks(arg1) {
-  return window['go']['main']['App']['ParseTasks'](arg1);
-}
-
 export function PreviewAttachment(arg1) {
   return window['go']['main']['App']['PreviewAttachment'](arg1);
 }

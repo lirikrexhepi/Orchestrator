@@ -176,8 +176,6 @@ export function OrchestratorSetAuto(arg1:boolean):Promise<void>;
 
 export function OrchestratorStopAgent(arg1:string):Promise<void>;
 
-export function ParseTasks(arg1:string):Promise<Array<session.TaskRequest>>;
-
 export function PreviewAttachment(arg1:string):Promise<string>;
 
 export function ProjectFile(arg1:string,arg2:string):Promise<files.Content>;

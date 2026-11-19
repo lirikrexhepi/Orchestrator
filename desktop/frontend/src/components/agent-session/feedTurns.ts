@@ -31,7 +31,7 @@ function isActive(block: AgentStreamBlock): boolean {
   }
 }
 
-function isPinned(block: AgentStreamBlock, hasPlan: (content: string) => boolean): boolean {
+function isPinned(block: AgentStreamBlock): boolean {
   switch (block.type) {
     case 'tool_question':
       return !block.answered;
@@ -43,7 +43,7 @@ function isPinned(block: AgentStreamBlock, hasPlan: (content: string) => boolean
     case 'mcp_app':
       return true;
     case 'text':
-      return Boolean(block.variant) || hasPlan(block.content);
+      return Boolean(block.variant);
     default:
       return false;
   }
@@ -88,8 +88,7 @@ export function groupEdits(edits: EditToolBlockData[]): EditToolBlockData[] {
 
 export function buildFeedSegments(
   blocks: AgentStreamBlock[],
-  isWorking: boolean | undefined,
-  hasPlan: (content: string) => boolean,
+  isWorking?: boolean,
 ): FeedSegment[] {
   const turns: { user?: AgentStreamBlock; body: AgentStreamBlock[] }[] = [];
   for (const block of blocks) {
@@ -122,7 +121,7 @@ export function buildFeedSegments(
     let finalIndex = -1;
     for (let i = body.length - 1; i >= 0; i--) {
       const block = body[i];
-      if (block.type === 'text' && !block.variant && !hasPlan(block.content)) {
+      if (block.type === 'text' && !block.variant) {
         finalIndex = i;
         break;
       }
@@ -136,7 +135,7 @@ export function buildFeedSegments(
     const pinned: AgentStreamBlock[] = [];
     const edits: EditToolBlockData[] = [];
     for (const block of body.slice(0, finalIndex)) {
-      if (isPinned(block, hasPlan)) {
+      if (isPinned(block)) {
         pinned.push(block);
         continue;
       }

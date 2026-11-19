@@ -110,12 +110,6 @@ func (a *App) ThreadHistory(threadID string) []domain.RuntimeEvent {
 	return a.manager.History(threadID)
 }
 
-// ParseTasks extracts a delegation plan from an orchestrator reply. Returns an
-// empty list for ordinary conversational answers.
-func (a *App) ParseTasks(text string) []session.TaskRequest {
-	return session.ParseTasks(text)
-}
-
 // SpawnTasks starts one agent session per task, optionally isolating each in
 // its own git worktree.
 func (a *App) SpawnTasks(requests []session.SpawnRequest, opts session.SpawnOptions) (session.SpawnResult, error) {

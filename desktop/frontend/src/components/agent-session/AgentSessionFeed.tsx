@@ -16,8 +16,6 @@ import { McpAppCard } from './McpAppCard';
 import { MarkdownText } from './MarkdownText';
 import { SubagentFeedRow } from './WorkspacePanel';
 import { NoticeDivider } from './NoticeDivider';
-import { InlinePlanCard } from '../orchestrator/InlinePlanCard';
-import { extractPlanFromText } from '../orchestrator/extractPlan';
 import { MessageTimestamp } from './MessageTimestamp';
 import { RespondToApproval, RespondToQuestion } from '../../../wailsjs/go/main/App';
 import { buildFeedSegments, FeedSegment } from './feedTurns';
@@ -56,44 +54,19 @@ export interface AgentSessionFeedProps {
   onDeleteTurn?: (turnId: string) => Promise<void> | void;
   onRespondApproval?: (requestId: string, decision: string) => void;
   onFileClick?: (path: string) => void;
-  canUseWorktree?: boolean;
   isActive?: boolean;
   isWorking?: boolean;
-  /** Plan keys The Orchestrator already launched backend-side (status, not confirm). */
-  launchedKeys?: string[];
-  onConfirmPlan?: (
-    tasks: { title: string; prompt: string; cwd?: string }[],
-    useWorktree: boolean,
-    modelIds: string[],
-  ) => void;
-  onDismissPlan?: () => void;
   onLoadEarlier?: () => void;
   onOpenSubagent?: (id: string) => void;
   hasEarlier?: boolean;
   loadingEarlier?: boolean;
 }
 
-/** extractPlanFromText parses every text block on every render; cache it. */
-const planCache = new Map<string, ReturnType<typeof extractPlanFromText>>();
-function planOf(content: string) {
-  if (planCache.has(content)) return planCache.get(content)!;
-  const plan = extractPlanFromText(content);
-  if (planCache.size > 300) planCache.clear();
-  planCache.set(content, plan);
-  return plan;
-}
-
-type Handlers = Omit<AgentSessionFeedProps, 'blocks' | 'className' | 'isActive' | 'isWorking' | 'launchedKeys' | 'canUseWorktree'>;
-
-const hasPlan = (content: string) => Boolean(planOf(content));
+type Handlers = Omit<AgentSessionFeedProps, 'blocks' | 'className' | 'isActive' | 'isWorking'>;
 
 interface FeedBlockProps {
   block: AgentStreamBlock;
   isLatestText: boolean;
-  isLatestPlan: boolean;
-  enablePlanParsing: boolean;
-  launched: boolean;
-  canUseWorktree?: boolean;
   isActive: boolean;
   defaultDriver?: string;
   defaultModel?: string;
@@ -108,10 +81,6 @@ interface FeedBlockProps {
 const FeedBlock = React.memo(function FeedBlock({
   block,
   isLatestText,
-  isLatestPlan,
-  enablePlanParsing,
-  launched,
-  canUseWorktree,
   isActive,
   defaultDriver,
   defaultModel,
@@ -131,7 +100,6 @@ const FeedBlock = React.memo(function FeedBlock({
 
     case 'text': {
       const tone = block.variant === 'error' ? 'text-rose-300' : 'text-current';
-      const plan = block.variant || !enablePlanParsing ? null : planOf(block.content);
       const cursor = block.isStreaming && (
         <span className="inline-block w-1.5 h-3 bg-current ml-1 animate-pulse align-middle opacity-70" />
       );
@@ -146,53 +114,6 @@ const FeedBlock = React.memo(function FeedBlock({
           isStreaming={block.isStreaming}
         />
       );
-      if (plan) {
-        if (launched && !(plan.proseBefore || plan.proseAfter) && !block.isStreaming) {
-          return (
-            <div className="flex flex-col gap-1.5">
-              <InlinePlanCard
-                tasks={plan.tasks}
-                canUseWorktree={canUseWorktree}
-                isLatest={isLatestPlan}
-                isActive={isActive}
-                isStreaming={block.isStreaming}
-                isDispatched
-                onConfirm={() => undefined}
-                onDismiss={() => handlers.current.onDismissPlan?.()}
-              />
-              <MessageTimestamp
-                timestamp={block.timestamp}
-                content={block.content}
-                driver={blockDriver}
-                model={blockModel}
-                isStreaming={block.isStreaming}
-              />
-            </div>
-          );
-        }
-        return (
-          <div className={`text-[12.5px] font-normal font-(family-name:--app-font) ${tone} leading-relaxed pl-0.5 select-text`}>
-            {plan.proseBefore && <MarkdownText content={plan.proseBefore} />}
-            <InlinePlanCard
-              tasks={plan.tasks}
-              canUseWorktree={canUseWorktree}
-              isLatest={isLatestPlan}
-              isActive={isActive}
-              isStreaming={block.isStreaming}
-              isDispatched={launched}
-              onConfirm={
-                launched
-                  ? () => undefined
-                  : (useWorktree, modelIds) => handlers.current.onConfirmPlan?.(plan.tasks, useWorktree, modelIds)
-              }
-              onDismiss={() => handlers.current.onDismissPlan?.()}
-            />
-            {plan.proseAfter && <MarkdownText content={plan.proseAfter} />}
-            {cursor}
-            {stamp}
-          </div>
-        );
-      }
       return (
         <div className={`text-[12.5px] font-normal font-(family-name:--app-font) ${tone} leading-relaxed pl-0.5 select-text`}>
           <MarkdownText content={block.content} />
@@ -365,10 +286,8 @@ const FeedBlock = React.memo(function FeedBlock({
 const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
   blocks,
   className = '',
-  canUseWorktree,
   isActive = true,
   isWorking,
-  launchedKeys,
   modelId,
   driver,
   virtual,
@@ -380,17 +299,6 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
   const handlers = React.useRef<Handlers>(handlerProps);
   handlers.current = handlerProps;
 
-  const enablePlanParsing = Boolean(handlerProps.onConfirmPlan);
-
-  const latestPlanBlockId = React.useMemo(() => {
-    if (!enablePlanParsing) return null;
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      const b = blocks[i];
-      if (b.type === 'text' && !b.variant && planOf(b.content)) return b.id;
-    }
-    return null;
-  }, [blocks, enablePlanParsing]);
-
   const lastTextId = React.useMemo(() => {
     if (isWorking) return null;
     for (let i = blocks.length - 1; i >= 0; i--) {
@@ -399,28 +307,17 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
     return null;
   }, [blocks, isWorking]);
 
-  const launchedSet = React.useMemo(() => new Set(launchedKeys ?? []), [launchedKeys]);
-
   const segments = React.useMemo(
-    () => buildFeedSegments(blocks, isWorking, enablePlanParsing ? hasPlan : () => false),
-    [blocks, isWorking, enablePlanParsing]
+    () => buildFeedSegments(blocks, isWorking),
+    [blocks, isWorking]
   );
 
   const renderBlock = (block: AgentStreamBlock) => {
-    let launched = false;
-    if (enablePlanParsing && block.type === 'text' && launchedSet.size > 0) {
-      const plan = planOf(block.content);
-      launched = Boolean(plan && launchedSet.has(plan.tasks.map((task) => task.title).join('\n')));
-    }
     const node = (
       <FeedBlock
         key={block.id}
         block={block}
         isLatestText={block.id === lastTextId}
-        isLatestPlan={block.id === latestPlanBlockId}
-        enablePlanParsing={enablePlanParsing}
-        launched={launched}
-        canUseWorktree={canUseWorktree}
         isActive={isActive}
         defaultDriver={driver}
         defaultModel={modelId}
@@ -519,8 +416,8 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
 
   const itemClassName = virtual?.itemClassName;
   const extraData = useMemo(
-    () => ({ segments, lastTextId, latestPlanBlockId, launchedSet, drawLines, canUseWorktree, isActive, driver, modelId, itemClassName }),
-    [segments, lastTextId, latestPlanBlockId, launchedSet, drawLines, canUseWorktree, isActive, driver, modelId, itemClassName],
+    () => ({ segments, lastTextId, drawLines, isActive, driver, modelId, itemClassName }),
+    [segments, lastTextId, drawLines, isActive, driver, modelId, itemClassName],
   );
 
   if (virtual) {
