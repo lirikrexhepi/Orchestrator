@@ -4,6 +4,7 @@ import (
 	"embed"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"composer/internal/devserver"
@@ -78,6 +79,12 @@ func main() {
 	startState := options.Normal
 	if pref, _ := app.GetUserPreference("launch_fullscreen"); pref == "true" {
 		startState = options.Maximised
+	}
+
+	// Allow embedded web previews and git web portals inside the internal browser iframe
+	existingBrowserArgs := os.Getenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
+	if !strings.Contains(existingBrowserArgs, "--disable-web-security") {
+		os.Setenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", strings.TrimSpace(existingBrowserArgs+" --disable-web-security"))
 	}
 
 	// Create application with options

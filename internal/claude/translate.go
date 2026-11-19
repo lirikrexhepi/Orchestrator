@@ -21,6 +21,10 @@ func (a *Adapter) handleEnvelope(s *session, envelope *Envelope) {
 		return
 	}
 
+	if envelope.QuotaLimits != nil {
+		a.handleRateLimit(s, &Envelope{RateLimitInfo: envelope.QuotaLimits})
+	}
+
 	switch envelope.Type {
 	case "system":
 		switch envelope.Subtype {

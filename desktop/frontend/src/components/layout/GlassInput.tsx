@@ -4,6 +4,7 @@ import { Paperclip, Square, ChevronDown, Plus, MaterialIcon } from '../common/ic
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
 import { providerIcon } from '../orchestrator/providerIcons';
 import { ModelPicker } from '../orchestrator/ModelPicker';
+import { EffortPicker } from '../orchestrator/EffortPicker';
 import { AttachmentsState, filesFromTransfer } from '../common/useAttachments';
 import { AttachmentStrip } from '../common/AttachmentStrip';
 import { ProjectsState } from '../orchestrator/useProjects';
@@ -113,6 +114,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
       const target = e.target as Node;
       if (modelPickerRef.current && !modelPickerRef.current.contains(target)) {
         setIsModelPickerOpen(false);
+        store.setEffortPickerOpen(false);
       }
       if (
         projectPickerRef.current &&
@@ -125,6 +127,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setIsModelPickerOpen(false);
+        store.setEffortPickerOpen(false);
         setIsProjectPickerOpen(false);
       }
     };
@@ -246,17 +249,25 @@ export const GlassInput: React.FC<GlassInputProps> = ({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* Model Picker Popup */}
+      {/* Model Picker & Effort Picker Popups */}
       {isModelPickerOpen && (
-        <div ref={modelPickerRef} className="absolute bottom-[calc(100%+10px)] left-0 z-50 animate-scale-in">
+        <div
+          ref={modelPickerRef}
+          className="absolute bottom-[calc(100%+10px)] left-0 z-50 flex items-end gap-2.5 animate-scale-in"
+          onClick={(e) => e.stopPropagation()}
+        >
           <ModelPicker
             selectedModelId={selectedModelId}
             onSelectModel={(id) => {
               store.selectModel(id);
-              setIsModelPickerOpen(false);
             }}
             isFloatingPopup
           />
+          {store.isEffortPickerOpen && (
+            <div className="animate-scale-in">
+              <EffortPicker isFloatingPopup />
+            </div>
+          )}
         </div>
       )}
 
@@ -428,7 +439,11 @@ export const GlassInput: React.FC<GlassInputProps> = ({
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={() => setIsModelPickerOpen(!isModelPickerOpen)}
+              onClick={() => {
+                const next = !isModelPickerOpen;
+                setIsModelPickerOpen(next);
+                if (!next) store.setEffortPickerOpen(false);
+              }}
               className={`flex items-center gap-1.5 h-[26px] px-2.5 rounded-full transition-all duration-150 cursor-pointer active:scale-95 ${
                 isLight
                   ? 'hover:bg-black/[0.05] text-black/80'

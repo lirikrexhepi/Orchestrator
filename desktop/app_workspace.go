@@ -45,6 +45,32 @@ func (a *App) OpenInEditor(path, editor string) error {
 	return startDetached(binary, filepath.Clean(path))
 }
 
+func (a *App) GitWebURL(worktreePath string) (string, error) {
+	worktreePath = strings.TrimSpace(worktreePath)
+	if worktreePath == "" {
+		return "", errors.New("no workspace path provided")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	remote, err := gitOutput(ctx, worktreePath, "remote", "get-url", "origin")
+	if err != nil {
+		remotes, errRem := gitOutput(ctx, worktreePath, "remote")
+		if errRem != nil || strings.TrimSpace(remotes) == "" {
+			return "", errors.New("this repository has no remote")
+		}
+		firstRemote := strings.Fields(remotes)[0]
+		remote, err = gitOutput(ctx, worktreePath, "remote", "get-url", firstRemote)
+		if err != nil {
+			return "", errors.New("failed to get git remote url")
+		}
+	}
+	host, repo, ok := parseRemote(remote)
+	if !ok {
+		return "", fmt.Errorf("unrecognised remote %q", remote)
+	}
+	return fmt.Sprintf("https://%s/%s", host, repo), nil
+}
+
 func (a *App) GitPullRequestURL(worktreePath string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -78,15 +104,20 @@ func pullRequestURL(remote, base, branch string) (string, error) {
 func parseRemote(remote string) (string, string, bool) {
 	remote = strings.TrimSuffix(strings.TrimSpace(remote), "/")
 	remote = strings.TrimSuffix(remote, ".git")
-	if rest, ok := strings.CutPrefix(remote, "git@"); ok {
-		host, repo, found := strings.Cut(rest, ":")
+	if !strings.Contains(remote, "://") && strings.Contains(remote, ":") {
+		part := remote
+		if _, afterAt, found := strings.Cut(part, "@"); found {
+			part = afterAt
+		}
+		host, repo, found := strings.Cut(part, ":")
+		repo = strings.Trim(strings.TrimSuffix(repo, ".git"), "/")
 		return host, repo, found && host != "" && repo != ""
 	}
 	parsed, err := url.Parse(remote)
 	if err != nil || parsed.Host == "" {
 		return "", "", false
 	}
-	repo := strings.Trim(parsed.Path, "/")
+	repo := strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/")
 	return parsed.Hostname(), repo, repo != ""
 }
 

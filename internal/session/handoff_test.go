@@ -46,3 +46,36 @@ func TestExtractKeepsDistinctFinalResponse(t *testing.T) {
 		t.Errorf("distinct texts lost: %q", got)
 	}
 }
+
+func TestExtractDoesNotDuplicateEmptyTurnDeltasAcrossFlushes(t *testing.T) {
+	events := []domain.RuntimeEvent{
+		{Kind: domain.EventAgentMessage, Text: "Initial notice", Delta: true},
+		{Kind: domain.EventTurnCompleted},
+		{Kind: domain.EventToolResult, Tool: &domain.ToolCall{Output: "first result"}},
+		{Kind: domain.EventAgentMessage, Text: "Second update", Delta: true},
+		{Kind: domain.EventTurnCompleted},
+		{Kind: domain.EventToolResult, Tool: &domain.ToolCall{Output: "second result"}},
+	}
+	got := ExtractConversationText(events, 0)
+	if count := strings.Count(got, "Initial notice"); count != 1 {
+		t.Errorf("initial notice duplicated %d times, want 1: %q", count, got)
+	}
+	if count := strings.Count(got, "Second update"); count != 1 {
+		t.Errorf("second update duplicated %d times, want 1: %q", count, got)
+	}
+}
+
+func TestExtractDeduplicatesConsecutiveIdenticalMessages(t *testing.T) {
+	events := []domain.RuntimeEvent{
+		{Kind: domain.EventAgentMessage, Text: "You've hit your session limit"},
+		{Kind: domain.EventTurnCompleted},
+		{Kind: domain.EventAgentMessage, Text: "You've hit your session limit"},
+		{Kind: domain.EventTurnCompleted},
+		{Kind: domain.EventAgentMessage, Text: "You've hit your session limit"},
+		{Kind: domain.EventTurnCompleted},
+	}
+	got := ExtractConversationText(events, 0)
+	if count := strings.Count(got, "You've hit your session limit"); count != 1 {
+		t.Errorf("session limit message duplicated %d times, want 1: %q", count, got)
+	}
+}

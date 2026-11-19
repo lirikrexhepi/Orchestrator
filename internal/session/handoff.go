@@ -22,7 +22,11 @@ func ExtractConversationText(events []domain.RuntimeEvent, maxChars int) string 
 		if len(text) > cap {
 			text = text[:cap] + "\n[truncated]"
 		}
-		lines = append(lines, prefix+text)
+		formatted := prefix + text
+		if len(lines) > 0 && lines[len(lines)-1] == formatted {
+			return
+		}
+		lines = append(lines, formatted)
 	}
 	// Streamed text arrives as per-turn deltas that never get a terminal frame
 	// on some providers, so skipping deltas would drop whole replies. Merge
@@ -55,15 +59,22 @@ func ExtractConversationText(events []domain.RuntimeEvent, maxChars int) string 
 		}
 		delete(pendingByTurn, turnID)
 		format("Assistant: ", entry.text.String(), 2000)
+		for i, p := range pending {
+			if p == entry {
+				pending = append(pending[:i], pending[i+1:]...)
+				break
+			}
+		}
 	}
 	flushAll := func() {
 		for _, entry := range pending {
-			if _, ok := pendingByTurn[entry.turnID]; !ok {
-				continue
+			if current, ok := pendingByTurn[entry.turnID]; ok && current == entry {
+				delete(pendingByTurn, entry.turnID)
+				format("Assistant: ", entry.text.String(), 2000)
 			}
-			delete(pendingByTurn, entry.turnID)
-			format("Assistant: ", entry.text.String(), 2000)
 		}
+		pending = pending[:0]
+		clear(pendingByTurn)
 	}
 	for _, event := range events {
 		switch event.Kind {
@@ -80,6 +91,12 @@ func ExtractConversationText(events []domain.RuntimeEvent, maxChars int) string 
 				if strings.Contains(merged, strings.TrimSpace(event.Text)) ||
 					strings.Contains(strings.TrimSpace(event.Text), strings.TrimSpace(merged)) {
 					delete(pendingByTurn, event.TurnID)
+					for i, p := range pending {
+						if p == entry {
+							pending = append(pending[:i], pending[i+1:]...)
+							break
+						}
+					}
 				} else {
 					flushTurn(event.TurnID)
 				}

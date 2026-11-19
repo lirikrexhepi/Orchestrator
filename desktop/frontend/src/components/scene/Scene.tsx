@@ -19,10 +19,12 @@ import { NavRail } from '../layout/NavRail';
 import { HomeStats } from '../layout/HomeStats';
 import { GlassInput } from '../layout/GlassInput';
 import { parseSwitchNotice } from '../agent-session/NoticeDivider';
-import { DynamicIsland, DynamicIslandNotification } from '../common/DynamicIsland';
+import { DynamicIsland, DynamicIslandNotification, renderChatIcon } from '../common/DynamicIsland';
 import { TitleBar } from '../common/TitleBar';
 import { GlassSquircle } from '../../ui/glass/GlassSquircle';
-import { RespondToQuestion } from '../../../wailsjs/go/main/App';
+import { useWebBookmarks, type WebBookmark } from '../agent-session/useWebBookmarks';
+import { BookmarkModal } from '../agent-session/BookmarkModal';
+import { RespondToQuestion, GitWebURL } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime/runtime';
 import { playTaskComplete } from '../../sound';
 import { domain } from '../../../wailsjs/go/models';
@@ -92,6 +94,7 @@ export const Scene: React.FC<SceneProps> = () => {
   const [activeCardIndex, setActiveCardIndex] = useState(0);
   const [direction, setDirection] = useState(0);
   const [cardMode, setCardMode] = useState<AgentCardMode>('chat');
+  const [browserTarget, setBrowserTarget] = useState<{ url: string; nonce: number } | null>(null);
 
   // Dynamic Island Notifications
   const [islandNotification, setIslandNotification] = useState<DynamicIslandNotification | null>(null);
@@ -99,6 +102,73 @@ export const Scene: React.FC<SceneProps> = () => {
 
   // Active task object
   const activeTask = activeTasks[activeCardIndex] ?? null;
+
+  // Web Bookmarks (Universal + Project scoped)
+  const activeProjectName = activeTask?.projectName || projects.active?.name;
+  const {
+    visibleBookmarks,
+    addBookmark,
+    updateBookmark,
+    deleteBookmark,
+  } = useWebBookmarks(activeProjectName);
+
+  const [isBookmarkModalOpen, setIsBookmarkModalOpen] = useState(false);
+  const [editingBookmark, setEditingBookmark] = useState<WebBookmark | null>(null);
+
+  const handleBookmarkClick = useCallback((bm: WebBookmark) => {
+    setBrowserTarget({ url: bm.url, nonce: Date.now() });
+    setCardMode('browser');
+    setActiveView('chat');
+  }, []);
+
+  const handleBookmarkEdit = useCallback((bm: WebBookmark) => {
+    setEditingBookmark(bm);
+    setIsBookmarkModalOpen(true);
+  }, []);
+
+  const handleAddBookmark = useCallback(() => {
+    setEditingBookmark({
+      id: '',
+      title: '',
+      url: browserTarget?.url && browserTarget.url !== 'about:blank' ? browserTarget.url : 'https://',
+      project: activeProjectName || null,
+      createdAt: 0,
+    });
+    setIsBookmarkModalOpen(true);
+  }, [browserTarget?.url, activeProjectName]);
+
+  const handleSaveBookmark = useCallback((data: { title: string; url: string; project?: string | null }) => {
+    if (editingBookmark?.id) {
+      updateBookmark(editingBookmark.id, data);
+    } else {
+      addBookmark(data);
+    }
+  }, [editingBookmark?.id, updateBookmark, addBookmark]);
+
+  const handleDeleteBookmark = useCallback(() => {
+    if (editingBookmark?.id) {
+      deleteBookmark(editingBookmark.id);
+    }
+  }, [editingBookmark?.id, deleteBookmark]);
+
+  const handleGitClick = useCallback(async () => {
+    const targetPath = activeTask?.projectPath || projects.active?.path;
+    if (targetPath) {
+      try {
+        const webUrl = await GitWebURL(targetPath);
+        if (webUrl) {
+          setBrowserTarget({ url: webUrl, nonce: Date.now() });
+          setCardMode('browser');
+          setActiveView('chat');
+          return;
+        }
+      } catch (err) {
+        console.warn('Could not resolve GitWebURL:', err);
+      }
+    }
+    setCardMode('changes');
+    setActiveView('chat');
+  }, [activeTask?.projectPath, projects.active?.path]);
 
   // Map running dev servers back to an agent
   const getTaskServers = useCallback(
@@ -339,11 +409,34 @@ export const Scene: React.FC<SceneProps> = () => {
 
   const activeTaskWorking = isTaskWorking(activeTask);
 
+  const getTaskDriverAndModel = useCallback((task?: (typeof activeTasks)[0] | null) => {
+    if (!task) return { driver: undefined, model: undefined };
+    let driver = task.driver;
+    let model = task.model;
+    if (task.drivers && task.drivers.length > 0) driver = task.drivers[task.drivers.length - 1];
+    if (task.models && task.models.length > 0) model = task.models[task.models.length - 1];
+    if (task.blocks) {
+      for (let i = task.blocks.length - 1; i >= 0; i--) {
+        const b = task.blocks[i];
+        if (b.type === 'notice' && b.label) {
+          const parsed = parseSwitchNotice(b.label);
+          if (parsed?.toDriver) driver = parsed.toDriver;
+          if (parsed?.toModel) model = parsed.toModel;
+          if (parsed?.toDriver || parsed?.toModel) break;
+        }
+      }
+    }
+    return { driver, model };
+  }, []);
+
   const leftTarget = useMemo(() => {
     if (activeView === 'chat' && activeCardIndex > 0) {
       const neighbor = activeTasks[activeCardIndex - 1];
+      const { driver, model } = getTaskDriverAndModel(neighbor);
       return {
         title: neighbor?.title || 'Agent',
+        driver,
+        model,
         isBusy: isTaskWorking(neighbor),
         subtitle: 'Ctrl + ←',
         onClick: () => {
@@ -353,13 +446,16 @@ export const Scene: React.FC<SceneProps> = () => {
       };
     }
     return null;
-  }, [activeView, activeCardIndex, activeTasks, isTaskWorking]);
+  }, [activeView, activeCardIndex, activeTasks, isTaskWorking, getTaskDriverAndModel]);
 
   const rightTarget = useMemo(() => {
     if (activeView === 'home' && activeTasks.length > 0) {
       const neighbor = activeTasks[activeCardIndex] || activeTasks[0];
+      const { driver, model } = getTaskDriverAndModel(neighbor);
       return {
         title: neighbor?.title || 'Back to Chat',
+        driver,
+        model,
         isBusy: isTaskWorking(neighbor),
         subtitle: 'Ctrl + →',
         onClick: () => {
@@ -369,8 +465,11 @@ export const Scene: React.FC<SceneProps> = () => {
       };
     } else if (activeView === 'chat' && activeCardIndex < activeTasks.length - 1) {
       const neighbor = activeTasks[activeCardIndex + 1];
+      const { driver, model } = getTaskDriverAndModel(neighbor);
       return {
         title: neighbor?.title || 'Agent',
+        driver,
+        model,
         isBusy: isTaskWorking(neighbor),
         subtitle: 'Ctrl + →',
         onClick: () => {
@@ -380,7 +479,7 @@ export const Scene: React.FC<SceneProps> = () => {
       };
     }
     return null;
-  }, [activeView, activeCardIndex, activeTasks, isTaskWorking]);
+  }, [activeView, activeCardIndex, activeTasks, isTaskWorking, getTaskDriverAndModel]);
 
   return (
     <div
@@ -411,10 +510,16 @@ export const Scene: React.FC<SceneProps> = () => {
           setCardMode(mode);
           setActiveView('chat');
         }}
-        hasPreview={hasServers}
+        onGitClick={handleGitClick}
+        hasPreview={true}
         hasServers={hasServers}
         hasChanges={hasChanges}
         hasTasks={hasTasks}
+        bookmarks={visibleBookmarks}
+        currentBrowserUrl={browserTarget?.url}
+        onBookmarkClick={handleBookmarkClick}
+        onBookmarkEdit={handleBookmarkEdit}
+        onAddBookmark={handleAddBookmark}
       />
 
       {/* Main Workspace Area with reverse radius corner against #141414 sidebar */}
@@ -444,6 +549,7 @@ export const Scene: React.FC<SceneProps> = () => {
         {/* Top Window TitleBar with Drag Handle & Traffic Lights (Minimise / Maximise / Close) */}
         <TitleBar>
           <DynamicIsland
+            cardMode={activeView === 'chat' ? cardMode : 'chat'}
             projects={projects}
             activeTaskProjectName={activeTask?.projectName}
             activeTaskBranch={activeTask?.branch}
@@ -545,6 +651,8 @@ export const Scene: React.FC<SceneProps> = () => {
                     projectName={activeTask.projectName}
                     projectPath={activeTask.projectPath}
                     accountName={accountLabel(activeTask.driver, activeTask.account)}
+                    browserTargetUrl={browserTarget?.url}
+                    browserTargetNonce={browserTarget?.nonce}
                     isFullscreen={true}
                     isFocused={true}
                     className="w-full h-full"
@@ -580,8 +688,11 @@ export const Scene: React.FC<SceneProps> = () => {
                   ? '0 6px 20px rgba(0, 0, 0, 0.08)'
                   : '0 8px 24px rgba(0, 0, 0, 0.45)',
               }}
-              className="inline-flex items-center px-4 py-2 min-h-[46px] w-fit max-w-[240px]"
+              className="inline-flex items-center gap-2.5 px-3.5 py-2 min-h-[46px] w-fit max-w-[260px]"
             >
+              <div className="shrink-0 flex items-center justify-center w-[18px] h-[18px]">
+                {renderChatIcon(leftTarget.driver, leftTarget.model, isLight, 'w-[15px] h-[15px]')}
+              </div>
               <div className="flex flex-col min-w-0 text-left">
                 <span className="truncate text-[12.5px] font-medium leading-tight text-white/90 group-hover:text-white transition-colors">
                   {leftTarget.title}
@@ -628,13 +739,16 @@ export const Scene: React.FC<SceneProps> = () => {
                   ? '0 6px 20px rgba(0, 0, 0, 0.08)'
                   : '0 8px 24px rgba(0, 0, 0, 0.45)',
               }}
-              className="inline-flex items-center px-4 py-2 min-h-[46px] w-fit max-w-[240px]"
+              className="inline-flex items-center gap-2.5 px-3.5 py-2 min-h-[46px] w-fit max-w-[260px]"
             >
-              <div className="flex flex-col min-w-0 text-right w-full">
+              <div className="shrink-0 flex items-center justify-center w-[18px] h-[18px]">
+                {renderChatIcon(rightTarget.driver, rightTarget.model, isLight, 'w-[15px] h-[15px]')}
+              </div>
+              <div className="flex flex-col min-w-0 text-left">
                 <span className="truncate text-[12.5px] font-medium leading-tight text-white/90 group-hover:text-white transition-colors">
                   {rightTarget.title}
                 </span>
-                <span className="flex items-center justify-end gap-2 text-[10.5px] text-white/50 leading-tight mt-1">
+                <span className="flex items-center gap-2 text-[10.5px] text-white/50 leading-tight mt-1">
                   <span>{rightTarget.subtitle}</span>
                   {rightTarget.isBusy !== undefined && (
                     <span
@@ -651,29 +765,49 @@ export const Scene: React.FC<SceneProps> = () => {
           </button>
         )}
 
-        {/* Floating Bottom Liquid Glass Input (Home and Chat) */}
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-[640px] px-4 z-40 pointer-events-auto">
-          <GlassInput
-            onSubmit={handleSubmitPrompt}
-            onInterrupt={
-              activeView === 'chat' && activeTaskWorking
-                ? () => spawner.interrupt(activeTask.threadId)
-                : undefined
-            }
-            onNewChat={() => {
-              setDirection(-1);
-              setActiveView('home');
-            }}
-            isBusy={activeView === 'chat' && activeTaskWorking}
-            attachments={attachments}
-            isLight={isLight}
-            projects={activeView === 'home' ? projects : undefined}
-            activeChatKey={activeView === 'chat' ? (activeTask?.threadId || String(activeCardIndex)) : '__home__'}
-            activeChatModel={activeView === 'chat' ? activeTaskModel : undefined}
-            activeChatDriver={activeView === 'chat' ? activeTaskDriver : undefined}
-          />
-        </div>
+        {/* Floating Bottom Liquid Glass Input (Home and Chat - Hidden on Web View) */}
+        {cardMode !== 'browser' && (
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-[640px] px-4 z-40 pointer-events-auto">
+            <GlassInput
+              onSubmit={handleSubmitPrompt}
+              onInterrupt={
+                activeView === 'chat' && activeTaskWorking
+                  ? () => spawner.interrupt(activeTask.threadId)
+                  : undefined
+              }
+              onNewChat={() => {
+                setDirection(-1);
+                setActiveView('home');
+              }}
+              isBusy={activeView === 'chat' && activeTaskWorking}
+              attachments={attachments}
+              isLight={isLight}
+              projects={activeView === 'home' ? projects : undefined}
+              activeChatKey={activeView === 'chat' ? (activeTask?.threadId || String(activeCardIndex)) : '__home__'}
+              activeChatModel={activeView === 'chat' ? activeTaskModel : undefined}
+              activeChatDriver={activeView === 'chat' ? activeTaskDriver : undefined}
+            />
+          </div>
+        )}
       </div>
+
+      {/* Web Bookmark Modal */}
+      {isBookmarkModalOpen && (
+        <BookmarkModal
+          key={editingBookmark?.id || 'new-bookmark'}
+          isOpen={isBookmarkModalOpen}
+          onClose={() => {
+            setIsBookmarkModalOpen(false);
+            setEditingBookmark(null);
+          }}
+          onSave={handleSaveBookmark}
+          onDelete={editingBookmark?.id ? handleDeleteBookmark : undefined}
+          initialData={editingBookmark || undefined}
+          currentProjectName={activeProjectName}
+          availableProjects={projects.projects.map((p) => p.name).filter(Boolean)}
+          isEditing={Boolean(editingBookmark?.id)}
+        />
+      )}
 
       {/* Settings Modal (Direct Full Center Modal) */}
       {isSettingsOpen && (

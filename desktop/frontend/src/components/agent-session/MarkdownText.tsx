@@ -66,6 +66,54 @@ const PreBlock: React.FC<{ children?: React.ReactNode }> = ({ children }) => {
   );
 };
 
+const MarkdownImage: React.FC<{ src?: string; alt?: string }> = ({ src, alt }) => {
+  const [failed, setFailed] = useState(false);
+
+  if (!src) return null;
+
+  const isLocalFile = src.startsWith('file:///') || /^[a-zA-Z]:[\\/]/.test(src);
+  const fileName = src.split(/[/\\]/).pop() || alt || 'image';
+
+  if (failed) {
+    return (
+      <div className="my-2.5 inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.04] border border-white/10 text-xs text-neutral-300">
+        <MaterialIcon name="image" className="text-base text-white/50" />
+        <span className="truncate max-w-[280px]" title={src}>{fileName}</span>
+        {isLocalFile && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              void BrowserOpenURL(src);
+            }}
+            className="ml-1 text-[11px] font-medium text-sky-400 hover:text-sky-300 underline cursor-pointer"
+          >
+            Open
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="my-2.5 relative inline-block group/img">
+      <img
+        src={src}
+        alt={alt || 'Image'}
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="rounded-xl max-h-[460px] max-w-full object-contain border border-white/10 bg-black/25 shadow-md cursor-pointer hover:opacity-95 transition-opacity"
+        onClick={() => {
+          if (isLocalFile) {
+            void BrowserOpenURL(src);
+          }
+        }}
+      />
+    </div>
+  );
+};
+
 const COMPONENTS: Components = {
   p: ({ children }) => <p className="my-1.5 leading-[1.65] opacity-90">{children}</p>,
 
@@ -80,13 +128,15 @@ const COMPONENTS: Components = {
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (href && /^(https?:|mailto:)/i.test(href)) void BrowserOpenURL(href);
+        if (href && /^(https?:|mailto:|file:)/i.test(href)) void BrowserOpenURL(href);
       }}
       className="text-sky-400 hover:text-sky-300 underline underline-offset-2 decoration-current/25"
     >
       {children}
     </a>
   ),
+
+  img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
 
   ul: ({ children }) => <ul className="my-2 pl-4 list-disc marker:text-current/35 space-y-1">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 pl-4 list-decimal marker:text-current/35 space-y-1">{children}</ol>,

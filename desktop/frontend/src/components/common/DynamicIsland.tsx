@@ -31,6 +31,7 @@ export interface DynamicIslandProps {
   activeTaskProjectName?: string;
   activeTaskBranch?: string;
   viewMode?: 'deck' | 'grid' | 'orchestrator';
+  cardMode?: string;
   usageReport?: session.UsageReport | null;
   usageError?: string | null;
   activeTasks?: Array<{
@@ -461,6 +462,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   activeTaskProjectName,
   activeTaskBranch,
   viewMode = 'deck',
+  cardMode,
   usageReport,
   activeTasks = [],
   notification,
@@ -491,6 +493,13 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const islandRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [contentHeight, setContentHeight] = useState(0);
+  const [windowWidth, setWindowWidth] = useState<number>(typeof window !== 'undefined' ? window.innerWidth : 1200);
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     if (openProjectsTrigger && openProjectsTrigger > 0) {
@@ -802,8 +811,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   };
 
   const isListMode = mode === 'project-chats' || mode === 'claude-chats' || mode === 'projects';
+  const isBrowserMode = cardMode === 'browser' && mode === 'idle';
   const targetWidth =
-    mode === 'project-chats' || mode === 'claude-chats'
+    isBrowserMode
+      ? Math.min(740, Math.max(480, windowWidth - 220))
+      : mode === 'project-chats' || mode === 'claude-chats'
       ? 380
       : mode === 'projects'
       ? 350
@@ -812,8 +824,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       : notification
       ? 320
       : 196;
-  const targetHeight = isListMode ? Math.max(contentHeight, 60) : mode === 'usage' ? 180 : 34;
-  const targetRadius = mode === 'idle' ? 17 : 24;
+  const targetHeight = isListMode ? Math.max(contentHeight, 60) : mode === 'usage' ? 180 : 36;
+  const targetRadius = isBrowserMode ? 18 : mode === 'idle' ? 17 : 24;
   const viewMotion = {
     initial: { opacity: 0, y: -6 },
     animate: { opacity: 1, y: 0 },
@@ -922,7 +934,24 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           </motion.div>
         )}
 
-        {mode === 'idle' && !notification && (
+        {mode === 'idle' && !notification && isBrowserMode && (
+          <motion.div
+            key="browser-slot-container"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="flex items-center w-full h-full px-2"
+          >
+            <div
+              id="dynamic-island-browser-slot"
+              className="w-full h-full flex items-center min-w-0"
+              style={{ ['--wails-draggable' as string]: 'no-drag' }}
+            />
+          </motion.div>
+        )}
+
+        {mode === 'idle' && !notification && !isBrowserMode && (
           <motion.div
             key="compact"
             initial={{ opacity: 0 }}

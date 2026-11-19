@@ -61,6 +61,7 @@ type Envelope struct {
 	ModelUsage map[string]ModelUsage `json:"modelUsage,omitempty"`
 
 	RateLimitInfo *RateLimitInfo  `json:"rate_limit_info,omitempty"`
+	QuotaLimits   *RateLimitInfo  `json:"quotaLimits,omitempty"`
 	RequestID     string          `json:"request_id,omitempty"`
 	Request       *ControlPayload `json:"request,omitempty"`
 }

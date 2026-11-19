@@ -12,6 +12,7 @@ import { TodoTool } from './TodoTool';
 import { PlanTool } from './PlanTool';
 import { QuestionTool } from './QuestionTool';
 import { ApprovalCard } from './ApprovalCard';
+import { McpAppCard } from './McpAppCard';
 import { MarkdownText } from './MarkdownText';
 import { SubagentFeedRow } from './WorkspacePanel';
 import { NoticeDivider } from './NoticeDivider';
@@ -23,7 +24,7 @@ import { buildFeedSegments, FeedSegment } from './feedTurns';
 import { ChangesCard, WorkedFor, WorkingHeader } from './TurnParts';
 import { PlainSegment, ROW_DOT_Y, TEXT_DOT_Y, TimelineAnimateContext, TimelineNode, TimelineSegment } from './Timeline';
 
-const CARD_TYPES = new Set<AgentStreamBlock['type']>(['text', 'tool_question', 'approval_request', 'tool_plan', 'tool_todo']);
+const CARD_TYPES = new Set<AgentStreamBlock['type']>(['text', 'tool_question', 'approval_request', 'tool_plan', 'tool_todo', 'mcp_app']);
 
 const isTimelineSegment = (segment: FeedSegment) =>
   segment.kind === 'run' ||
@@ -209,7 +210,14 @@ const FeedBlock = React.memo(function FeedBlock({
       );
 
     case 'tool_group':
-      return <ToolGroup title={block.title} summary={block.summary} items={block.items} />;
+      return (
+        <ToolGroup
+          title={block.title}
+          summary={block.summary}
+          items={block.items}
+          driver={block.driver || defaultDriver}
+        />
+      );
 
     case 'tool_bash':
       return (
@@ -329,6 +337,17 @@ const FeedBlock = React.memo(function FeedBlock({
           driver={defaultDriver}
           modelId={defaultModel}
           onOpen={(agentId) => handlers.current.onOpenSubagent?.(agentId)}
+        />
+      );
+
+    case 'mcp_app':
+      return (
+        <McpAppCard
+          resourceUri={block.resourceUri}
+          htmlContent={block.htmlContent}
+          toolName={block.toolName}
+          rawOutput={block.rawOutput}
+          driver={block.driver || defaultDriver}
         />
       );
 

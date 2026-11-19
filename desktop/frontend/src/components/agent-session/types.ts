@@ -56,6 +56,7 @@ export interface ThinkingBlockData {
   durationSeconds?: number;
   itemId?: string;
   turnId?: string;
+  driver?: string;
 }
 
 export interface ToolGroupBlockData {
@@ -66,6 +67,7 @@ export interface ToolGroupBlockData {
   items: ToolGroupItem[];
   /** Tool call ids folded into this group, so results can find their row. */
   memberIds?: string[];
+  driver?: string;
 }
 
 export interface BashToolBlockData {
@@ -76,6 +78,7 @@ export interface BashToolBlockData {
   summary?: string;
   status?: 'running' | 'completed' | 'error';
   exitCode?: number;
+  driver?: string;
 }
 
 export interface SearchToolBlockData {
@@ -85,6 +88,7 @@ export interface SearchToolBlockData {
   query?: string;
   summary?: string;
   isSearching?: boolean;
+  driver?: string;
 }
 
 export interface EditToolBlockData {
@@ -97,6 +101,7 @@ export interface EditToolBlockData {
   status?: 'running' | 'completed' | 'error';
   /** Tool name (Edit, Write, MultiEdit…), shown as the card's verb. */
   toolName?: string;
+  driver?: string;
 }
 
 export interface TodoToolBlockData {
@@ -182,6 +187,18 @@ export interface SubagentBlockData {
   previousToolIds?: string[];
 }
 
+export interface McpAppBlockData {
+  type: 'mcp_app';
+  id: string;
+  toolId?: string;
+  toolName: string;
+  resourceUri?: string;
+  htmlContent?: string;
+  rawOutput?: string;
+  status?: 'running' | 'completed' | 'error';
+  driver?: string;
+}
+
 export type AgentStreamBlock =  | UserMessageBlock
   | NoticeBlock
   | AssistantTextBlock
@@ -194,5 +211,6 @@ export type AgentStreamBlock =  | UserMessageBlock
   | PlanToolBlockData
   | QuestionToolBlockData
   | ApprovalBlockData
-  | SubagentBlockData;
+  | SubagentBlockData
+  | McpAppBlockData;
 

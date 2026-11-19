@@ -10,6 +10,7 @@ import { TodoTool } from './TodoTool';
 import { PlanTool } from './PlanTool';
 import { QuestionTool } from './QuestionTool';
 import { ApprovalCard } from './ApprovalCard';
+import { McpAppCard } from './McpAppCard';
 import { MarkdownText } from './MarkdownText';
 import { NoticeDivider } from './NoticeDivider';
 import { OrbitLoader } from './OrbitLoader';
@@ -107,7 +108,12 @@ export const AntigravitySessionFeed: React.FC<AntigravitySessionFeedProps> = ({
         currentTurn.notices.push(block);
       } else if (block.type === 'text') {
         currentTurn.textBlocks.push(block);
-      } else if (block.type === 'tool_plan' || block.type === 'tool_question' || block.type === 'approval_request') {
+      } else if (
+        block.type === 'tool_plan' ||
+        block.type === 'tool_question' ||
+        block.type === 'approval_request' ||
+        block.type === 'mcp_app'
+      ) {
         currentTurn.interactiveBlocks.push(block);
       } else {
         // tool_group, tool_bash, tool_search, tool_edit, tool_todo, thinking
@@ -156,6 +162,7 @@ export const AntigravitySessionFeed: React.FC<AntigravitySessionFeedProps> = ({
             summary={block.summary}
             items={block.items}
             defaultExpanded={defaultExpanded}
+            driver="antigravity"
           />
         );
       case 'tool_bash':
@@ -261,88 +268,117 @@ export const AntigravitySessionFeed: React.FC<AntigravitySessionFeedProps> = ({
               </div>
             )}
 
-            {/* Interactive Tool Blocks (Plan approvals, questions) */}
-            {turn.interactiveBlocks.map((block) => {
-              if (block.type === 'tool_plan') {
-                return (
-                  <PlanTool
-                    key={block.id}
-                    planFile={block.planFile}
-                    title={block.title}
-                    summary={block.summary}
-                    approved={block.approved}
-                    blockId={block.id}
-                    onApproveBlock={onApprovePlan}
-                  />
-                );
-              }
-              if (block.type === 'tool_question') {
-                return (
-                  <QuestionTool
-                    key={block.id}
-                    questionNumber={block.questionNumber}
-                    totalQuestions={block.totalQuestions}
-                    question={block.question}
-                    options={block.options}
-                    items={block.items}
-                    answered={block.answered}
-                    selectedAnswer={block.selectedAnswer}
-                    blockId={block.id}
-                    onAnswerBlock={async (blockId, answers) => {
-                      if (onAnswerQuestion) {
-                        onAnswerQuestion(blockId, answers);
-                      } else if (threadId) {
-                        // Extract requestID: strip the 'question-' prefix to get
-                        // the raw ID (e.g. 'ask_question:3' or a UUID)
-                        const qId = blockId.replace(/^question-/, '');
-                        try {
-                          await RespondToQuestion(threadId, qId, answers);
-                        } catch (err) {
-                          console.error('Failed to respond to question:', err);
-                        }
-                      }
-                    }}
-                    onSkipBlock={async (blockId) => {
-                      if (onSkipQuestion) {
-                        onSkipQuestion(blockId);
-                      } else if (threadId) {
-                        const qId = blockId.replace(/^question-/, '');
-                        try {
-                          await RespondToQuestion(threadId, qId, []);
-                        } catch (err) {
-                          console.error('Failed to skip question:', err);
-                        }
-                      }
-                    }}
-                  />
-                );
-              }
-              if (block.type === 'approval_request') {
-                return (
-                  <ApprovalCard
-                    key={block.id}
-                    requestID={block.requestID}
-                    title={block.title}
-                    detail={block.detail}
-                    options={block.options}
-                    status={block.status}
-                    decision={block.decision}
-                    onRespond={async (decision) => {
-                      if (onRespondApproval) {
-                        onRespondApproval(block.requestID, decision);
-                      } else if (threadId) {
-                        try {
-                          await RespondToApproval(threadId, block.requestID, decision);
-                        } catch (err) {
-                          console.error('Failed to respond to approval:', err);
-                        }
-                      }
-                    }}
-                  />
-                );
-              }
-              return null;
-            })}
+            {/* Interactive Tool Blocks (Plan approvals, questions, MCP Apps) */}
+            {(() => {
+              // Deduplicate Falacy MCP App blocks within the same turn: keep the most specific (/card/) or the latest
+              const falacyBlocks = turn.interactiveBlocks.filter(
+                (b) => b.type === 'mcp_app' && (b.resourceUri?.includes('falacy') || b.toolName?.includes('falacy'))
+              );
+              const bestFalacyBlock =
+                falacyBlocks.find((b) => (b as any).resourceUri?.includes('/card/')) ||
+                falacyBlocks[falacyBlocks.length - 1];
+
+              return turn.interactiveBlocks
+                .filter((block) => {
+                  if (block.type === 'mcp_app' && (block.resourceUri?.includes('falacy') || block.toolName?.includes('falacy'))) {
+                    return block === bestFalacyBlock;
+                  }
+                  return true;
+                })
+                .map((block) => {
+                  if (block.type === 'mcp_app') {
+                    return (
+                      <McpAppCard
+                        key={block.id}
+                        resourceUri={block.resourceUri}
+                        htmlContent={block.htmlContent}
+                        toolName={block.toolName}
+                        rawOutput={block.rawOutput}
+                        driver="antigravity"
+                      />
+                    );
+                  }
+                  if (block.type === 'tool_plan') {
+                    return (
+                      <PlanTool
+                        key={block.id}
+                        planFile={block.planFile}
+                        title={block.title}
+                        summary={block.summary}
+                        approved={block.approved}
+                        blockId={block.id}
+                        onApproveBlock={onApprovePlan}
+                      />
+                    );
+                  }
+                  if (block.type === 'tool_question') {
+                    return (
+                      <QuestionTool
+                        key={block.id}
+                        questionNumber={block.questionNumber}
+                        totalQuestions={block.totalQuestions}
+                        question={block.question}
+                        options={block.options}
+                        items={block.items}
+                        answered={block.answered}
+                        selectedAnswer={block.selectedAnswer}
+                        blockId={block.id}
+                        onAnswerBlock={async (blockId, answers) => {
+                          if (onAnswerQuestion) {
+                            onAnswerQuestion(blockId, answers);
+                          } else if (threadId) {
+                            // Extract requestID: strip the 'question-' prefix to get
+                            // the raw ID (e.g. 'ask_question:3' or a UUID)
+                            const qId = blockId.replace(/^question-/, '');
+                            try {
+                              await RespondToQuestion(threadId, qId, answers);
+                            } catch (err) {
+                              console.error('Failed to respond to question:', err);
+                            }
+                          }
+                        }}
+                        onSkipBlock={async (blockId) => {
+                          if (onSkipQuestion) {
+                            onSkipQuestion(blockId);
+                          } else if (threadId) {
+                            const qId = blockId.replace(/^question-/, '');
+                            try {
+                              await RespondToQuestion(threadId, qId, []);
+                            } catch (err) {
+                              console.error('Failed to skip question:', err);
+                            }
+                          }
+                        }}
+                      />
+                    );
+                  }
+                  if (block.type === 'approval_request') {
+                    return (
+                      <ApprovalCard
+                        key={block.id}
+                        requestID={block.requestID}
+                        title={block.title}
+                        detail={block.detail}
+                        options={block.options}
+                        status={block.status}
+                        decision={block.decision}
+                        onRespond={async (decision) => {
+                          if (onRespondApproval) {
+                            onRespondApproval(block.requestID, decision);
+                          } else if (threadId) {
+                            try {
+                              await RespondToApproval(threadId, block.requestID, decision);
+                            } catch (err) {
+                              console.error('Failed to respond to approval:', err);
+                            }
+                          }
+                        }}
+                      />
+                    );
+                  }
+                  return null;
+                });
+            })()}
 
             {/* Clean Final Text Response */}
             {turn.textBlocks.map((block) => (

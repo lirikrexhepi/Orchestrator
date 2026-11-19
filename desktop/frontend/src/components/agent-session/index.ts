@@ -20,4 +20,5 @@ export * from './AgentGitView';
 export * from './AgentTasklistView';
 export * from './AgentWindow';
 export * from './MessageTimestamp';
+export * from './McpAppCard';
 

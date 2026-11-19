@@ -10,6 +10,7 @@ import { TodoTool } from './TodoTool';
 import { PlanTool } from './PlanTool';
 import { QuestionTool } from './QuestionTool';
 import { ApprovalCard } from './ApprovalCard';
+import { McpAppCard } from './McpAppCard';
 import { MarkdownText } from './MarkdownText';
 import { NoticeDivider } from './NoticeDivider';
 import { MessageTimestamp } from './MessageTimestamp';
@@ -213,6 +214,18 @@ export const ClaudeSessionFeed: React.FC<ClaudeSessionFeedProps> = ({
                     }
                   }
                 }}
+              />
+            );
+
+          case 'mcp_app':
+            return (
+              <McpAppCard
+                key={block.id}
+                resourceUri={block.resourceUri}
+                htmlContent={block.htmlContent}
+                toolName={block.toolName}
+                rawOutput={block.rawOutput}
+                driver="claude"
               />
             );
 

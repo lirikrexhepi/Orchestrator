@@ -40,6 +40,7 @@ function isPinned(block: AgentStreamBlock, hasPlan: (content: string) => boolean
     case 'tool_todo':
     case 'tool_plan':
     case 'notice':
+    case 'mcp_app':
       return true;
     case 'text':
       return Boolean(block.variant) || hasPlan(block.content);

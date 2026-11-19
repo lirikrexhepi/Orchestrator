@@ -67,7 +67,7 @@ function findLastIndex<T>(items: readonly T[], predicate: (item: T) => boolean |
   return -1;
 }
 
-function extractTarget(name: string, input: Record<string, unknown>): string {
+function extractTarget(name: string, input: Record<string, unknown>, driver?: string): string {
   const filePath = field(input, PATH_KEYS);
   if (filePath) {
     const start = input.StartLine ?? input.start_line ?? input.startLine ?? input.line;
@@ -81,6 +81,20 @@ function extractTarget(name: string, input: Record<string, unknown>): string {
       return `${filePath}:${s}`;
     }
     return filePath;
+  }
+
+  // Antigravity-specific semantic distillation (only for driver === 'antigravity')
+  if (driver === 'antigravity') {
+    const summary = typeof input.toolSummary === 'string' ? input.toolSummary.trim() : '';
+    if (summary) return summary;
+
+    const cmd = field(input, COMMAND_KEYS);
+    if (cmd) {
+      const getContentMatch = cmd.match(/(?:Get-Content|cat|type)\s+["']?([^"'\r\n|]+?)["']?(?:\s*\||$)/i);
+      if (getContentMatch && getContentMatch[1]) {
+        return getContentMatch[1].trim();
+      }
+    }
   }
 
   const direct =
@@ -107,10 +121,13 @@ function extractTarget(name: string, input: Record<string, unknown>): string {
   return '';
 }
 
-function determineAction(name: string, cmd?: string): { type: ToolGroupItem['type']; action: string } {
+function determineAction(name: string, cmd?: string, driver?: string): { type: ToolGroupItem['type']; action: string } {
   const lower = name.toLowerCase();
   if (isGitCommand(name, cmd)) {
     return { type: 'git', action: 'Git' };
+  }
+  if (driver === 'antigravity' && cmd && /^\s*(?:Get-Content|cat|type)\s+/i.test(cmd)) {
+    return { type: 'read', action: 'Read' };
   }
   if (lower === 'read' || lower === 'view_file' || lower === 'read_file' || lower === 'readfile' || lower === 'cat') {
     return { type: 'read', action: 'Read' };
@@ -525,6 +542,114 @@ function closeThinking(blocks: AgentStreamBlock[]): AgentStreamBlock[] {
   return next ?? blocks;
 }
 
+export function extractMcpAppInfo(tool: domain.ToolCall): { resourceUri?: string; htmlContent?: string } | null {
+  if (!tool) return null;
+
+  const rawInput = (tool.input && typeof tool.input === 'object' ? tool.input : {}) as Record<string, any>;
+  const rawName = String(tool.name || tool.kind || '').trim().toLowerCase();
+
+  // 1. Direct input resourceUri (standard MCP Apps spec or host-injected)
+  const directInputUri = rawInput.resourceUri || rawInput._meta?.ui?.resourceUri || rawInput.ui?.resourceUri;
+  if (typeof directInputUri === 'string' && (directInputUri.startsWith('ui://') || directInputUri.startsWith('http://') || directInputUri.startsWith('https://'))) {
+    return { resourceUri: directInputUri };
+  }
+
+  // 2. Direct input HTML content (if provided directly)
+  if (typeof rawInput.html === 'string' && rawInput.html.trim().length > 0) {
+    return { htmlContent: rawInput.html.trim() };
+  }
+
+  // 3. Inspect output
+  const output = (typeof tool.output === 'string' ? tool.output : '').trim();
+
+  // 3a. Raw HTML detection (like T3Code visual renders)
+  if (output.startsWith('<!DOCTYPE html') || output.startsWith('<html') || (output.includes('<head') && output.includes('<body'))) {
+    return { htmlContent: output };
+  }
+
+  // 3b. JSON payload parsing
+  let parsedOutput: any = null;
+  if ((output.startsWith('{') && output.endsWith('}')) || (output.startsWith('[') && output.endsWith(']'))) {
+    try {
+      parsedOutput = JSON.parse(output);
+      const uri =
+        parsedOutput?._meta?.ui?.resourceUri ||
+        parsedOutput?.result?._meta?.ui?.resourceUri ||
+        parsedOutput?.ui?.resourceUri ||
+        parsedOutput?.resourceUri;
+      if (typeof uri === 'string' && (uri.startsWith('ui://') || uri.startsWith('http://') || uri.startsWith('https://'))) {
+        return { resourceUri: uri };
+      }
+      const contents = parsedOutput?.contents || parsedOutput?.result?.contents;
+      if (Array.isArray(contents) && contents.length > 0) {
+        const first = contents[0];
+        if (typeof first?.mimeType === 'string' && first.mimeType.includes('html') && typeof first?.text === 'string') {
+          return { resourceUri: first.uri, htmlContent: first.text };
+        }
+      }
+    } catch {
+      parsedOutput = null;
+    }
+  }
+
+  // 3c. Direct regex search for ui:// in output
+  const uiMatch = output.match(/(ui:\/\/[^\s"'`<>]+)/i);
+  if (uiMatch && uiMatch[1]) {
+    return { resourceUri: uiMatch[1] };
+  }
+
+  // 4. MCP Tools dispatch (e.g. Antigravity lazy call_mcp_tool or eager mcp_server_tool)
+  const serverName = String(rawInput.ServerName || rawInput.server_name || rawInput.server || '').trim().toLowerCase();
+  const subTool = String(rawInput.ToolName || rawInput.tool_name || rawInput.tool || '').trim().toLowerCase();
+
+  let toolArgs: Record<string, any> = {};
+  const rawArgs = rawInput.Arguments ?? rawInput.arguments ?? rawInput.args;
+  if (typeof rawArgs === 'string') {
+    try {
+      toolArgs = JSON.parse(rawArgs);
+    } catch {
+      toolArgs = {};
+    }
+  } else if (rawArgs && typeof rawArgs === 'object') {
+    toolArgs = rawArgs as Record<string, any>;
+  }
+
+  const isFalacy =
+    serverName === 'falacy' ||
+    rawName.includes('falacy') ||
+    subTool.includes('inspiration') ||
+    rawName.includes('inspiration') ||
+    subTool.includes('boards');
+
+  if (isFalacy) {
+    const effectiveTool = subTool || rawName;
+    const wantsUi = Boolean(toolArgs.render_ui || toolArgs.show_ui || toolArgs.ui);
+    const isExplicitShow =
+      effectiveTool.startsWith('show_') ||
+      effectiveTool.startsWith('view_') ||
+      effectiveTool.startsWith('render_');
+
+    // Only promote to visual MCP App block if explicitly requested or via dedicated show tools
+    if (wantsUi || isExplicitShow) {
+      if (effectiveTool.includes('inspiration') && !effectiveTool.includes('board')) {
+        const itemId = toolArgs.item_id || toolArgs.id || parsedOutput?.id || parsedOutput?.item?.id;
+        if (itemId) {
+          return { resourceUri: `ui://falacy/card/${itemId}` };
+        }
+      }
+
+      if (effectiveTool.includes('board') || effectiveTool.includes('search') || effectiveTool.includes('find')) {
+        const boardId = toolArgs.board_id || toolArgs.target_board_id || toolArgs.categoryId || 'all';
+        const q = toolArgs.query || toolArgs.q || '';
+        const queryParam = q ? `?q=${encodeURIComponent(q)}` : '';
+        return { resourceUri: `ui://falacy/board/${boardId}${queryParam}` };
+      }
+    }
+  }
+
+  return null;
+}
+
 /** Tools that always render as their own card, never folded into a group. */
 function isStandaloneTool(name: string, tool: domain.ToolCall): boolean {
   return (
@@ -532,7 +657,8 @@ function isStandaloneTool(name: string, tool: domain.ToolCall): boolean {
     tool.kind === 'fileChange' ||
     TODO_TOOLS.has(name) ||
     isQuestionTool(name) ||
-    Boolean(tool.diffs?.length)
+    Boolean(tool.diffs?.length) ||
+    Boolean(extractMcpAppInfo(tool))
   );
 }
 
@@ -545,6 +671,7 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
   const index = findLastIndex(blocks,
     (candidate) =>
       candidate.id === id ||
+      candidate.id === `mcp-${tool.id}` ||
       (candidate.type === 'tool_group' && candidate.memberIds?.includes(tool.id)),
   );
 
@@ -552,6 +679,61 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
   // arrived with the earlier call — so it is merged into the existing block
   // rather than rebuilt, which would drop the command being displayed.
   if (index >= 0) {
+    const existing = blocks[index];
+    const mcpInfo = extractMcpAppInfo(tool);
+
+    // If an item yielded an MCP App UI, merge tool status AND ensure visual card is promoted
+    if (mcpInfo && existing.type !== 'mcp_app') {
+      const merged = [...blocks];
+      merged[index] = mergeToolBlock(existing, tool, Boolean(event.delta));
+      const appBlock: AgentStreamBlock = {
+        type: 'mcp_app',
+        id: `mcp-${tool.id}`,
+        toolId: tool.id,
+        toolName: tool.name || 'mcp',
+        resourceUri: mcpInfo.resourceUri,
+        htmlContent: mcpInfo.htmlContent,
+        rawOutput: tool.output,
+        status: toStatus(tool.status),
+        driver: (existing as any).driver || event.driver,
+      };
+
+      // If an existing Falacy mcp_app block exists in the stream:
+      // Replace it with the more specific or newer widget (e.g. card replaces board, or search replaces old board)
+      const existingMcpIdx = findLastIndex(merged, (b) => {
+        if (b.type !== 'mcp_app') return false;
+        const bUri = (b as any).resourceUri || '';
+        const aUri = appBlock.resourceUri || '';
+        const isFalacyB = bUri.includes('falacy') || (b as any).toolName?.includes('falacy');
+        const isFalacyA = aUri.includes('falacy') || appBlock.toolName?.includes('falacy');
+        return isFalacyB && isFalacyA;
+      });
+
+      if (existingMcpIdx >= 0) {
+        const prevMcp = merged[existingMcpIdx] as any;
+        const prevUri = prevMcp.resourceUri || '';
+        const currUri = appBlock.resourceUri || '';
+
+        // If current is /card/ and previous is /board/, definitely upgrade to the card
+        // If both are /card/ or both are /board/, update to latest
+        // If current is /board/ and previous is /card/, keep the specific card
+        if (currUri.includes('/card/') || !prevUri.includes('/card/')) {
+          merged[existingMcpIdx] = {
+            ...prevMcp,
+            ...appBlock,
+            id: prevMcp.id,
+          };
+          return merged;
+        }
+        return merged;
+      }
+
+      if (!merged.some((b) => b.type === 'mcp_app' && (b.id === appBlock.id || b.toolId === tool.id))) {
+        merged.push(appBlock);
+      }
+      return merged;
+    }
+
     const merged = [...blocks];
     merged[index] = mergeToolBlock(blocks[index], tool, Boolean(event.delta));
     return merged;
@@ -591,14 +773,14 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
   }
 
   if (isStandaloneTool(name, tool)) {
-    const block = toToolBlock(tool);
+    const block = toToolBlock(tool, event.driver);
     return block ? [...blocks, block] : blocks;
   }
 
   // Consecutive read/bash/search activity collapses into one group so
   // repetitive commands don't bury the feed. Every member keeps its id so a
   // result that arrives later still finds its row.
-  const newItem = toGroupItem(name || 'tool', tool, input);
+  const newItem = toGroupItem(name || 'tool', tool, input, event.driver);
   const last = blocks[blocks.length - 1];
   if (last?.type === 'tool_group') {
     const items = [...last.items, newItem];
@@ -608,6 +790,7 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
       items,
       summary: groupSummary(items),
       memberIds: [...(last.memberIds ?? []), tool.id],
+      driver: last.driver || event.driver,
     };
     return [...blocks.slice(0, -1), next];
   }
@@ -623,6 +806,7 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
             target: last.command && !/^(bash|powershell|cmd)$/i.test(last.command) ? last.command : '',
             details: last.output,
             status: last.status,
+            driver: last.driver || event.driver,
           }
         : {
             id: prevId,
@@ -631,6 +815,7 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
             target: last.query || (last.files?.length ? `${last.files.length} files` : ''),
             details: last.files?.join('\n'),
             status: last.isSearching ? 'running' : 'completed',
+            driver: last.driver || event.driver,
           };
     const items = [prevItem, newItem];
     const group: AgentStreamBlock = {
@@ -640,11 +825,12 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
       summary: groupSummary(items),
       items,
       memberIds: [prevId, tool.id],
+      driver: event.driver,
     };
     return [...blocks.slice(0, -1), group];
   }
 
-  const block = toToolBlock(tool);
+  const block = toToolBlock(tool, event.driver);
   return block ? [...blocks, block] : blocks;
 }
 
@@ -727,7 +913,7 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
       const items = existing.items.map((item) => {
         if (item.id !== tool.id) return item;
         const nextInput = asRecord(tool.input);
-        const extracted = extractTarget(tool.name || item.action, nextInput);
+        const extracted = extractTarget(tool.name || item.action, nextInput, item.driver || existing.driver);
         const nextTarget =
           extracted ||
           (item.target &&
@@ -750,20 +936,46 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
         summary: items.length > 1 ? summary : (items[0]?.target || summary),
       };
     }
+    case 'mcp_app': {
+      const mcpInfo = extractMcpAppInfo(tool);
+      return {
+        ...existing,
+        resourceUri: mcpInfo?.resourceUri || existing.resourceUri,
+        htmlContent: mcpInfo?.htmlContent || existing.htmlContent,
+        rawOutput: output(existing.rawOutput),
+        status,
+      };
+    }
     default:
       return existing;
   }
 }
 
-function toToolBlock(tool: domain.ToolCall): AgentStreamBlock | null {
+function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock | null {
   const id = `tool-${tool.id}`;
   const name = tool.name || tool.kind || 'tool';
+
+  const mcpInfo = extractMcpAppInfo(tool);
+  if (mcpInfo) {
+    return {
+      type: 'mcp_app',
+      id: `mcp-${tool.id}`,
+      toolId: tool.id,
+      toolName: name,
+      resourceUri: mcpInfo.resourceUri,
+      htmlContent: mcpInfo.htmlContent,
+      rawOutput: tool.output,
+      status: toStatus(tool.status),
+      driver,
+    };
+  }
+
   const input = (tool.input ?? {}) as Record<string, unknown>;
   const cmd = field(input, COMMAND_KEYS);
 
   // Group standalone git commands immediately into a clean Git tool group
   if (isGitCommand(name, cmd)) {
-    const item = toGroupItem(name, tool, input);
+    const item = toGroupItem(name, tool, input, driver);
     return {
       type: 'tool_group',
       id,
@@ -771,16 +983,23 @@ function toToolBlock(tool: domain.ToolCall): AgentStreamBlock | null {
       summary: cmd || 'git',
       items: [item],
       memberIds: [tool.id],
+      driver,
     };
   }
 
   if (BASH_TOOLS.has(name) || tool.kind === 'commandExecution') {
+    const summary =
+      driver === 'antigravity' && typeof input.toolSummary === 'string' && input.toolSummary.trim()
+        ? input.toolSummary.trim()
+        : undefined;
     return {
       type: 'tool_bash',
       id,
       command: cmd || name,
+      summary,
       output: tool.output,
       status: toStatus(tool.status),
+      driver,
     };
   }
 
@@ -789,12 +1008,13 @@ function toToolBlock(tool: domain.ToolCall): AgentStreamBlock | null {
     return {
       type: 'tool_edit',
       id,
-      filePath: computed.filePath || extractTarget(name, input) || name,
+      filePath: computed.filePath || extractTarget(name, input, driver) || name,
       additions: computed.additions,
       deletions: computed.deletions,
       diffLines: computed.diffLines,
       status: toStatus(tool.status),
       toolName: name,
+      driver,
     };
   }
 
@@ -803,8 +1023,9 @@ function toToolBlock(tool: domain.ToolCall): AgentStreamBlock | null {
       type: 'tool_search',
       id,
       files: toFileList(tool.output),
-      query: extractTarget(name, input),
+      query: extractTarget(name, input, driver),
       isSearching: tool.status === 'in_progress' || tool.status === 'pending',
+      driver,
     };
   }
 
@@ -817,7 +1038,7 @@ function toToolBlock(tool: domain.ToolCall): AgentStreamBlock | null {
     return toQuestionBlock(tool);
   }
 
-  const item = toGroupItem(name, tool, input);
+  const item = toGroupItem(name, tool, input, driver);
   return {
     type: 'tool_group',
     id,
@@ -825,6 +1046,7 @@ function toToolBlock(tool: domain.ToolCall): AgentStreamBlock | null {
     summary: item.target || summarize(tool),
     items: [item],
     memberIds: [tool.id],
+    driver,
   };
 }
 
@@ -880,10 +1102,11 @@ function toGroupItem(
   name: string,
   tool: domain.ToolCall,
   input: Record<string, unknown>,
+  driver?: string,
 ): ToolGroupItem {
   const cmd = field(input, COMMAND_KEYS);
-  const target = extractTarget(name, input);
-  const { type, action } = determineAction(name, cmd);
+  const target = extractTarget(name, input, driver);
+  const { type, action } = determineAction(name, cmd, driver);
 
   const cleanTarget =
     target &&
@@ -899,6 +1122,7 @@ function toGroupItem(
     target: cleanTarget,
     status: toStatus(tool.status),
     details: tool.output || undefined,
+    driver,
   };
 }
 

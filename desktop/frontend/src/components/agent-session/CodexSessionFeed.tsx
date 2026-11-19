@@ -9,6 +9,7 @@ import { EditTool } from './EditTool';
 import { TodoTool } from './TodoTool';
 import { PlanTool } from './PlanTool';
 import { QuestionTool } from './QuestionTool';
+import { McpAppCard } from './McpAppCard';
 import { MarkdownText } from './MarkdownText';
 import { NoticeDivider } from './NoticeDivider';
 import { MessageTimestamp } from './MessageTimestamp';
@@ -161,6 +162,18 @@ export const CodexSessionFeed: React.FC<CodexSessionFeedProps> = ({
                 blockId={block.id}
                 onAnswerBlock={onAnswerQuestion}
                 onSkipBlock={onSkipQuestion}
+              />
+            );
+
+          case 'mcp_app':
+            return (
+              <McpAppCard
+                key={block.id}
+                resourceUri={block.resourceUri}
+                htmlContent={block.htmlContent}
+                toolName={block.toolName}
+                rawOutput={block.rawOutput}
+                driver="codex"
               />
             );
 

@@ -17,3 +17,20 @@ func TestPullRequestURL(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRemote(t *testing.T) {
+	cases := []struct {
+		remote, wantHost, wantRepo string
+	}{
+		{"git@gitlab.project-home.ai:project-home.ai/components/compontent-editor-3d.git", "gitlab.project-home.ai", "project-home.ai/components/compontent-editor-3d"},
+		{"https://gitlab.project-home.ai/project-home.ai/components/compontent-editor-3d.git", "gitlab.project-home.ai", "project-home.ai/components/compontent-editor-3d"},
+		{"git@github.com:lirikrexhepi/Catalyst.git", "github.com", "lirikrexhepi/Catalyst"},
+		{"https://github.com/lirikrexhepi/Catalyst.git", "github.com", "lirikrexhepi/Catalyst"},
+	}
+	for _, c := range cases {
+		host, repo, ok := parseRemote(c.remote)
+		if !ok || host != c.wantHost || repo != c.wantRepo {
+			t.Errorf("%s: got host=%q repo=%q ok=%v, want %q / %q", c.remote, host, repo, ok, c.wantHost, c.wantRepo)
+		}
+	}
+}

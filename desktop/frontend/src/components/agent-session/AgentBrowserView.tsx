@@ -2,8 +2,11 @@ import { MaterialIcon } from '../common/icons';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { BrowserOpenURL } from '../../../wailsjs/runtime/runtime';
+import { ListProjects } from '../../../wailsjs/go/main/App';
 import { servers } from '../../../wailsjs/go/models';
 import { Maximize } from '../common/icons';
+import { useWebBookmarks, getDomain, getFaviconUrl, type WebBookmark } from './useWebBookmarks';
+import { BookmarkModal } from './BookmarkModal';
 
 export interface AgentBrowserViewProps {
   threadId?: string;
@@ -15,13 +18,16 @@ export interface AgentBrowserViewProps {
   immersive?: boolean;
   onEnterImmersive?: () => void;
   className?: string;
+  targetUrl?: string;
+  targetUrlNonce?: number;
+  projectName?: string;
+  projectPath?: string;
 }
 
 export function smartNormalizeUrl(input: string, fallbackPort?: number): string {
   const trimmed = input.trim();
   if (!trimmed) {
-    if (fallbackPort) return `http://localhost:${fallbackPort}`;
-    return 'about:blank';
+    return 'https://www.google.com';
   }
 
   // Bare port like 5173 or :5173
@@ -64,19 +70,68 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
   immersive = false,
   onEnterImmersive,
   className = '',
+  targetUrl,
+  targetUrlNonce,
+  projectName,
+  projectPath,
 }) => {
-  // Find primary web dev server port
+  const {
+    bookmarks,
+    visibleBookmarks,
+    addBookmark,
+    updateBookmark,
+    deleteBookmark,
+    isBookmarked,
+    getBookmarkByUrl,
+  } = useWebBookmarks(projectName);
+
+  const [availableProjects, setAvailableProjects] = useState<string[]>([]);
+  useEffect(() => {
+    ListProjects()
+      .then((list) => {
+        if (list) {
+          setAvailableProjects(list.map((p) => p.name).filter(Boolean));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const [isBookmarkModalOpen, setIsBookmarkModalOpen] = useState(false);
+  const [editingBookmark, setEditingBookmark] = useState<WebBookmark | null>(null);
+
+  // Find web dev servers
   const webServers = detectedServers.filter((s) => !s.agent && s.port > 0);
   const primaryServer = webServers[0];
-  const defaultUrl = primaryServer ? `http://localhost:${primaryServer.port}` : 'about:blank';
+  const defaultUrl = targetUrl || 'https://www.google.com';
 
   const [currentUrl, setCurrentUrl] = useState<string>(defaultUrl);
-  const [inputUrl, setInputUrl] = useState<string>(defaultUrl === 'about:blank' ? '' : defaultUrl);
+  const [inputUrl, setInputUrl] = useState<string>(defaultUrl);
   const [reloadNonce, setReloadNonce] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isBlocked, setIsBlocked] = useState<boolean>(false);
   const [historyStack, setHistoryStack] = useState<string[]>([defaultUrl]);
   const [historyIndex, setHistoryIndex] = useState<number>(0);
+
+  const [islandSlot, setIslandSlot] = useState<HTMLElement | null>(() =>
+    typeof document !== 'undefined' ? document.getElementById('dynamic-island-browser-slot') : null,
+  );
+
+  useEffect(() => {
+    if (islandSlot) return;
+    const el = document.getElementById('dynamic-island-browser-slot');
+    if (el) {
+      setIslandSlot(el);
+      return;
+    }
+    const timer = setInterval(() => {
+      const found = document.getElementById('dynamic-island-browser-slot');
+      if (found) {
+        setIslandSlot(found);
+        clearInterval(timer);
+      }
+    }, 60);
+    return () => clearInterval(timer);
+  }, [islandSlot]);
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const blockTimerRef = useRef<number | null>(null);
@@ -94,17 +149,6 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
       return () => clearTimeout(timer);
     }
   }, [isFocused]);
-
-  // If a dev server was newly detected and we were on about:blank, auto-navigate to it
-  useEffect(() => {
-    if (primaryServer && (currentUrl === 'about:blank' || !currentUrl)) {
-      const url = `http://localhost:${primaryServer.port}`;
-      setCurrentUrl(url);
-      setInputUrl(url);
-      setHistoryStack([url]);
-      setHistoryIndex(0);
-    }
-  }, [primaryServer, currentUrl]);
 
   // Keep inputUrl in sync when currentUrl changes
   useEffect(() => {
@@ -159,6 +203,15 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
     [primaryServer, historyIndex],
   );
 
+  // Navigate when external targetUrl / targetUrlNonce changes (e.g. clicking Git in rail)
+  const lastTargetNonce = useRef<number | undefined>(targetUrlNonce);
+  useEffect(() => {
+    if (targetUrl && targetUrlNonce !== lastTargetNonce.current) {
+      lastTargetNonce.current = targetUrlNonce;
+      navigateTo(targetUrl);
+    }
+  }, [targetUrl, targetUrlNonce, navigateTo]);
+
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -201,100 +254,143 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
   const isLocalhost = currentUrl.includes('localhost') || currentUrl.includes('127.0.0.1');
   const shouldPause = !isFocused;
 
+  const handleStarClick = () => {
+    const existing = getBookmarkByUrl(currentUrl);
+    if (existing) {
+      setEditingBookmark(existing);
+    } else {
+      setEditingBookmark({
+        id: '',
+        title: inputUrl ? getDomain(inputUrl) : '',
+        url: currentUrl && currentUrl !== 'about:blank' ? currentUrl : 'https://',
+        project: projectName || null,
+        createdAt: 0,
+      });
+    }
+    setIsBookmarkModalOpen(true);
+  };
+
+  const handleAddBookmarkClick = () => {
+    setEditingBookmark({
+      id: '',
+      title: '',
+      url: currentUrl && currentUrl !== 'about:blank' ? currentUrl : 'https://',
+      project: projectName || null,
+      createdAt: 0,
+    });
+    setIsBookmarkModalOpen(true);
+  };
+
+  const handleEditBookmark = (bm: WebBookmark) => {
+    setEditingBookmark(bm);
+    setIsBookmarkModalOpen(true);
+  };
+
+  const handleSaveBookmark = (data: { title: string; url: string; project?: string | null }) => {
+    if (editingBookmark?.id) {
+      updateBookmark(editingBookmark.id, data);
+    } else {
+      addBookmark(data);
+    }
+  };
+
+  const handleDeleteBookmark = () => {
+    if (editingBookmark?.id) {
+      deleteBookmark(editingBookmark.id);
+    }
+  };
+
+  const isCurrentBookmarked = isBookmarked(currentUrl);
+
+  const effectiveHost = islandSlot || toolbarHost;
+
   const toolbar = (
-      <div className="flex items-center gap-2 flex-1 min-w-0">
-        <div className="flex items-center gap-0.5 shrink-0">
-          {[
-            { title: 'Back', icon: 'arrow_back', enabled: historyIndex > 0, run: handleBack, spin: false },
-            { title: 'Forward', icon: 'arrow_forward', enabled: historyIndex < historyStack.length - 1, run: handleForward, spin: false },
-            { title: 'Reload', icon: 'refresh', enabled: true, run: handleReload, spin: isLoading },
-          ].map((action) => (
+    <div className="flex items-center gap-1.5 w-full h-full min-w-0 select-none">
+      <div className="flex items-center gap-0.5 shrink-0">
+        {[
+          { title: 'Back', icon: 'arrow_back', enabled: historyIndex > 0, run: handleBack, spin: false },
+          { title: 'Forward', icon: 'arrow_forward', enabled: historyIndex < historyStack.length - 1, run: handleForward, spin: false },
+          { title: 'Reload', icon: 'refresh', enabled: true, run: handleReload, spin: isLoading },
+        ].map((action) => (
+          <button
+            key={action.title}
+            type="button"
+            title={action.title}
+            aria-label={action.title}
+            disabled={!action.enabled}
+            onClick={action.run}
+            className={`w-[26px] h-[26px] rounded-full flex items-center justify-center transition-all duration-150 ${
+              action.enabled
+                ? 'text-white/70 hover:text-white hover:bg-white/[0.1] active:scale-90 cursor-pointer'
+                : 'text-white/20 cursor-default'
+            }`}
+          >
+            <MaterialIcon name={action.icon} className={`text-[15px] ${action.spin ? 'animate-spin' : ''}`} />
+          </button>
+        ))}
+      </div>
+
+      <div className="flex-1 min-w-[100px] flex justify-center">
+        <div className="w-full max-w-[480px] h-[26px] px-2.5 rounded-full bg-white/[0.08] hover:bg-white/[0.12] focus-within:bg-white/[0.14] focus-within:ring-1 focus-within:ring-blue-400/50 flex items-center gap-1.5 transition-all duration-150">
+          <MaterialIcon
+            name={isLocalhost ? 'computer' : currentUrl.startsWith('https') ? 'lock' : 'search'}
+            className="text-[12px] text-white/45 shrink-0"
+          />
+          <input
+            type="text"
+            value={inputUrl}
+            placeholder="Search or enter URL…"
+            onChange={(e) => setInputUrl(e.target.value)}
+            onKeyDown={handleInputKeyDown}
+            onFocus={(e) => e.target.select()}
+            className="w-full bg-transparent text-[11.5px] font-medium font-(family-name:--app-font) text-white/90 placeholder:text-white/35 focus:outline-none tracking-tight select-text text-center focus:text-left"
+          />
+          {isLoading && <span className="w-2.5 h-2.5 rounded-full border border-white/60 border-t-transparent animate-spin shrink-0" />}
+          {currentUrl && currentUrl !== 'about:blank' && (
             <button
-              key={action.title}
               type="button"
-              title={action.title}
-              aria-label={action.title}
-              disabled={!action.enabled}
-              onClick={action.run}
-              className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-all duration-150 ${
-                action.enabled
-                  ? 'text-white/70 hover:text-white hover:bg-white/[0.08] active:scale-90 cursor-pointer'
-                  : 'text-white/20 cursor-default'
+              title={isCurrentBookmarked ? 'Edit bookmark for this page' : 'Bookmark this page'}
+              onClick={handleStarClick}
+              className={`p-0.5 rounded-full hover:bg-white/10 transition-colors shrink-0 cursor-pointer ${
+                isCurrentBookmarked ? 'text-amber-400' : 'text-white/35 hover:text-white/80'
               }`}
             >
-              <MaterialIcon name={action.icon} className={`text-[16px] ${action.spin ? 'animate-spin' : ''}`} />
-            </button>
-          ))}
-        </div>
-
-        <div className="flex-1 min-w-[120px] flex justify-center">
-          <div className="w-full max-w-[560px] h-[30px] px-3 rounded-full bg-white/[0.06] hover:bg-white/[0.085] focus-within:bg-white/[0.1] focus-within:shadow-[0_0_0_1.5px_rgba(10,132,255,0.65)] flex items-center gap-2 transition-all duration-200">
-            <MaterialIcon name={isLocalhost ? 'computer' : currentUrl.startsWith('https') ? 'lock' : 'search'} className="text-[13px] text-white/40 shrink-0" />
-            <input
-              type="text"
-              value={inputUrl}
-              placeholder={primaryServer ? `localhost:${primaryServer.port} or search Google…` : 'Enter address or search Google…'}
-              onChange={(e) => setInputUrl(e.target.value)}
-              onKeyDown={handleInputKeyDown}
-              onFocus={(e) => e.target.select()}
-              className="w-full bg-transparent text-[12.5px] font-medium font-(family-name:--app-font) text-white/90 placeholder:text-white/35 focus:outline-none tracking-tight select-text text-center focus:text-left"
-            />
-            {isLoading && <span className="w-2.5 h-2.5 rounded-full border border-white/60 border-t-transparent animate-spin shrink-0" />}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5 shrink-0">
-          {webServers.length > 0 && (
-            <div className="h-[28px] p-[3px] rounded-full bg-white/[0.06] flex items-center gap-[2px]">
-              {webServers.map((s) => {
-                const active = currentUrl.includes(`:${s.port}`);
-                return (
-                  <button
-                    key={s.port}
-                    type="button"
-                    title={`Switch to dev server on port ${s.port}`}
-                    onClick={() => navigateTo(`http://localhost:${s.port}`)}
-                    className={`h-[22px] px-2.5 rounded-full flex items-center gap-1.5 text-[11px] font-medium font-(family-name:--app-font) tabular-nums transition-all duration-150 cursor-pointer ${
-                      active ? 'bg-white/[0.16] text-white shadow-sm' : 'text-white/55 hover:text-white'
-                    }`}
-                  >
-                    <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-emerald-400' : 'bg-white/30'}`} />
-                    {s.port}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-
-          {onEnterImmersive && (
-            <button
-              type="button"
-              title="Full screen browser"
-              aria-label="Full screen browser"
-              onClick={onEnterImmersive}
-              className="w-[28px] h-[28px] rounded-full flex items-center justify-center text-white/70 hover:text-white bg-white/[0.06] hover:bg-white/[0.12] active:scale-90 transition-all duration-150 cursor-pointer"
-            >
-              <Maximize size={13} strokeWidth={2} />
+              <MaterialIcon name={isCurrentBookmarked ? 'star' : 'star_border'} className="text-[14px]" />
             </button>
           )}
-
-          <button
-            type="button"
-            title="Open in external browser"
-            aria-label="Open in external browser"
-            onClick={handleOpenExternal}
-            className="w-[28px] h-[28px] rounded-full flex items-center justify-center text-white/70 hover:text-white bg-white/[0.06] hover:bg-white/[0.12] active:scale-90 transition-all duration-150 cursor-pointer"
-          >
-            <MaterialIcon name="open_in_new" className="text-[14px]" />
-          </button>
         </div>
       </div>
+
+      <div className="flex items-center gap-1 shrink-0">
+        {onEnterImmersive && (
+          <button
+            type="button"
+            title="Full screen browser"
+            aria-label="Full screen browser"
+            onClick={onEnterImmersive}
+            className="w-[26px] h-[26px] rounded-full flex items-center justify-center text-white/70 hover:text-white hover:bg-white/10 active:scale-90 transition-all duration-150 cursor-pointer"
+          >
+            <Maximize size={12} strokeWidth={2} />
+          </button>
+        )}
+
+        <button
+          type="button"
+          title="Open in external browser"
+          aria-label="Open in external browser"
+          onClick={handleOpenExternal}
+          className="w-[26px] h-[26px] rounded-full flex items-center justify-center text-white/70 hover:text-white hover:bg-white/10 active:scale-90 transition-all duration-150 cursor-pointer"
+        >
+          <MaterialIcon name="open_in_new" className="text-[13px]" />
+        </button>
+      </div>
+    </div>
   );
 
   return (
     <div className={`flex flex-col h-full w-full min-h-0 select-none ${className}`}>
-      {immersive ? null : toolbarHost ? (
-        createPortal(toolbar, toolbarHost)
+      {immersive ? null : effectiveHost ? (
+        createPortal(toolbar, effectiveHost)
       ) : (
         <div className="flex items-center pb-2 pt-0.5 px-0.5 shrink-0">{toolbar}</div>
       )}
@@ -365,7 +461,7 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
                 visibility: shouldPause ? 'hidden' : 'visible',
                 pointerEvents: isFocused && !isAnimating ? 'auto' : 'none',
               }}
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation"
               allow="clipboard-read; clipboard-write; fullscreen; camera; microphone"
             />
 
@@ -412,6 +508,29 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
                 : 'Start a dev server or enter an address above to preview.'}
             </p>
 
+            {visibleBookmarks.length > 0 && (
+              <div className="flex flex-wrap items-center justify-center gap-2 max-w-lg mt-2 mb-4">
+                {visibleBookmarks.slice(0, 8).map((bm) => (
+                  <button
+                    key={bm.id}
+                    type="button"
+                    onClick={() => navigateTo(bm.url)}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-[12px] bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 hover:border-white/20 text-white/90 text-[12px] font-medium transition-all active:scale-95 cursor-pointer shadow-sm"
+                  >
+                    <img
+                      src={getFaviconUrl(bm.url)}
+                      alt=""
+                      className="w-4 h-4 object-contain rounded-xs shrink-0"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLElement).style.display = 'none';
+                      }}
+                    />
+                    <span className="truncate max-w-[140px]">{bm.title}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
             {primaryServer && (
               <button
                 type="button"
@@ -425,6 +544,17 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
           </div>
         )}
       </div>
+
+      <BookmarkModal
+        isOpen={isBookmarkModalOpen}
+        onClose={() => setIsBookmarkModalOpen(false)}
+        onSave={handleSaveBookmark}
+        onDelete={editingBookmark?.id ? handleDeleteBookmark : undefined}
+        initialData={editingBookmark || undefined}
+        currentProjectName={projectName}
+        availableProjects={availableProjects}
+        isEditing={Boolean(editingBookmark?.id)}
+      />
     </div>
   );
 };

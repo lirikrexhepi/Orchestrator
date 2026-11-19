@@ -105,6 +105,7 @@ interface ModelRowsProps {
   onSelect: (modelId: string) => void;
   scrollable: boolean;
   isLight?: boolean;
+  isEffortOpen?: boolean;
 }
 
 const ModelRows: React.FC<ModelRowsProps> = ({
@@ -114,6 +115,7 @@ const ModelRows: React.FC<ModelRowsProps> = ({
   onSelect,
   scrollable,
   isLight,
+  isEffortOpen,
 }) => {
   if (models.length === 0) {
     return (
@@ -127,6 +129,9 @@ const ModelRows: React.FC<ModelRowsProps> = ({
     const isSelected = model.id === selectedModelId;
     const provider = providers.find((p) => p.id === model.providerId);
     const iconSrc = providerIcon(model.providerId, isLight) || model.icon || provider?.icon;
+    const hasEfforts = Boolean(
+      (model.effortLevels && model.effortLevels.length > 0) || model.supportsThinking,
+    );
 
     return (
       <button
@@ -154,7 +159,17 @@ const ModelRows: React.FC<ModelRowsProps> = ({
           {model.name}
         </span>
         {isSelected && (
-          <Check size={14} strokeWidth={2.2} className="text-white shrink-0" />
+          <div className="flex items-center gap-1 shrink-0">
+            <Check size={14} strokeWidth={2.2} className="text-white shrink-0" />
+            {hasEfforts && (
+              <MaterialIcon
+                name="chevron_right"
+                className={`text-[15px] transition-transform duration-200 ${
+                  isEffortOpen ? 'rotate-90 text-white' : 'text-white/40 hover:text-white/80'
+                }`}
+              />
+            )}
+          </div>
         )}
       </button>
     );
@@ -280,6 +295,7 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
         onSelect={handleSelectModel}
         scrollable={hasMoreThan5}
         isLight={isLight}
+        isEffortOpen={store.isEffortPickerOpen}
       />
 
       {choosesAccount && accounts.length > 1 && (

@@ -108,6 +108,8 @@ export function GitStage(arg1:string,arg2:Array<string>):Promise<void>;
 
 export function GitUnstage(arg1:string,arg2:Array<string>):Promise<void>;
 
+export function GitWebURL(arg1:string):Promise<string>;
+
 export function ImportClaudeCodeSession(arg1:string):Promise<string>;
 
 export function ImportOpenCodeSession(arg1:string):Promise<string>;

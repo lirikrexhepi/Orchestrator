@@ -186,6 +186,10 @@ export function GitUnstage(arg1, arg2) {
   return window['go']['main']['App']['GitUnstage'](arg1, arg2);
 }
 
+export function GitWebURL(arg1) {
+  return window['go']['main']['App']['GitWebURL'](arg1);
+}
+
 export function ImportClaudeCodeSession(arg1) {
   return window['go']['main']['App']['ImportClaudeCodeSession'](arg1);
 }

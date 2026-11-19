@@ -85,6 +85,8 @@ export interface AgentWindowProps {
   onBrowserImmersiveChange?: (immersive: boolean) => void;
   cardWidth?: number;
   cardHeight?: number;
+  browserTargetUrl?: string;
+  browserTargetNonce?: number;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -163,6 +165,8 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   onBrowserImmersiveChange,
   cardWidth,
   cardHeight,
+  browserTargetUrl,
+  browserTargetNonce,
   className = '',
   style,
 }) => {
@@ -586,7 +590,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
             ? (isFullscreen ? 'none' : '1px solid var(--theme-panel-border, rgba(0, 0, 0, 0.08))')
             : (isFullscreen ? 'none' : '1px solid var(--theme-panel-border, rgba(255, 255, 255, 0.12))')
         }
-        className={`w-full h-full ${immersive ? 'p-0' : isFullscreen ? 'p-4 pt-[60px]' : 'p-4'} ${isLight ? 'text-[#030303]' : 'text-white'} shadow-2xl relative box-border transition-all duration-200 ease-out ${
+        className={`w-full h-full ${immersive || browserHeader ? 'p-0 pt-[48px]' : isFullscreen ? 'p-4 pt-[60px]' : 'p-4'} ${isLight ? 'text-[#030303]' : 'text-white'} shadow-2xl relative box-border transition-all duration-200 ease-out ${
           isGrid
             ? (isLight
                 ? 'group-hover/card:border-black/25 group-hover/card:shadow-[0_20px_48px_-12px_rgba(0,0,0,0.2),0_0_0_1px_rgba(0,0,0,0.1)]'
@@ -629,7 +633,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
           </div>
 
           {/* Card Header (Reinvented: seamless, borderless, organic glass) */}
-          <div className={`items-center justify-between shrink-0 pt-0.5 pb-2 px-1 ${immersive ? 'hidden' : 'flex'}`}>
+          <div className={`items-center justify-between shrink-0 pt-0.5 pb-2 px-1 ${immersive || browserHeader ? 'hidden' : 'flex'}`}>
             <div className={browserHeader ? 'flex items-center gap-2 min-w-0 pr-2 flex-1' : isFullscreen ? 'flex flex-col items-start gap-1.5 min-w-0 pr-2 flex-1' : 'flex items-center gap-2 min-w-0 pr-2'}>
               <div className="flex items-center gap-3 min-w-0">
                 <div
@@ -705,10 +709,10 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 </div>
               )}
 
-              {!isGrid && (subagents.length > 0 || (isFullscreen && isFocused)) && <SubagentMenu agents={subagents} isLight={isLight} driver={activeDriver} modelId={activeModel} dockable={isFullscreen && isFocused} workspace={workspaceSection} onOpenAgent={setOpenSubagentId} />}
+              {!isGrid && !browserHeader && (subagents.length > 0 || (isFullscreen && isFocused)) && <SubagentMenu agents={subagents} isLight={isLight} driver={activeDriver} modelId={activeModel} dockable={isFullscreen && isFocused} workspace={workspaceSection} onOpenAgent={setOpenSubagentId} />}
 
               {/* Minimalist Close Button for Fullscreen: Fixed directly above the docked workspace card */}
-              {onClose && isFullscreen && createPortal(
+              {onClose && isFullscreen && !browserHeader && createPortal(
                 <button
                   type="button"
                   onClick={(e) => {
@@ -860,6 +864,10 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                   onFocusCard={onFocus}
                   toolbarHost={browserHost}
                   immersive={immersive}
+                  targetUrl={browserTargetUrl}
+                  targetUrlNonce={browserTargetNonce}
+                  projectName={projectName}
+                  projectPath={projectPath}
                   onEnterImmersive={
                     onBrowserImmersiveChange && onEnterFullscreen && !isGrid
                       ? () => onBrowserImmersiveChange(true)
