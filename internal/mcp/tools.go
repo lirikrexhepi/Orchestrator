@@ -122,7 +122,7 @@ var allTools = []Tool{
 	},
 	{
 		Name:        "delegate_task",
-		Description: "Spawn a child thread on a provider for a self-contained task.",
+		Description: "Spawns a child agent subagent asynchronously inside this thread's Lineage and returns immediately with its threadId. If you already know the target driver from runtime instructions, call delegate_task directly without calling orchestrator_capabilities first. Do NOT call read_thread immediately after spawning unless the user specifically asked you to wait for or summarize the child's output.",
 		InputSchema: ToolInputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{

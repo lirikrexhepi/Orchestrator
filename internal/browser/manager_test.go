@@ -187,9 +187,27 @@ func TestLiveHeadlessChromiumCDP(t *testing.T) {
 
 	if chromePID > 0 && runtime.GOOS == "windows" {
 		time.Sleep(500 * time.Millisecond)
-		out, _ := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", chromePID)).Output()
+		cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", chromePID))
+		hideConsoleWindow(cmd)
+		out, _ := cmd.Output()
 		if strings.Contains(string(out), strconv.Itoa(chromePID)) {
 			t.Errorf("chrome process %d still running after CloseAll()", chromePID)
+		}
+	}
+}
+
+func TestHideConsoleWindow(t *testing.T) {
+	cmd := exec.Command("cmd.exe", "/c", "echo test")
+	hideConsoleWindow(cmd)
+	if runtime.GOOS == "windows" {
+		if cmd.SysProcAttr == nil {
+			t.Fatal("expected SysProcAttr to be non-nil on Windows")
+		}
+		if !cmd.SysProcAttr.HideWindow {
+			t.Error("expected HideWindow to be true")
+		}
+		if cmd.SysProcAttr.CreationFlags&0x08000000 == 0 {
+			t.Error("expected CREATE_NO_WINDOW (0x08000000) flag to be set")
 		}
 	}
 }

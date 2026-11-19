@@ -340,8 +340,8 @@ func TestNormalizeToolCall_OrchestratorMCP(t *testing.T) {
 			},
 		}
 		NormalizeToolCall(tool)
-		if tool.Category != ToolCategoryMCP {
-			t.Fatalf("expected category %s, got %s", ToolCategoryMCP, tool.Category)
+		if tool.Category != ToolCategorySubagent {
+			t.Fatalf("expected category %s, got %s", ToolCategorySubagent, tool.Category)
 		}
 		if tool.Target != "Explore tests · claude" {
 			t.Fatalf("expected target 'Explore tests · claude', got %q", tool.Target)
@@ -359,8 +359,8 @@ func TestNormalizeToolCall_OrchestratorMCP(t *testing.T) {
 			},
 		}
 		NormalizeToolCall(tool)
-		if tool.Category != ToolCategoryMCP {
-			t.Fatalf("expected category %s, got %s", ToolCategoryMCP, tool.Category)
+		if tool.Category != ToolCategorySubagent {
+			t.Fatalf("expected category %s, got %s", ToolCategorySubagent, tool.Category)
 		}
 		if tool.Target != "Subagent refactor" {
 			t.Fatalf("expected target 'Subagent refactor', got %q", tool.Target)

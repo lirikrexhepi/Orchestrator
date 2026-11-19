@@ -8,6 +8,14 @@ export interface ContextUsage {
   sessionCacheRead?: number;
   sessionCacheWrite?: number;
   sessionCostUsd?: number;
+  /** Internal turn-level usage map to prevent multi-counting across intermediate frames */
+  _turns?: Record<string, {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    costUsd: number;
+  }>;
 }
 
 export function nextContext(prev: ContextUsage | undefined, event: RuntimeEvent): ContextUsage | undefined {
@@ -16,27 +24,33 @@ export function nextContext(prev: ContextUsage | undefined, event: RuntimeEvent)
   const tokens = usage.contextTokens && usage.contextTokens > 0 ? usage.contextTokens : (prev?.tokens ?? 0);
   const window = usage.contextWindow && usage.contextWindow > 0 ? usage.contextWindow : prev?.window;
 
-  const sessionInput = (prev?.sessionInput ?? 0) + Math.max(0, usage.inputTokens ?? 0);
-  const sessionOutput = (prev?.sessionOutput ?? 0) + Math.max(0, usage.outputTokens ?? 0);
-  const sessionCacheRead = (prev?.sessionCacheRead ?? 0) + Math.max(0, usage.cacheReadTokens ?? 0);
-  const sessionCacheWrite = (prev?.sessionCacheWrite ?? 0) + Math.max(0, usage.cacheWriteTokens ?? 0);
-  const sessionCostUsd = (prev?.sessionCostUsd ?? 0) + Math.max(0, usage.costUsd ?? 0);
+  const key = event.turnId || event.itemId || '_default';
+  const turns = prev?._turns ? { ...prev._turns } : {};
+
+  turns[key] = {
+    input: Math.max(0, usage.inputTokens ?? 0),
+    output: Math.max(0, usage.outputTokens ?? 0),
+    cacheRead: Math.max(0, usage.cacheReadTokens ?? 0),
+    cacheWrite: Math.max(0, usage.cacheWriteTokens ?? 0),
+    costUsd: Math.max(0, usage.costUsd ?? 0),
+  };
+
+  let sessionInput = 0;
+  let sessionOutput = 0;
+  let sessionCacheRead = 0;
+  let sessionCacheWrite = 0;
+  let sessionCostUsd = 0;
+
+  for (const t of Object.values(turns)) {
+    sessionInput += t.input;
+    sessionOutput += t.output;
+    sessionCacheRead += t.cacheRead;
+    sessionCacheWrite += t.cacheWrite;
+    sessionCostUsd += t.costUsd;
+  }
 
   const cumulativeTokens = sessionInput + sessionOutput + sessionCacheRead + sessionCacheWrite;
   if (tokens <= 0 && cumulativeTokens <= 0) return prev;
-
-  if (
-    prev &&
-    prev.tokens === tokens &&
-    prev.window === window &&
-    prev.sessionInput === sessionInput &&
-    prev.sessionOutput === sessionOutput &&
-    prev.sessionCacheRead === sessionCacheRead &&
-    prev.sessionCacheWrite === sessionCacheWrite &&
-    prev.sessionCostUsd === sessionCostUsd
-  ) {
-    return prev;
-  }
 
   return {
     tokens,
@@ -46,6 +60,7 @@ export function nextContext(prev: ContextUsage | undefined, event: RuntimeEvent)
     sessionCacheRead,
     sessionCacheWrite,
     sessionCostUsd,
+    _turns: turns,
   };
 }
 

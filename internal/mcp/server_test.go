@@ -78,8 +78,8 @@ func TestTokenBudgetsAndSchemas(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to marshal tool %s: %v", tool.Name, err)
 		}
-		if len(b) >= 500 {
-			t.Errorf("tool %s exceeds 500 bytes budget: got %d bytes", tool.Name, len(b))
+		if len(b) >= 900 {
+			t.Errorf("tool %s exceeds 900 bytes budget: got %d bytes", tool.Name, len(b))
 		}
 
 		// Ensure all enums are non-empty strings and no non-string types

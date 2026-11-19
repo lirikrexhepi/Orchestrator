@@ -664,7 +664,7 @@ export const Scene: React.FC<SceneProps> = () => {
         </div>
 
         {/* Bottom Left Navigation Indicator */}
-        {leftTarget && (
+        {leftTarget && cardMode !== 'browser' && cardMode !== 'terminal' && (
           <button
             type="button"
             onClick={leftTarget.onClick}
@@ -715,7 +715,7 @@ export const Scene: React.FC<SceneProps> = () => {
         )}
 
         {/* Bottom Right Navigation Indicator */}
-        {rightTarget && (
+        {rightTarget && cardMode !== 'browser' && cardMode !== 'terminal' && (
           <button
             type="button"
             onClick={rightTarget.onClick}

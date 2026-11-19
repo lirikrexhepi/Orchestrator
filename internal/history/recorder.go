@@ -2,6 +2,7 @@ package history
 
 import (
 	"sync"
+	"time"
 
 	"composer/internal/domain"
 )
@@ -132,6 +133,15 @@ func keepKnown(existing, next domain.Task) domain.Task {
 	if existing.UserTurns > next.UserTurns {
 		next.UserTurns = existing.UserTurns
 	}
+	if next.ParentThreadID == "" {
+		next.ParentThreadID = existing.ParentThreadID
+	}
+	if !next.Subagent && existing.Subagent {
+		next.Subagent = true
+	}
+	if !next.Hidden && existing.Hidden {
+		next.Hidden = true
+	}
 	return next
 }
 
@@ -207,6 +217,47 @@ func (r *Recorder) Record(threadID string, event domain.RuntimeEvent) {
 			r.flushMeta(workspaceID)
 		}
 	}
+
+	switch event.Kind {
+	case domain.EventUserMessage, domain.EventTurnStarted, domain.EventTurnCompleted:
+		r.touchTask(workspaceID, threadID, event.At)
+	case domain.EventAgentMessage:
+		if !event.Delta {
+			r.touchTask(workspaceID, threadID, event.At)
+		}
+	}
+}
+
+func (r *Recorder) touchTask(workspaceID, threadID string, at int64) {
+	if at == 0 {
+		at = time.Now().UnixMilli()
+	}
+	r.mu.Lock()
+	meta := r.metaFor(workspaceID)
+	changed := false
+	if at > meta.Workspace.UpdatedAt {
+		meta.Workspace.UpdatedAt = at
+		changed = true
+	}
+	for i := range meta.Tasks {
+		if meta.Tasks[i].ThreadID == threadID {
+			if at > meta.Tasks[i].UpdatedAt {
+				meta.Tasks[i].UpdatedAt = at
+				changed = true
+			}
+			break
+		}
+	}
+	if !changed {
+		r.mu.Unlock()
+		return
+	}
+	r.dirty[workspaceID] = true
+	snapshot := *meta
+	r.mu.Unlock()
+
+	_ = r.store.SaveMeta(snapshot)
+	r.notifyChanged()
 }
 
 func isMergeableDelta(event domain.RuntimeEvent) bool {
@@ -353,28 +404,6 @@ func (r *Recorder) UpdateTaskState(threadID string, state domain.TaskState, summ
 		break
 	}
 	r.mu.Unlock()
-}
-
-func (r *Recorder) touchTask(workspaceID, threadID string, at int64) {
-	if at <= 0 {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	meta, ok := r.metas[workspaceID]
-	if !ok {
-		return
-	}
-	for i := range meta.Tasks {
-		if meta.Tasks[i].ThreadID == threadID && at > meta.Tasks[i].UpdatedAt {
-			meta.Tasks[i].UpdatedAt = at
-			r.dirty[workspaceID] = true
-		}
-	}
-	if at > meta.Workspace.UpdatedAt {
-		meta.Workspace.UpdatedAt = at
-		r.dirty[workspaceID] = true
-	}
 }
 
 // Touch updates a workspace's last-activity stamp so history sorts by use.

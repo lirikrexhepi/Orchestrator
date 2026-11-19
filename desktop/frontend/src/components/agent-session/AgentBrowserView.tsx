@@ -144,6 +144,7 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
   const navigateTo = useCallback(
     (target: string) => {
       const normalized = smartNormalizeUrl(target, primaryServer?.port);
+      setBrowserError(null);
       setCurrentUrl(normalized);
       setInputUrl(normalized === 'about:blank' ? '' : normalized);
       surfaceActionRef.current?.navigate(normalized);
@@ -338,8 +339,8 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
 
       <div
         data-browser-viewport
-        className={`flex-1 min-h-0 relative overflow-hidden bg-[#121316] ${
-          immersive ? '' : 'rounded-[14px] shadow-[0_0_0_1px_rgba(255,255,255,0.08),0_12px_32px_-12px_rgba(0,0,0,0.6)]'
+        className={`flex-1 min-h-0 relative overflow-hidden bg-[#0B0A09] ${
+          immersive ? '' : 'rounded-[14px] border border-white/[0.08]'
         }`}
         style={{
           contain: 'strict',
@@ -372,20 +373,20 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
                   e.stopPropagation();
                   onFocusCard?.();
                 }}
-                className="absolute inset-0 z-25 bg-[#121316]/92 backdrop-blur-md flex flex-col items-center justify-center text-center p-6 cursor-pointer group transition-all duration-200"
+                className="absolute inset-0 z-25 bg-[#0B0A09]/92 backdrop-blur-md flex flex-col items-center justify-center text-center p-6 cursor-pointer group transition-all duration-200"
               >
-                <div className="w-12 h-12 rounded-2xl bg-white/[0.06] border border-white/10 flex items-center justify-center mb-3 shadow-xl group-hover:scale-105 group-hover:bg-white/[0.1] transition-all duration-200">
-                  <MaterialIcon name="view_in_ar" className="text-emerald-400 text-2xl"/>
+                <div className="w-11 h-11 rounded-2xl bg-white/[0.06] border border-white/10 flex items-center justify-center mb-3 shadow-lg group-hover:scale-105 group-hover:bg-white/[0.1] transition-all duration-200">
+                  <MaterialIcon name="language" className="text-white/70 text-2xl"/>
                 </div>
-                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] font-mono font-medium mb-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                  <span>CDP Browser Stream Paused</span>
+                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/[0.08] border border-white/10 text-white/80 text-[11px] font-mono font-medium mb-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-white/70" />
+                  <span>Browser stream paused</span>
                 </div>
-                <p className="text-[12px] font-medium font-(family-name:--app-font) text-white/50 max-w-xs mb-3 leading-relaxed">
-                  Headless Chromium screencast halted to save 0% CPU across inactive cards.
+                <p className="text-[12px] font-medium font-(family-name:--app-font) text-white/45 max-w-xs mb-3 leading-relaxed">
+                  Headless Chromium screencast halted to save CPU across inactive cards.
                 </p>
-                <div className="px-3.5 py-1.5 rounded-[8px] bg-white/[0.08] hover:bg-white/15 border border-white/15 text-white text-[12px] font-medium flex items-center gap-1.5 transition-all shadow-md group-hover:border-white/30">
-                  <span>Click to Resume Preview</span>
+                <div className="px-3.5 py-1.5 rounded-[8px] bg-white/[0.08] hover:bg-white/15 border border-white/15 text-white/90 text-[12px] font-medium flex items-center gap-1.5 transition-all shadow-md group-hover:border-white/30">
+                  <span>Click to resume</span>
                   <MaterialIcon name="play_arrow" className="text-[14px]"/>
                 </div>
               </div>
@@ -398,9 +399,11 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
               isFocused={isFocused && !isAnimating}
               actionRef={surfaceActionRef}
               onStateChange={(state) => {
-                setCurrentUrl(state.url);
-                if (!isInputEditingRef.current) {
-                  setInputUrl(state.url === 'about:blank' ? '' : state.url);
+                if (state.url && state.url !== 'about:blank') {
+                  setCurrentUrl(state.url);
+                  if (!isInputEditingRef.current) {
+                    setInputUrl(state.url);
+                  }
                 }
                 setIsLoading(state.loading);
                 setCanGoBack(state.canGoBack);
@@ -411,46 +414,54 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
             />
 
             {isLoading && (
-              <div className="absolute top-0 inset-x-0 h-[2.5px] bg-black/10 overflow-hidden z-10">
-                <div className="h-full w-1/3 bg-[#007AFF] animate-[browser-progress_1.1s_ease-in-out_infinite]" />
+              <div className="absolute top-0 inset-x-0 h-[2px] bg-black/20 overflow-hidden z-10">
+                <div className="h-full w-1/3 bg-white/75 animate-[browser-progress_1.1s_ease-in-out_infinite]" />
               </div>
             )}
 
             {browserError && (
-              <div className="absolute inset-0 bg-[#16181d] flex flex-col items-center justify-center text-center p-6 z-20">
-                <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center mb-3">
-                  <MaterialIcon name="public_off" className="text-amber-400 text-xl"/>
+              <div className="absolute inset-0 bg-[#0B0A09] flex flex-col items-center justify-center text-center p-6 z-20 select-none">
+                <div className="w-10 h-10 rounded-xl bg-white/[0.06] border border-white/10 flex items-center justify-center mb-3">
+                  <MaterialIcon name="public_off" className="text-white/60 text-xl"/>
                 </div>
                 <h4 className="text-[13.5px] font-semibold font-(family-name:--app-font) text-white/90 mb-1">
-                  Chromium Browser Unavailable
+                  Browser Surface Unavailable
                 </h4>
-                <p className="text-[12px] text-white/50 max-w-sm mb-4 leading-relaxed font-(family-name:--app-font)">
+                <p className="text-[12px] text-white/45 max-w-sm mb-4 leading-relaxed font-(family-name:--app-font) font-mono">
                   {browserError}
                 </p>
-                <button
-                  type="button"
-                  onClick={handleOpenExternal}
-                  className="px-3.5 py-1.5 rounded-[6px] bg-[#007AFF] hover:bg-[#0A84FF] text-white text-[12px] font-medium flex items-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer"
-                >
-                  <span>Open in Default Browser</span>
-                  <MaterialIcon name="open_in_new" className="text-[14px]"/>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => navigateTo(currentUrl)}
+                    className="px-3.5 py-1.5 rounded-[8px] bg-white/10 hover:bg-white/18 text-white/90 text-[12px] font-medium flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer border border-white/10"
+                  >
+                    <MaterialIcon name="refresh" className="text-[14px]"/>
+                    <span>Retry</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenExternal}
+                    className="px-3.5 py-1.5 rounded-[8px] bg-white/[0.06] hover:bg-white/10 text-white/70 hover:text-white text-[12px] font-medium flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer border border-white/10"
+                  >
+                    <span>Open in Default Browser</span>
+                    <MaterialIcon name="open_in_new" className="text-[13px]"/>
+                  </button>
+                </div>
               </div>
             )}
           </>
         ) : (
           /* Empty / Start Surface */
-          <div className="w-full h-full bg-[#121316] flex flex-col items-center justify-center text-center p-6 select-none">
-            <div className="w-12 h-12 rounded-2xl bg-white/[0.05] border border-white/10 flex items-center justify-center mb-3.5 shadow-xl">
+          <div className="w-full h-full bg-[#0B0A09] flex flex-col items-center justify-center text-center p-6 select-none">
+            <div className="w-12 h-12 rounded-2xl bg-white/[0.05] border border-white/10 flex items-center justify-center mb-3.5 shadow-lg">
               <MaterialIcon name="language" className="text-white/60 text-2xl"/>
             </div>
             <h3 className="text-[15px] font-semibold font-(family-name:--app-font) text-white/90 tracking-tight mb-1">
-              Web Preview
+              Browser
             </h3>
             <p className="text-[12px] font-medium font-(family-name:--app-font) text-white/45 max-w-xs mb-5 leading-relaxed">
-              {primaryServer
-                ? `Dev server running on localhost:${primaryServer.port}`
-                : 'Start a dev server or enter an address above to preview.'}
+              Search or enter any URL above to browse directly inside Orchestrator.
             </p>
 
             {visibleBookmarks.length > 0 && (
@@ -460,7 +471,7 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
                     key={bm.id}
                     type="button"
                     onClick={() => navigateTo(bm.url)}
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-[12px] bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 hover:border-white/20 text-white/90 text-[12px] font-medium transition-all active:scale-95 cursor-pointer shadow-sm"
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-[10px] bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] hover:border-white/15 text-white/85 text-[12px] font-medium transition-all active:scale-95 cursor-pointer"
                   >
                     <img
                       src={getFaviconUrl(bm.url)}
@@ -480,10 +491,10 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
               <button
                 type="button"
                 onClick={() => navigateTo(`http://localhost:${primaryServer.port}`)}
-                className="px-4 py-2 rounded-[8px] bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-[12.5px] font-medium flex items-center gap-2 shadow-lg active:scale-95 transition-all cursor-pointer"
+                className="px-3.5 py-1.5 rounded-[8px] bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 text-white/80 text-[12px] font-medium flex items-center gap-2 active:scale-95 transition-all cursor-pointer"
               >
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span>Launch localhost:{primaryServer.port}</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-white/70 animate-pulse" />
+                <span>Open localhost:{primaryServer.port}</span>
               </button>
             )}
           </div>

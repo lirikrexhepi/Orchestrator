@@ -160,8 +160,9 @@ func (m *Manager) ensureChromiumLocked(ctx context.Context) error {
 		profile = tempDir
 		m.isTempProfile = true
 		m.profileDir = profile
-	} else {
-		_ = os.MkdirAll(profile, 0755)
+	}
+	if err := os.MkdirAll(profile, 0o755); err != nil {
+		return fmt.Errorf("failed to create browser profile directory: %w", err)
 	}
 
 	wsURLCh := make(chan string, 1)
@@ -171,6 +172,7 @@ func (m *Manager) ensureChromiumLocked(ctx context.Context) error {
 		"--headless=new",
 		"--remote-debugging-port=0",
 		"--user-data-dir=" + profile,
+		"--disable-gpu",
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--disable-background-timer-throttling",
@@ -245,7 +247,9 @@ func (m *Manager) stopChromiumLocked() {
 
 		// Fallback for Windows to kill child processes in tree
 		if runtime.GOOS == "windows" && pid > 0 {
-			_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid)).Run()
+			killCmd := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid))
+			hideConsoleWindow(killCmd)
+			_ = killCmd.Run()
 		}
 	}
 
@@ -310,12 +314,18 @@ func (m *Manager) Open(ctx context.Context, threadID, initialURL string, width, 
 	m.nextTabNum++
 	tabID := fmt.Sprintf("tab-%d-%s", m.nextTabNum, createResult.TargetID[:min(8, len(createResult.TargetID))])
 
+	initURL := initialURL
+	if initURL == "" {
+		initURL = "about:blank"
+	}
+
 	t := &tab{
 		id:          tabID,
 		threadID:    threadID,
 		targetID:    createResult.TargetID,
 		sessionID:   attachResult.SessionID,
-		url:         "about:blank",
+		url:         initURL,
+		loading:     initURL != "about:blank",
 		width:       width,
 		height:      height,
 		dpr:         1.0,

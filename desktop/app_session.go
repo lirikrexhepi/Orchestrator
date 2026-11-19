@@ -47,6 +47,8 @@ func (a *App) SendTurn(input domain.SendTurnInput) error {
 	}
 	if err != nil {
 		logger.Errorf("App", "SendTurn failed: %v", err)
+	} else {
+		a.emit(historyChangedChannel)
 	}
 	return err
 }

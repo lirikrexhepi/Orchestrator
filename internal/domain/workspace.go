@@ -18,6 +18,9 @@ type Workspace struct {
 	// rather than resuming the outside conversation.
 	ImportedFrom    string `json:"importedFrom,omitempty"`
 	ImportedSession string `json:"importedSession,omitempty"`
+	Subagent        bool   `json:"subagent,omitempty"`
+	ParentThreadID  string `json:"parentThreadId,omitempty"`
+	Hidden          bool   `json:"hidden,omitempty"`
 }
 
 type TaskState string
@@ -58,9 +61,12 @@ type Task struct {
 	Cwd      string    `json:"cwd,omitempty"`
 	// Summary is captured at turn completion rather than on close, so context
 	// survives a crashed or force-closed session.
-	Summary   string `json:"summary,omitempty"`
-	CreatedAt int64  `json:"createdAt"`
-	UpdatedAt int64  `json:"updatedAt"`
+	Summary        string `json:"summary,omitempty"`
+	CreatedAt      int64  `json:"createdAt"`
+	UpdatedAt      int64  `json:"updatedAt"`
+	Subagent       bool   `json:"subagent,omitempty"`
+	ParentThreadID string `json:"parentThreadId,omitempty"`
+	Hidden         bool   `json:"hidden,omitempty"`
 }
 
 func (t Task) Dir(workspaceCwd string) string {

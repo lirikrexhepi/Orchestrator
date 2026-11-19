@@ -121,12 +121,13 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
           return;
         }
 
+        const activeUrl = (session.url && session.url !== 'about:blank') ? session.url : initialUrl;
         createdSessionId = session.id;
         sessionRef.current = session;
         tabStateRef.current = {
           width: session.width || w,
           height: session.height || h,
-          url: session.url || initialUrl,
+          url: activeUrl,
           title: session.title || '',
           loading: session.loading || false,
           canGoBack: session.canGoBack || false,
@@ -135,7 +136,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
 
         if (onStateChange) {
           onStateChange({
-            url: session.url || initialUrl,
+            url: activeUrl,
             title: session.title || '',
             loading: session.loading || false,
             canGoBack: session.canGoBack || false,
@@ -194,17 +195,18 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
               const payload = JSON.parse(event.data);
               if (payload.type === 'state' && payload.state) {
                 const s = payload.state;
+                const stateUrl = (s.url && s.url !== 'about:blank') ? s.url : (tabStateRef.current.url || initialUrl);
                 tabStateRef.current = {
                   width: s.width || tabStateRef.current.width,
                   height: s.height || tabStateRef.current.height,
-                  url: s.url || '',
+                  url: stateUrl,
                   title: s.title || '',
                   loading: s.loading ?? false,
                   canGoBack: s.canGoBack ?? false,
                   canGoForward: s.canGoForward ?? false,
                 };
                 onStateChange?.({
-                  url: s.url || '',
+                  url: stateUrl,
                   title: s.title || '',
                   loading: s.loading ?? false,
                   canGoBack: s.canGoBack ?? false,

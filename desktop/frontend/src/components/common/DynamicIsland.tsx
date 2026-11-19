@@ -210,10 +210,13 @@ export function extractChatHistoryItems(
     : (entries || []);
 
   for (const meta of metas) {
+    if ((meta.workspace as any)?.hidden || (meta.workspace as any)?.subagent) {
+      continue;
+    }
     const wid = meta.workspace?.id || '';
     const cwd = meta.workspace?.cwd || '';
     const projName = cwd ? cwd.replace(/\\/g, '/').split('/').filter(Boolean).pop() : undefined;
-    const tasks = meta.tasks || [];
+    const tasks = (meta.tasks || []).filter((t: any) => !t.subagent && !t.hidden);
 
     // Group tasks by root thread ID to merge continuations
     const grouped = new Map<string, any[]>();

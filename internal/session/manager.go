@@ -132,6 +132,11 @@ func NewManager(registry *provider.Registry) *Manager {
 
 func (m *Manager) Bus() *Bus { return m.bus }
 
+// RecordBridgedEvent records and publishes a bridged event (such as a subagent event forwarded to a parent thread).
+func (m *Manager) RecordBridgedEvent(event domain.RuntimeEvent) {
+	m.record(event)
+}
+
 // SessionPID reports the CLI process for a thread when its adapter tracks one.
 func (m *Manager) SessionPID(threadID string) (int, bool) {
 	m.mu.RLock()

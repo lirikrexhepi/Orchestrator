@@ -37,19 +37,50 @@ export interface RepoChangeGroup {
   files: ThreadFileChange[];
 }
 
-const CHECK_COMMAND_PATTERN =
-  /(?:^|[;&|]\s*)(?:npx\s+)?(?:go\s+(?:test|build|vet)|(?:npm|pnpm|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|check)|yarn\s+(?:(?:run\s+)?(?:build|lint|typecheck|check)|test)|vitest|jest|pytest|cargo\s+(?:test|check|build|clippy)|php\s+artisan\s+test|phpunit|playwright\s+test|dotnet\s+test|mvn\s+test|gradle\s+test|tsc|vite\s+build|wails\s+build|eslint|biome\s+check|ruff|mypy|golangci-lint|phpstan)\b/i;
+const VERIFICATION_TOOL_PATTERN =
+  /^(?:go\s+(?:test|build|vet)|golangci-lint|(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+(?:test|build|lint|typecheck|check)|npx?\s+(?:tsc|vitest|jest|eslint|playwright|biome|vite\s+build)|pytest|mypy|ruff\s+check|cargo\s+(?:test|check|build|clippy)|php\s+artisan\s+test|phpunit|phpstan|wails\s+build|dotnet\s+(?:test|build))\b/i;
 
 export function isCheckCommand(cmd: string): boolean {
   if (!cmd) return false;
-  return CHECK_COMMAND_PATTERN.test(cmd);
+  // If the command contains a heredoc operator anywhere, reject
+  if (cmd.includes('<<') || /\bEOF\b/i.test(cmd)) return false;
+
+  // Inspect ONLY the first line before any newline
+  const firstLine = cmd.split(/[\r\n]/)[0].trim();
+  if (!firstLine) return false;
+
+  // Never match multiline scripts, heredocs, export, or script runners
+  if (/^(?:export\s+|python\b|node\b|bash\b|sh\b|powershell\b|pwsh\b)/i.test(firstLine)) {
+    return false;
+  }
+
+  // Split shell chains (&&, ||, ;)
+  const segments = firstLine.split(/\s*(?:&&|\|\||;)\s*/);
+  for (let seg of segments) {
+    seg = seg.trim();
+    // Strip leading cd ... or Set-Location ... or chdir ...
+    seg = seg.replace(/^(?:cd|Set-Location|chdir)\s+[^\s;&|]+(?:\s*)/i, '').trim();
+    if (!seg) continue;
+    if (VERIFICATION_TOOL_PATTERN.test(seg)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function deriveCheckLabel(cmd: string): string {
   if (!cmd) return 'Check';
-  // Strip leading cd ... && or cd ... ; prefixes
-  let cleaned = cmd.replace(/^(?:cd\s+[^&;]+(?:\s*&&\s*|\s*;\s*))+/i, '').trim();
-  if (!cleaned) cleaned = cmd.trim();
+  const firstLine = cmd.split(/[\r\n]|<<|\bEOF\b/i)[0].trim();
+  const segments = firstLine.split(/\s*(?:&&|\|\||;)\s*/);
+  for (let seg of segments) {
+    seg = seg.trim().replace(/^(?:cd|Set-Location|chdir)\s+[^\s;&|]+(?:\s*)/i, '').trim();
+    if (VERIFICATION_TOOL_PATTERN.test(seg)) {
+      if (seg.length <= 46) return seg;
+      return seg.slice(0, 43).trimEnd() + '…';
+    }
+  }
+  let cleaned = firstLine.replace(/^(?:(?:cd|Set-Location|chdir)\s+[^&;]+(?:\s*&&\s*|\s*;\s*))+/i, '').trim();
+  if (!cleaned) cleaned = firstLine;
   if (cleaned.length <= 46) return cleaned;
   return cleaned.slice(0, 43).trimEnd() + '…';
 }

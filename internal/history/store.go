@@ -530,12 +530,23 @@ func (s *Store) List() ([]Meta, error) {
 			// crash; skipping it keeps the rest of history usable.
 			continue
 		}
+		if meta.Workspace.Hidden || meta.Workspace.Subagent {
+			continue
+		}
 		MergeContinuations(&meta)
 		out = append(out, meta)
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].Workspace.UpdatedAt > out[j].Workspace.UpdatedAt
+		ti := out[i].Workspace.UpdatedAt
+		if ti == 0 {
+			ti = out[i].Workspace.CreatedAt
+		}
+		tj := out[j].Workspace.UpdatedAt
+		if tj == 0 {
+			tj = out[j].Workspace.CreatedAt
+		}
+		return ti > tj
 	})
 	return out, nil
 }

@@ -66,9 +66,10 @@ var (
 		"todo":        {},
 	}
 	subagentToolNames = map[string]struct{}{
-		"task":     {},
-		"agent":    {},
-		"subagent": {},
+		"task":          {},
+		"agent":         {},
+		"subagent":      {},
+		"delegate_task": {},
 	}
 
 	filePathKeys = []string{
@@ -182,7 +183,11 @@ func NormalizeToolCall(tool *ToolCall) {
 
 	// 1. Category (if empty or orchestrator MCP tool)
 	if orchTool != "" {
-		tool.Category = ToolCategoryMCP
+		if orchTool == "delegate_task" {
+			tool.Category = ToolCategorySubagent
+		} else {
+			tool.Category = ToolCategoryMCP
+		}
 	} else if tool.Category == "" {
 		if len(tool.Diffs) > 0 || kindLower == "filechange" {
 			if _, ok := writeToolNames[nameLower]; ok {

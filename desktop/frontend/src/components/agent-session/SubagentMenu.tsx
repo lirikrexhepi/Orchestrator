@@ -380,7 +380,7 @@ const AgentRow: React.FC<{
     }`}
   >
     <span className="relative flex h-[22px] w-[22px] shrink-0 items-center justify-center">
-      {renderChatIcon(driver, modelId, isLight, 'w-[18px] h-[18px]')}
+      {renderChatIcon(agent.agentType || driver, modelId, isLight, 'w-[18px] h-[18px]')}
       <span
         className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full ring-2 ${tone.ring} ${DOT_TONE[agent.status]}`}
       />

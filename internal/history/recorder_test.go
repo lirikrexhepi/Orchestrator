@@ -169,6 +169,59 @@ func TestTaskStateUpdatesSurviveReload(t *testing.T) {
 	}
 }
 
+func TestAppendingMessageToOlderChatMovesItToIndexZero(t *testing.T) {
+	store := New(t.TempDir())
+	recorder := NewRecorder(store)
+	defer recorder.Close()
+
+	// ws-1 was created earlier (UpdatedAt: 100)
+	recorder.OpenWorkspace(domain.Workspace{ID: "ws-1", Title: "Old Chat", UpdatedAt: 100}, "coord-1")
+	recorder.TrackTask(domain.Task{WorkspaceID: "ws-1", ThreadID: "thread-1", State: domain.TaskRunning})
+
+	// ws-2 was created later (UpdatedAt: 200)
+	recorder.OpenWorkspace(domain.Workspace{ID: "ws-2", Title: "New Chat", UpdatedAt: 200}, "coord-2")
+	recorder.TrackTask(domain.Task{WorkspaceID: "ws-2", ThreadID: "thread-2", State: domain.TaskRunning})
+
+	// ws-sub is a subagent (Hidden/Subagent: true)
+	recorder.OpenWorkspace(domain.Workspace{ID: "ws-sub", Title: "Subagent Task", Subagent: true, Hidden: true, UpdatedAt: 300}, "coord-sub")
+	recorder.TrackTask(domain.Task{WorkspaceID: "ws-sub", ThreadID: "thread-sub", Subagent: true, Hidden: true, State: domain.TaskRunning})
+
+	// Initial list: ws-2 should be first, ws-sub should be excluded entirely
+	list, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 visible chats (subagent excluded), got %d", len(list))
+	}
+	if list[0].Workspace.ID != "ws-2" {
+		t.Fatalf("expected ws-2 first, got %s", list[0].Workspace.ID)
+	}
+
+	// Now append a new user message to older chat ws-1 at timestamp 500
+	recorder.Record("thread-1", domain.RuntimeEvent{
+		Kind:     domain.EventUserMessage,
+		ThreadID: "thread-1",
+		Text:     "Resuming older chat",
+		At:       500,
+	})
+
+	// After recording, ws-1 should jump to index 0 with UpdatedAt 500
+	list2, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list2) != 2 {
+		t.Fatalf("expected 2 visible chats, got %d", len(list2))
+	}
+	if list2[0].Workspace.ID != "ws-1" {
+		t.Fatalf("expected ws-1 at index 0 after new message, got %s", list2[0].Workspace.ID)
+	}
+	if list2[0].Workspace.UpdatedAt != 500 {
+		t.Fatalf("expected ws-1 UpdatedAt 500, got %d", list2[0].Workspace.UpdatedAt)
+	}
+}
+
 func keys(m map[string][]domain.RuntimeEvent) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

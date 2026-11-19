@@ -212,6 +212,7 @@ func (a *Adapter) handleAssistant(s *session, envelope *Envelope) {
 	if envelope.Message.Usage != nil {
 		event := a.event(s, domain.EventUsage)
 		event.Usage = convertUsage(envelope.Message.Usage, 0)
+		event.ItemID = envelope.Message.ID
 		u := envelope.Message.Usage
 		event.Usage.ContextTokens = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens + u.OutputTokens
 		event.Usage.ContextWindow = s.contextLimit()

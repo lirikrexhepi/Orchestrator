@@ -5,6 +5,7 @@ import { isEditToolName } from './threadChanges';
 const SPAWN_TOOLS = new Set(['task', 'agent', 'invoke_subagent', 'subagent', 'spawn', 'sub_agent']);
 const DELEGATE_TOOLS = new Set([
   'delegate_task',
+  'mcp_orchestrator_delegate_task',
   'mcp__orchestrator__delegate_task',
   'orchestrator:delegate_task',
   'orchestrator__delegate_task',
@@ -59,7 +60,14 @@ function findAgent(blocks: AgentStreamBlock[], toolId: string): number {
   const id = `subagent-${toolId}`;
   for (let index = blocks.length - 1; index >= 0; index--) {
     const block = blocks[index];
-    if (block.type === 'subagent' && (block.id === id || block.previousToolIds?.includes(toolId))) return index;
+    if (
+      block.type === 'subagent' &&
+      (block.id === id ||
+        block.toolId === toolId ||
+        block.childThreadId === toolId ||
+        block.previousToolIds?.includes(toolId))
+    )
+      return index;
   }
   return -1;
 }
@@ -190,10 +198,24 @@ export function trackSubagents(blocks: AgentStreamBlock[], event: RuntimeEvent):
       if (!tool) return blocks;
       const index = findAgent(blocks, tool.id);
       if (index < 0) return blocks;
-      if ((blocks[index] as SubagentBlockData).toolId !== tool.id) return blocks;
+      const targetAgent = blocks[index] as SubagentBlockData;
+      if (targetAgent.toolId !== tool.id && targetAgent.childThreadId !== tool.id) return blocks;
       return update(blocks, tool.id, event.at, (agent) => {
         const input = (tool.input ?? {}) as Record<string, unknown>;
         const detailed = withDetails(agent, input);
+
+        if (agent.childThreadId && tool.id === agent.childThreadId) {
+          const startedAt = agent.startedAt ?? event.at;
+          const reported = tool.durationMs && tool.durationMs > 0 ? tool.durationMs : 0;
+          const observed = event.at ? Math.max(event.at, startedAt ?? 0) : startedAt;
+          return {
+            ...detailed,
+            status: tool.status === 'failed' ? 'error' : 'completed',
+            startedAt,
+            endedAt: reported && startedAt ? startedAt + reported : observed,
+            result: tool.output || agent.result,
+          };
+        }
 
         let childThreadId = agent.childThreadId;
         let outputStatus: string | undefined;

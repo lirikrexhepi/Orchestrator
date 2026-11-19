@@ -86,7 +86,7 @@ export const AgentTerminalView: React.FC<AgentTerminalViewProps> = ({
     const term = new Terminal({
       theme: isLight
         ? {
-            background: '#f6f6f7',
+            background: '#f6f6f6',
             foreground: '#1e1e20',
             cursor: '#1e1e20',
             cursorAccent: '#ffffff',
@@ -109,10 +109,10 @@ export const AgentTerminalView: React.FC<AgentTerminalViewProps> = ({
             brightWhite: '#a5a5a5',
           }
         : {
-            background: '#0d0e11',
+            background: '#0B0A09',
             foreground: '#e6e6e6',
             cursor: '#ffffff',
-            cursorAccent: '#0d0e11',
+            cursorAccent: '#0B0A09',
             selectionBackground: 'rgba(255, 255, 255, 0.2)',
             black: '#1e1e1e',
             red: '#f44747',
@@ -377,19 +377,19 @@ export const AgentTerminalView: React.FC<AgentTerminalViewProps> = ({
   return (
     <div
       className={`flex flex-col h-full w-full min-h-0 select-none overflow-hidden ${
-        isLight ? 'bg-[#f6f6f7]' : 'bg-[#0d0e11]'
+        isLight ? 'bg-[#f6f6f6]' : 'bg-[#0B0A09]'
       } ${className}`}
     >
-      {/* Compact glass tab bar */}
+      {/* Compact flat tab bar */}
       <div
-        className={`h-[36px] shrink-0 px-2.5 flex items-center justify-between gap-2 border-b backdrop-blur-md ${
+        className={`h-[36px] shrink-0 px-2.5 flex items-center justify-between gap-2 border-b ${
           isLight
-            ? 'bg-black/[0.03] border-black/[0.08]'
-            : 'bg-white/[0.03] border-white/[0.08]'
+            ? 'border-black/[0.06] bg-transparent'
+            : 'border-white/[0.06] bg-transparent'
         }`}
       >
         {/* Left: Shell tabs & new tab + button */}
-        <div className="flex items-center gap-1.5 min-w-0 overflow-x-auto no-scrollbar py-1">
+        <div className="flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar py-1">
           {sessions.map((sess) => {
             const isActive = sess.id === activeSessionId;
             return (
@@ -397,22 +397,22 @@ export const AgentTerminalView: React.FC<AgentTerminalViewProps> = ({
                 key={sess.id}
                 type="button"
                 onClick={() => setActiveSessionId(sess.id)}
-                className={`group flex items-center gap-2 px-2.5 py-1 rounded-[7px] text-[11.5px] font-medium transition-all duration-150 cursor-pointer shrink-0 border ${
+                className={`group flex items-center gap-2 px-2.5 py-1 rounded-[8px] text-[12px] transition-all duration-150 cursor-pointer shrink-0 ${
                   isActive
                     ? isLight
-                      ? 'bg-white text-black shadow-xs border-black/10'
-                      : 'bg-white/10 text-white shadow-xs border-white/15'
+                      ? 'bg-black/[0.06] text-black font-medium'
+                      : 'bg-white/[0.08] text-white font-medium'
                     : isLight
-                    ? 'text-black/55 hover:text-black/85 hover:bg-black/[0.04] border-transparent'
-                    : 'text-white/50 hover:text-white/85 hover:bg-white/[0.04] border-transparent'
+                    ? 'text-black/45 hover:text-black/80 hover:bg-black/[0.03]'
+                    : 'text-white/45 hover:text-white/80 hover:bg-white/[0.04]'
                 }`}
                 title={`${sess.title} (${sess.shell})`}
               >
-                {/* Live emerald status dot or exited badge */}
+                {/* Live subtle dot or exited badge */}
                 {sess.running ? (
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isActive ? 'bg-white/80' : 'bg-white/40'}`} />
                 ) : (
-                  <span className="text-[9.5px] px-1 py-0.2 rounded font-mono bg-zinc-500/20 text-zinc-400 leading-none">
+                  <span className="text-[9.5px] px-1 py-0.2 rounded font-mono bg-white/[0.06] text-white/45 leading-none">
                     exit {sess.exitCode ?? 0}
                   </span>
                 )}
@@ -444,10 +444,10 @@ export const AgentTerminalView: React.FC<AgentTerminalViewProps> = ({
           <button
             type="button"
             onClick={handleNewTab}
-            className={`w-[26px] h-[26px] rounded-[7px] flex items-center justify-center transition-all duration-150 cursor-pointer shrink-0 border border-transparent ${
+            className={`w-[26px] h-[26px] rounded-[7px] flex items-center justify-center transition-all duration-150 cursor-pointer shrink-0 ${
               isLight
-                ? 'text-black/50 hover:text-black hover:bg-black/[0.06]'
-                : 'text-white/50 hover:text-white hover:bg-white/[0.08]'
+                ? 'text-black/45 hover:text-black hover:bg-black/[0.05]'
+                : 'text-white/45 hover:text-white hover:bg-white/[0.06]'
             }`}
             title="New terminal tab"
             aria-label="New terminal tab"
@@ -462,10 +462,10 @@ export const AgentTerminalView: React.FC<AgentTerminalViewProps> = ({
             <button
               type="button"
               onClick={handleRestart}
-              className={`flex items-center gap-1.5 px-2 py-1 rounded-[7px] text-[11px] font-medium transition-all active:scale-95 cursor-pointer border ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-[7px] text-[11px] font-medium transition-all active:scale-95 cursor-pointer border ${
                 isLight
-                  ? 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 border-amber-500/25'
-                  : 'bg-amber-400/10 hover:bg-amber-400/20 text-amber-300 border-amber-400/25'
+                  ? 'bg-black/[0.05] hover:bg-black/[0.1] text-black/75 border-black/10'
+                  : 'bg-white/[0.06] hover:bg-white/[0.12] text-white/75 hover:text-white border-white/10'
               }`}
               title="Restart session in same directory"
             >
@@ -481,7 +481,7 @@ export const AgentTerminalView: React.FC<AgentTerminalViewProps> = ({
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-[7px] text-[11px] font-medium transition-all duration-150 shadow-xs cursor-pointer active:scale-95 border ${
               isLight
                 ? 'bg-black/[0.06] hover:bg-black/[0.12] text-black/85 border-black/10'
-                : 'bg-white/10 hover:bg-white/18 text-white/90 border-white/15'
+                : 'bg-white/[0.08] hover:bg-white/[0.14] text-white/90 border-white/[0.08]'
             }`}
             title="Send selection or recent output to active chat"
           >
@@ -492,7 +492,7 @@ export const AgentTerminalView: React.FC<AgentTerminalViewProps> = ({
       </div>
 
       {/* Terminal Viewport */}
-      <div className="flex-1 min-h-0 relative p-1.5 overflow-hidden">
+      <div className="flex-1 min-h-0 relative px-2 py-1 overflow-hidden">
         {sessions.length > 0 ? (
           <div ref={containerRef} className="w-full h-full min-h-0" />
         ) : (

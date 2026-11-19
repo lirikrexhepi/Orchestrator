@@ -187,7 +187,8 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   const activeMode = cardMode !== undefined ? cardMode : internalMode;
   const [browserHost, setBrowserHost] = useState<HTMLElement | null>(null);
   const browserHeader = activeMode === 'browser';
-  const immersive = isBrowserImmersive && isFullscreen && browserHeader;
+  const hideChatChrome = browserHeader || activeMode === 'terminal';
+  const immersive = (isBrowserImmersive && isFullscreen && browserHeader) || (isFullscreen && activeMode === 'terminal');
 
   const driverProgression = useMemo(() => {
     const steps: Array<{ driver: string; model?: string }> = [];
@@ -539,7 +540,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   };
 
   const insetForDock = (base: React.CSSProperties): React.CSSProperties =>
-    immersive ? { ...base, bottom: 0, left: 0 } : isFullscreen ? { ...base, bottom: 0, left: 0 } : base;
+    immersive || hideChatChrome ? { ...base, top: 0, right: 0, bottom: 0, left: 0 } : isFullscreen ? { ...base, bottom: 0, left: 0 } : base;
 
   const getTabStyle = (modeKey: AgentCardMode): React.CSSProperties => {
     const diff = MODE_INDEX[modeKey] - MODE_INDEX[activeMode];
@@ -670,7 +671,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
             ? (isFullscreen ? 'none' : '1px solid var(--theme-panel-border, rgba(0, 0, 0, 0.08))')
             : (isFullscreen ? 'none' : '1px solid var(--theme-panel-border, rgba(255, 255, 255, 0.12))')
         }
-        className={`w-full h-full ${immersive || browserHeader ? 'p-0 pt-[48px]' : isFullscreen ? 'p-4 pt-[60px]' : 'p-4'} ${isLight ? 'text-[#030303]' : 'text-white'} shadow-2xl relative box-border transition-all duration-200 ease-out ${
+        className={`w-full h-full ${immersive || hideChatChrome ? 'p-0' : isFullscreen ? 'p-4 pt-[60px]' : 'p-4'} ${isLight ? 'text-[#030303]' : 'text-white'} shadow-2xl relative box-border transition-all duration-200 ease-out ${
           isGrid
             ? (isLight
                 ? 'group-hover/card:border-black/25 group-hover/card:shadow-[0_20px_48px_-12px_rgba(0,0,0,0.2),0_0_0_1px_rgba(0,0,0,0.1)]'
@@ -713,7 +714,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
           </div>
 
           {/* Card Header (Reinvented: seamless, borderless, organic glass) */}
-          <div className={`items-center justify-between shrink-0 pt-0.5 pb-2 px-1 ${immersive || browserHeader ? 'hidden' : 'flex'}`}>
+          <div className={`items-center justify-between shrink-0 pt-0.5 pb-2 px-1 ${immersive || hideChatChrome ? 'hidden' : 'flex'}`}>
             <div className={browserHeader ? 'flex items-center gap-2 min-w-0 pr-2 flex-1' : isFullscreen ? 'flex flex-col items-start gap-1.5 min-w-0 pr-2 flex-1' : 'flex items-center gap-2 min-w-0 pr-2'}>
               <div className="flex items-center gap-3 min-w-0">
                 <div
@@ -749,7 +750,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                     <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 ring-1 ring-black/40 shadow-[0_0_6px_rgba(52,211,153,0.9)] animate-pulse" />
                   )}
                 </div>
-                {isFullscreen && !browserHeader && (
+                {isFullscreen && !hideChatChrome && (
                   <>
                     {projectMeta}
                     <ContextRing usage={contextUsage} isLight={isLight} large />
@@ -757,7 +758,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 )}
               </div>
 
-              {!browserHeader && (
+              {!hideChatChrome && (
                 <div className="flex items-center gap-2 min-w-0 max-w-full">
                   <ChatTitle
                     title={title}
@@ -768,7 +769,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 </div>
               )}
 
-              {!browserHeader && !isFullscreen && <ContextRing usage={contextUsage} isLight={isLight} />}
+              {!hideChatChrome && !isFullscreen && <ContextRing usage={contextUsage} isLight={isLight} />}
 
               <div ref={setBrowserHost} className={browserHeader ? 'flex flex-1 min-w-0 items-center' : 'hidden'} />
             </div>
@@ -789,7 +790,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 </div>
               )}
 
-              {!isGrid && !browserHeader && (subagents.length > 0 || (isFullscreen && isFocused)) && (
+              {!isGrid && !hideChatChrome && (subagents.length > 0 || (isFullscreen && isFocused)) && (
                 <SubagentMenu
                   agents={subagents}
                   isLight={isLight}
@@ -803,7 +804,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
               )}
 
               {/* Minimalist Close Button for Fullscreen: Fixed directly above the docked workspace card */}
-              {onClose && isFullscreen && !browserHeader && createPortal(
+              {onClose && isFullscreen && !hideChatChrome && createPortal(
                 <button
                   type="button"
                   onClick={(e) => {
