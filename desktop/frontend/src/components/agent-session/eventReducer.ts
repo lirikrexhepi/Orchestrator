@@ -704,6 +704,18 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
       return merged;
     }
 
+    // Check if tool is todo and input has arrived in phase 2
+    const name = tool.name || tool.kind || '';
+    if (tool.category === 'todo' || TODO_TOOLS.has(name) || TODO_TOOLS.has(name.toLowerCase())) {
+      const todos = toTodos(asRecord(tool.input));
+      if (todos.length > 0) {
+        return [
+          ...blocks.filter((b, i) => i !== index && b.type !== 'tool_todo'),
+          { type: 'tool_todo', id: 'session-tasklist', title: 'Tasklist', todos },
+        ];
+      }
+    }
+
     const merged = [...blocks];
     merged[index] = mergeToolBlock(blocks[index], tool, Boolean(event.delta));
     return merged;
@@ -844,6 +856,23 @@ function groupSummary(items: ToolGroupItem[]): string {
   return parts.length > 0 ? parts.join(', ') : `${items.length} actions`;
 }
 
+function isPlaceholderCommand(cmd?: string, toolName?: string, id?: string): boolean {
+  if (!cmd) return true;
+  if (id && cmd === id) return true;
+  const trimmed = cmd.trim();
+  if (!trimmed) return true;
+  if (toolName && trimmed.toLowerCase() === toolName.toLowerCase()) return true;
+  return /^(bash|powershell|cmd|sh|terminal|run_command|commandexecution)$/i.test(trimmed);
+}
+
+function isPlaceholderPath(path?: string, toolName?: string): boolean {
+  if (!path) return true;
+  const trimmed = path.trim();
+  if (!trimmed) return true;
+  if (toolName && trimmed.toLowerCase() === toolName.toLowerCase()) return true;
+  return EDIT_TOOLS.has(trimmed) || EDIT_TOOLS.has(trimmed.toLowerCase());
+}
+
 function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta = false): AgentStreamBlock {
   const status = toStatus(tool.status);
   const output = (previous?: string) =>
@@ -856,13 +885,17 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
         tool.target ||
         field(nextInput, COMMAND_KEYS) ||
         (typeof nextInput.title === 'string' ? nextInput.title : '');
-      const summary = tool.summary || existing.summary;
+      const summary =
+        tool.summary ||
+        (typeof nextInput.toolSummary === 'string' && nextInput.toolSummary.trim()
+          ? nextInput.toolSummary.trim()
+          : undefined) ||
+        existing.summary;
+      const shouldUpdateCmd =
+        cmd && (isPlaceholderCommand(existing.command, tool.name || existing.id, existing.id) || existing.command === cmd);
       return {
         ...existing,
-        command:
-          cmd && (existing.command === 'bash' || existing.command === 'powershell' || existing.command === existing.id || !existing.command)
-            ? cmd
-            : existing.command,
+        command: shouldUpdateCmd ? cmd : (existing.command || cmd),
         summary,
         status,
         output: output(existing.output),
@@ -871,22 +904,39 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
     }
     case 'tool_search': {
       const nextInput = asRecord(tool.input);
-      const query = tool.target || (tool.input ? extractTarget(tool.name || 'search', nextInput) : '') || existing.query;
+      const extractedQuery = tool.input ? extractTarget(tool.name || 'search', nextInput, existing.driver) : '';
+      const isPlaceholderQuery =
+        !existing.query ||
+        existing.query === existing.id ||
+        existing.query === (tool.name || '') ||
+        SEARCH_TOOLS.has(existing.query) ||
+        SEARCH_TOOLS.has(existing.query.toLowerCase());
+      const query = tool.target || (extractedQuery && isPlaceholderQuery ? extractedQuery : extractedQuery || existing.query);
       return {
         ...existing,
-        query,
+        query: query || existing.query,
         files: tool.output ? toFileList(tool.output) : existing.files,
         isSearching: status === 'running',
       };
     }
     case 'tool_edit': {
-      const next = { ...existing, status };
+      const next = { ...existing, status, toolName: tool.name || existing.toolName };
+      const nextInput = asRecord(tool.input);
       if (tool.target) {
         next.filePath = tool.target;
       }
       if (tool.diffs?.length || tool.input) {
-        const computed = editBlockFields(tool.name || existing.toolName || '', asRecord(tool.input), tool.diffs);
-        if (computed.diffLines.length > 0) Object.assign(next, computed);
+        const computed = editBlockFields(tool.name || existing.toolName || '', nextInput, tool.diffs);
+        if (
+          computed.filePath &&
+          (isPlaceholderPath(next.filePath, existing.toolName || tool.name) ||
+            computed.filePath !== (tool.name || existing.toolName || ''))
+        ) {
+          next.filePath = computed.filePath;
+        }
+        if (computed.diffLines.length > 0) {
+          Object.assign(next, computed);
+        }
       }
       return next;
     }
@@ -894,11 +944,24 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
       const items = existing.items.map((item) => {
         if (item.id !== tool.id) return item;
         const nextInput = asRecord(tool.input);
+        const cmd = field(nextInput, COMMAND_KEYS);
+        const { type: newType, action: newAction } = determineAction(
+          tool.name || item.action,
+          cmd,
+          item.driver || existing.driver,
+          tool.category,
+        );
         const extracted =
           tool.target ||
-          (tool.input ? extractTarget(tool.name || item.action, nextInput, item.driver || existing.driver) : '');
+          (tool.input ? extractTarget(tool.name || newAction, nextInput, item.driver || existing.driver) : '');
+        const cleanExtracted =
+          extracted &&
+          extracted.toLowerCase() !== (tool.name || '').toLowerCase() &&
+          extracted.toLowerCase() !== newAction.toLowerCase()
+            ? extracted
+            : '';
         const nextTarget =
-          extracted ||
+          cleanExtracted ||
           (item.target &&
           item.target.toLowerCase() !== item.action.toLowerCase() &&
           item.target.toLowerCase() !== (tool.name || '').toLowerCase()
@@ -906,6 +969,8 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
             : '');
         return {
           ...item,
+          type: newType || item.type,
+          action: newAction || item.action,
           status,
           target: nextTarget,
           details: output(item.details),
@@ -917,6 +982,14 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
         items,
         title: groupTitle(items),
         summary: items.length > 1 ? summary : (items[0]?.target || summary),
+      };
+    }
+    case 'tool_todo': {
+      const nextInput = asRecord(tool.input);
+      const todos = toTodos(nextInput);
+      return {
+        ...existing,
+        todos: todos.length > 0 ? todos : existing.todos,
       };
     }
     case 'mcp_app': {

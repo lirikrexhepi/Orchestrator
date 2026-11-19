@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,6 +23,9 @@ type serverEntry struct {
 	// threads counts sessions using this server; the server is stopped when
 	// the last one ends, so worktrees do not leave resident servers behind.
 	threads int
+
+	mcpEndpoint string
+	mcpAuth     string
 }
 
 // Adapter talks to managed (or external) OpenCode HTTP servers. Servers are
@@ -147,6 +151,52 @@ func (a *Adapter) ensureServer(ctx context.Context, cwd string) (*httpClient, er
 
 	go a.streamEvents(streamCtx, srv.baseURL)
 	return api, nil
+}
+
+func (a *Adapter) ensureMCP(ctx context.Context, api *httpClient, key string, mcpCfg *domain.MCPConfig) error {
+	if mcpCfg == nil || mcpCfg.Endpoint == "" {
+		return nil
+	}
+
+	a.mu.Lock()
+	entry := a.servers[key]
+	if entry != nil && entry.mcpEndpoint == mcpCfg.Endpoint && entry.mcpAuth == mcpCfg.AuthHeader {
+		a.mu.Unlock()
+		return nil
+	}
+	a.mu.Unlock()
+
+	var headers map[string]string
+	if mcpCfg.AuthHeader != "" {
+		headers = map[string]string{
+			"Authorization": mcpCfg.AuthHeader,
+		}
+	}
+
+	req := AddMcpRequest{
+		Name: "orchestrator",
+		Config: McpRemoteConfig{
+			Type:    "remote",
+			URL:     mcpCfg.Endpoint,
+			Enabled: true,
+			Headers: headers,
+			OAuth:   false,
+		},
+	}
+
+	if err := api.do(ctx, http.MethodPost, "/mcp", req, nil); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	if e := a.servers[key]; e != nil {
+		e.mcpEndpoint = mcpCfg.Endpoint
+		e.mcpAuth = mcpCfg.AuthHeader
+	}
+	a.mu.Unlock()
+
+	logger.Infof("OpenCode", "Configured loopback MCP server at %s", mcpCfg.Endpoint)
+	return nil
 }
 
 func (a *Adapter) onServerError(sessionID, errMsg string) {
@@ -322,6 +372,12 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 	api, err := a.ensureServer(ctx, cwd)
 	if err != nil {
 		return domain.Session{}, err
+	}
+
+	if in.MCP != nil && in.MCP.Endpoint != "" && !in.PlanOnly {
+		if err := a.ensureMCP(ctx, api, serverKey(cwd), in.MCP); err != nil {
+			return domain.Session{}, fmt.Errorf("configure opencode mcp: %w", err)
+		}
 	}
 
 	model := in.Model
