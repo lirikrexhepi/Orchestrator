@@ -145,6 +145,38 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   const provider = selectedModel?.providerId ?? 'antigravity';
   const icon = providerIcon(provider, isLight);
 
+  // Listen for chat context/snippet injections (e.g. from Terminal "Send to chat")
+  useEffect(() => {
+    const handleInject = (e: Event) => {
+      const custom = e as CustomEvent<{ text: string; threadId?: string }>;
+      if (!custom.detail?.text) return;
+      if (
+        custom.detail.threadId &&
+        activeChatKey &&
+        activeChatKey !== '__home__' &&
+        custom.detail.threadId !== activeChatKey
+      ) {
+        return;
+      }
+      setText((prev) => {
+        const trimmed = prev.trim();
+        return trimmed ? `${trimmed}\n\n${custom.detail.text}` : custom.detail.text;
+      });
+      setTimeout(() => {
+        textareaRef.current?.focus();
+        if (textareaRef.current) {
+          textareaRef.current.selectionStart = textareaRef.current.value.length;
+          textareaRef.current.selectionEnd = textareaRef.current.value.length;
+        }
+      }, 50);
+    };
+
+    window.addEventListener('orchestrator:inject-chat-text', handleInject);
+    return () => {
+      window.removeEventListener('orchestrator:inject-chat-text', handleInject);
+    };
+  }, [activeChatKey]);
+
   // Sync selected model to current chat's model when switching chats with an empty input
   useEffect(() => {
     if (!activeChatKey || activeChatKey === '__home__') {

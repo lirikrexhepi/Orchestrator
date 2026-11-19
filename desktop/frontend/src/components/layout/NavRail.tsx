@@ -154,6 +154,17 @@ export const NavRail: React.FC<NavRailProps> = ({
               <Globe size={15} strokeWidth={1.8} />
             </button>
 
+            {/* Terminal view icon - Dedicated and always accessible */}
+            <button
+              type="button"
+              onClick={() => onModeSelect?.('terminal')}
+              className={getIconClass(cardMode === 'terminal')}
+              title="Terminal"
+              aria-label="Terminal"
+            >
+              <Terminal size={15} strokeWidth={1.8} />
+            </button>
+
             {/* Servers view icon */}
             <button
               type="button"
@@ -163,7 +174,7 @@ export const NavRail: React.FC<NavRailProps> = ({
               title={hasServers ? 'Servers' : 'Servers (none running)'}
               aria-label="Servers"
             >
-              <Terminal size={15} strokeWidth={1.8} />
+              <MaterialIcon name="dns" size="15px" />
             </button>
 
             {/* Changes / Git icon - Accessible, opens Git remote repo in built-in browser */}

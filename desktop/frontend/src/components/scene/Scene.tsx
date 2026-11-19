@@ -765,8 +765,8 @@ export const Scene: React.FC<SceneProps> = () => {
           </button>
         )}
 
-        {/* Floating Bottom Liquid Glass Input (Home and Chat - Hidden on Web View) */}
-        {cardMode !== 'browser' && (
+        {/* Floating Bottom Liquid Glass Input (Home and Chat - Hidden on Web View & Terminal) */}
+        {cardMode !== 'browser' && cardMode !== 'terminal' && (
           <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-[640px] px-4 z-40 pointer-events-auto">
             <GlassInput
               onSubmit={handleSubmitPrompt}

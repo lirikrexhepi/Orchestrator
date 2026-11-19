@@ -17,6 +17,7 @@ import { AgentStreamBlock, SubagentBlockData, TodoToolBlockData } from './types'
 import { SubagentMenu } from './SubagentMenu';
 import { SubagentFullView, WorkspaceSection } from './WorkspacePanel';
 import { AgentTasklistView } from './AgentTasklistView';
+import { AgentTerminalView } from './AgentTerminalView';
 import { AgentViewSwitcher } from './AgentViewSwitcher';
 import { useSmoothScroll } from '../common/useSmoothScroll';
 import { usePinnedScroll } from '../common/usePinnedScroll';
@@ -32,7 +33,7 @@ import { formatModelBadge, renderChatIcon } from '../common/DynamicIsland';
 
 export type AgentSessionStatus = 'working' | 'finished' | 'idle' | 'error';
 
-export type AgentCardMode = 'chat' | 'tasklist' | 'browser' | 'servers' | 'changes';
+export type AgentCardMode = 'chat' | 'tasklist' | 'browser' | 'terminal' | 'servers' | 'changes';
 
 export interface AgentWindowProps {
   id?: string;
@@ -90,6 +91,7 @@ export interface AgentWindowProps {
   cardHeight?: number;
   browserTargetUrl?: string;
   browserTargetNonce?: number;
+  onInjectChatText?: (text: string) => void;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -170,6 +172,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   cardHeight,
   browserTargetUrl,
   browserTargetNonce,
+  onInjectChatText,
   className = '',
   style,
 }) => {
@@ -376,6 +379,19 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
     else setInternalMode(m);
   };
 
+  const handleSendTerminalToChat = (snippet: string) => {
+    if (onInjectChatText) {
+      onInjectChatText(snippet);
+    } else {
+      window.dispatchEvent(
+        new CustomEvent('orchestrator:inject-chat-text', {
+          detail: { text: snippet, threadId: id },
+        })
+      );
+    }
+    setMode('chat');
+  };
+
   const smoothScroll = useSmoothScroll(feedScrollRef, {
     speed: 1.0,
     enabled: activeMode === 'chat' && mode !== 'grid',
@@ -517,8 +533,9 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
     chat: 0,
     tasklist: 1,
     browser: 2,
-    servers: 3,
-    changes: 4,
+    terminal: 3,
+    servers: 4,
+    changes: 5,
   };
 
   const insetForDock = (base: React.CSSProperties): React.CSSProperties =>
@@ -951,7 +968,25 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
               )}
             </div>
 
-            {/* 4. Embedded Servers View */}
+            {/* 4. Embedded Terminal View */}
+            <div
+              className={`absolute inset-0 flex flex-col pt-1 ${
+                isGrid ? 'pointer-events-none select-none' : ''
+              }`}
+              style={insetForDock(getTabStyle('terminal'))}
+            >
+              {visited.has('terminal') && (
+                <AgentTerminalView
+                  threadId={id ?? ''}
+                  projectPath={projectPath}
+                  isFocused={isFocused && activeMode === 'terminal' && !isGrid}
+                  isLight={isLight}
+                  onSendToChat={handleSendTerminalToChat}
+                />
+              )}
+            </div>
+
+            {/* 5. Embedded Servers View */}
             <div
               className={`absolute inset-0 flex flex-col pt-1 ${
                 isGrid ? 'pointer-events-none select-none' : ''

@@ -93,6 +93,30 @@ export const AgentInput: React.FC<AgentInputProps> = ({
     setTextareaHeight(targetHeight);
   }, [message]);
 
+  // Listen for chat context/snippet injections (e.g. from Terminal "Send to chat")
+  useEffect(() => {
+    const handleInject = (e: Event) => {
+      const custom = e as CustomEvent<{ text: string; threadId?: string }>;
+      if (!custom.detail?.text) return;
+      setMessage((prev) => {
+        const trimmed = prev.trim();
+        return trimmed ? `${trimmed}\n\n${custom.detail.text}` : custom.detail.text;
+      });
+      setTimeout(() => {
+        textareaRef.current?.focus();
+        if (textareaRef.current) {
+          textareaRef.current.selectionStart = textareaRef.current.value.length;
+          textareaRef.current.selectionEnd = textareaRef.current.value.length;
+        }
+      }, 50);
+    };
+
+    window.addEventListener('orchestrator:inject-chat-text', handleInject);
+    return () => {
+      window.removeEventListener('orchestrator:inject-chat-text', handleInject);
+    };
+  }, []);
+
   // Handle clicking outside to close pickers
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {

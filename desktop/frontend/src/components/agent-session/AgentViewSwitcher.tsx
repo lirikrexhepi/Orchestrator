@@ -37,13 +37,17 @@ const ICONS: Record<AgentCardMode, string> = {
   chat: materialIconSvg('chat'),
   tasklist: materialIconSvg('checklist'),
   browser: materialIconSvg('globe'),
-  servers: materialIconSvg('terminal'),
+  terminal: materialIconSvg('terminal'),
+  servers: materialIconSvg('dns'),
   changes: materialIconSvg('fork_right'),
 };
 
 export const AgentViewSwitcher: React.FC<AgentViewSwitcherProps> = ({ mode, onChange, tasks, servers, changes, isLight }) => {
   const available = React.useMemo(() => {
-    const views: { id: AgentCardMode; label: string }[] = [{ id: 'chat', label: 'Chat' }];
+    const views: { id: AgentCardMode; label: string }[] = [
+      { id: 'chat', label: 'Chat' },
+      { id: 'terminal', label: 'Terminal' },
+    ];
     if (tasks.total > 0) views.push({ id: 'tasklist', label: `Tasks ${tasks.done}/${tasks.total}` });
     if (servers > 0) {
       views.push({ id: 'browser', label: 'Preview' });
