@@ -185,6 +185,8 @@ export interface SubagentBlockData {
   result?: string;
   entries: SubagentEntry[];
   previousToolIds?: string[];
+  isAsync?: boolean;
+  childThreadId?: string;
 }
 
 export interface McpAppBlockData {

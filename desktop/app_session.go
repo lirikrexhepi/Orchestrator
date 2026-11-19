@@ -214,7 +214,7 @@ func (a *App) SwitchTaskAccountWithOptions(oldThreadID, driver, account, model s
 	oldAccount := domain.NormalizeAccount(oldTask.Account)
 
 	events := a.threadTranscript(oldTask)
-	handoff := session.BuildHandoffPrompt(oldTask.Driver, newDriver, events, cwd)
+	handoff := session.BuildHandoffPromptForThread(oldTask.Driver, newDriver, oldThreadID, events, cwd)
 
 	_ = a.manager.Stop(a.ctx, oldThreadID)
 	if _, err := a.manager.Start(a.ctx, newDriver, domain.SessionStartInput{
@@ -253,7 +253,7 @@ func (a *App) SwitchTaskAccountWithOptions(oldThreadID, driver, account, model s
 	// to the model inside the sent turn so the chat reads as one conversation.
 	displayText := strings.TrimSpace(text)
 	if displayText == "" {
-		displayText = continuation
+		displayText = "Continue from previous provider."
 	}
 	a.manager.RecordUserMessage(oldThreadID, turnID, displayText, files...)
 	if err := a.manager.Send(a.ctx, domain.SendTurnInput{

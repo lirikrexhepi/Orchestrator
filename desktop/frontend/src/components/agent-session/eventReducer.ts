@@ -1361,6 +1361,9 @@ export function settleAllBlocks(blocks: AgentStreamBlock[], failed = false): Age
         return b;
       }
       case 'subagent': {
+        if (!failed && b.isAsync && b.status === 'running') {
+          return b;
+        }
         const isRunning = b.status === 'running';
         const hasRunningEntries = b.entries?.some((e) => e.kind === 'tool' && e.status === 'running');
         if (isRunning || hasRunningEntries) {

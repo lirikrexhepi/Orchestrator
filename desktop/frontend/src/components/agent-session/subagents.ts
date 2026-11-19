@@ -3,6 +3,23 @@ import { AgentStreamBlock, SubagentBlockData, SubagentEntry } from './types';
 import { isEditToolName } from './threadChanges';
 
 const SPAWN_TOOLS = new Set(['task', 'agent', 'invoke_subagent', 'subagent', 'spawn', 'sub_agent']);
+const DELEGATE_TOOLS = new Set([
+  'delegate_task',
+  'mcp__orchestrator__delegate_task',
+  'orchestrator:delegate_task',
+  'orchestrator__delegate_task',
+]);
+
+export function isSpawnTool(name: string): boolean {
+  const norm = (name || '').toLowerCase().trim();
+  return SPAWN_TOOLS.has(norm) || DELEGATE_TOOLS.has(norm);
+}
+
+export function isDelegateTool(name: string): boolean {
+  const norm = (name || '').toLowerCase().trim();
+  return DELEGATE_TOOLS.has(norm);
+}
+
 const TARGET_KEYS = ['file_path', 'command', 'pattern', 'path', 'url', 'query', 'description', 'prompt', 'Prompt', 'Role', 'TypeName'];
 
 export function isSubagentEvent(event: RuntimeEvent): boolean {
@@ -91,21 +108,57 @@ function setEntry(entries: SubagentEntry[], entry: SubagentEntry): SubagentEntry
   return out;
 }
 
+function lookupField(input: Record<string, unknown>, keys: string[]): unknown {
+  const entries = Object.entries(input);
+  for (const targetKey of keys) {
+    const lowerTarget = targetKey.toLowerCase();
+    for (const [k, v] of entries) {
+      if (k.toLowerCase() === lowerTarget && v !== undefined && v !== null) {
+        return v;
+      }
+    }
+  }
+  return undefined;
+}
+
 function describe(input: Record<string, unknown>): { title: string; agentType: string | undefined; prompt: string | undefined } {
-  const rawTitle = input.Role ?? input.role ?? input.description ?? input.subagent_type ?? input.title ?? input.TypeName ?? input.name;
-  const title = typeof rawTitle === 'string' ? rawTitle.trim() : '';
-  const rawType = input.TypeName ?? input.typeName ?? input.subagent_type ?? input.agent ?? input.role ?? input.Role;
-  const agentType = typeof rawType === 'string' && rawType.trim() ? rawType : undefined;
-  const rawPrompt = input.Prompt ?? input.prompt ?? input.instruction ?? input.instructions ?? input.task;
-  const prompt = typeof rawPrompt === 'string' && rawPrompt ? rawPrompt : undefined;
+  const explicitTitleVal = lookupField(input, ['description', 'title', 'role', 'subagent_type', 'typename', 'name']);
+  let title = typeof explicitTitleVal === 'string' ? explicitTitleVal.trim() : '';
+
+  const rawPromptVal = lookupField(input, ['prompt', 'task', 'instruction', 'instructions']);
+  const prompt = typeof rawPromptVal === 'string' && rawPromptVal.trim() ? rawPromptVal.trim() : undefined;
+
+  if (!title && prompt) {
+    const lines = prompt.split(/\r?\n/);
+    for (const rawLine of lines) {
+      const cleaned = rawLine.replace(/^[\s#*>-]+/, '').trim();
+      if (cleaned) {
+        title = cleaned.length > 56 ? cleaned.slice(0, 55).trimEnd() + '…' : cleaned;
+        break;
+      }
+    }
+  }
+
+  const rawType = lookupField(input, ['typename', 'subagent_type', 'agent', 'role']);
+  let agentType = typeof rawType === 'string' && rawType.trim() ? rawType.trim() : undefined;
+
+  const driverVal = lookupField(input, ['driver']);
+  const modelVal = lookupField(input, ['model']);
+  if (typeof driverVal === 'string' && driverVal.trim()) {
+    agentType = driverVal.trim();
+  } else if (!agentType && typeof modelVal === 'string' && modelVal.trim()) {
+    agentType = modelVal.trim();
+  }
+
   return { title, agentType, prompt };
 }
 
 function withDetails(agent: SubagentBlockData, input: Record<string, unknown>): SubagentBlockData {
   const { title, agentType, prompt } = describe(input);
+  const nextTitle = title && title !== 'Subagent' ? title : agent.title;
   return {
     ...agent,
-    title: title || agent.title,
+    title: nextTitle,
     agentType: agentType ?? agent.agentType,
     prompt: prompt ?? agent.prompt,
   };
@@ -125,7 +178,7 @@ export function trackSubagents(blocks: AgentStreamBlock[], event: RuntimeEvent):
   const tool = event.tool;
   switch (event.kind) {
     case 'tool.call': {
-      if (!tool || !SPAWN_TOOLS.has(tool.name.toLowerCase())) return blocks;
+      if (!tool || !isSpawnTool(tool.name)) return blocks;
       const input = (tool.input ?? {}) as Record<string, unknown>;
       const { title, agentType } = describe(input);
       return update(relaunched(blocks, tool.id, title, agentType, event.at), tool.id, event.at, (agent) => ({
@@ -139,11 +192,54 @@ export function trackSubagents(blocks: AgentStreamBlock[], event: RuntimeEvent):
       if (index < 0) return blocks;
       if ((blocks[index] as SubagentBlockData).toolId !== tool.id) return blocks;
       return update(blocks, tool.id, event.at, (agent) => {
-        if (tool.async) return agent;
         const input = (tool.input ?? {}) as Record<string, unknown>;
+        const detailed = withDetails(agent, input);
+
+        let childThreadId = agent.childThreadId;
+        let outputStatus: string | undefined;
+        if (isDelegateTool(tool.name) && tool.output) {
+          try {
+            const parsed = typeof tool.output === 'string' ? JSON.parse(tool.output.trim()) : tool.output;
+            if (parsed && typeof parsed === 'object') {
+              if (typeof parsed.threadId === 'string' && parsed.threadId.trim()) {
+                childThreadId = parsed.threadId.trim();
+              }
+              if (typeof parsed.status === 'string' && parsed.status.trim()) {
+                outputStatus = parsed.status.trim().toLowerCase();
+              }
+            }
+          } catch {}
+        }
+
+        if (tool.async) {
+          return {
+            ...detailed,
+            isAsync: true,
+            status: 'running',
+            childThreadId: childThreadId ?? agent.childThreadId,
+            startedAt: earliest(agent.startedAt, event.at),
+          };
+        }
+
+        if (isDelegateTool(tool.name) && childThreadId) {
+          const isStillRunning = outputStatus === 'running';
+          const isCompleted = outputStatus === 'completed' || outputStatus === 'done' || outputStatus === 'success';
+          const nextStatus = isStillRunning ? 'running' : (isCompleted ? 'completed' : (tool.status === 'failed' ? 'error' : 'completed'));
+          const startedAt = agent.startedAt ?? event.at;
+          return {
+            ...detailed,
+            isAsync: isStillRunning || agent.isAsync,
+            childThreadId,
+            status: nextStatus,
+            startedAt,
+            endedAt: nextStatus === 'running' ? undefined : (agent.endedAt ?? event.at),
+            result: tool.output || agent.result,
+          };
+        }
+
         if (!isTerminal(tool.status)) {
           return {
-            ...withDetails(agent, input),
+            ...detailed,
             status: agent.status === 'running' ? 'running' : agent.status,
             startedAt: earliest(agent.startedAt, event.at),
             toolCount: tool.toolCount && tool.toolCount > 0 ? tool.toolCount : agent.toolCount,
@@ -151,13 +247,13 @@ export function trackSubagents(blocks: AgentStreamBlock[], event: RuntimeEvent):
           };
         }
         if (tool.status === 'failed' && interrupted(agent, tool.output)) {
-          return { ...withDetails(agent, input), status: 'stopped', endedAt: agent.endedAt ?? event.at };
+          return { ...detailed, status: 'stopped', endedAt: agent.endedAt ?? event.at };
         }
         const startedAt = agent.startedAt ?? event.at;
         const reported = tool.durationMs && tool.durationMs > 0 ? tool.durationMs : 0;
         const observed = event.at ? Math.max(event.at, startedAt ?? 0) : startedAt;
         return {
-          ...withDetails(agent, input),
+          ...detailed,
           status: tool.status === 'failed' ? 'error' : 'completed',
           startedAt,
           endedAt: reported && startedAt ? startedAt + reported : observed,
@@ -172,6 +268,8 @@ export function trackSubagents(blocks: AgentStreamBlock[], event: RuntimeEvent):
       if (!parent || !tool) return blocks;
       return update(blocks, parent, event.at, (agent) => ({
         ...agent,
+        status: agent.status === 'completed' ? 'running' : agent.status,
+        endedAt: agent.status === 'completed' ? undefined : agent.endedAt,
         toolCount: Math.max(agent.toolCount ?? 0, tool.toolCount ?? 0) || agent.toolCount,
         tokens: Math.max(agent.tokens ?? 0, tool.tokens ?? 0) || agent.tokens,
       }));
@@ -181,6 +279,8 @@ export function trackSubagents(blocks: AgentStreamBlock[], event: RuntimeEvent):
       if (!parent || !event.text) return blocks;
       return update(blocks, parent, event.at, (agent) => ({
         ...agent,
+        status: agent.status === 'completed' ? 'running' : agent.status,
+        endedAt: agent.status === 'completed' ? undefined : agent.endedAt,
         entries: setEntry(agent.entries, { id: `t-${event.itemId || event.seq}`, kind: 'text', text: event.text ?? '', at: event.at }),
       }));
     }
@@ -188,7 +288,7 @@ export function trackSubagents(blocks: AgentStreamBlock[], event: RuntimeEvent):
       const parent = event.parentToolId;
       if (!parent || !tool) return blocks;
       const input = (tool.input ?? {}) as Record<string, unknown>;
-      const target = targetOf(input);
+      const target = (tool.target && tool.target.trim()) ? tool.target.trim() : targetOf(input);
       const edit = isEditToolName(tool.name)
         ? editBlockFields(tool.name || '', input, tool.diffs)
         : null;
@@ -208,6 +308,8 @@ export function trackSubagents(blocks: AgentStreamBlock[], event: RuntimeEvent):
       }
       return update(blocks, parent, event.at, (agent) => ({
         ...agent,
+        status: agent.status === 'completed' ? 'running' : agent.status,
+        endedAt: agent.status === 'completed' ? undefined : agent.endedAt,
         entries: setEntry(agent.entries, entry),
       }));
     }
