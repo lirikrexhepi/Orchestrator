@@ -91,6 +91,7 @@ interface FeedBlockProps {
   block: AgentStreamBlock;
   isLatestText: boolean;
   isLatestPlan: boolean;
+  enablePlanParsing: boolean;
   launched: boolean;
   canUseWorktree?: boolean;
   isActive: boolean;
@@ -108,6 +109,7 @@ const FeedBlock = React.memo(function FeedBlock({
   block,
   isLatestText,
   isLatestPlan,
+  enablePlanParsing,
   launched,
   canUseWorktree,
   isActive,
@@ -129,7 +131,7 @@ const FeedBlock = React.memo(function FeedBlock({
 
     case 'text': {
       const tone = block.variant === 'error' ? 'text-rose-300' : 'text-current';
-      const plan = block.variant ? null : planOf(block.content);
+      const plan = block.variant || !enablePlanParsing ? null : planOf(block.content);
       const cursor = block.isStreaming && (
         <span className="inline-block w-1.5 h-3 bg-current ml-1 animate-pulse align-middle opacity-70" />
       );
@@ -378,13 +380,16 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
   const handlers = React.useRef<Handlers>(handlerProps);
   handlers.current = handlerProps;
 
+  const enablePlanParsing = Boolean(handlerProps.onConfirmPlan);
+
   const latestPlanBlockId = React.useMemo(() => {
+    if (!enablePlanParsing) return null;
     for (let i = blocks.length - 1; i >= 0; i--) {
       const b = blocks[i];
       if (b.type === 'text' && !b.variant && planOf(b.content)) return b.id;
     }
     return null;
-  }, [blocks]);
+  }, [blocks, enablePlanParsing]);
 
   const lastTextId = React.useMemo(() => {
     if (isWorking) return null;
@@ -396,11 +401,14 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
 
   const launchedSet = React.useMemo(() => new Set(launchedKeys ?? []), [launchedKeys]);
 
-  const segments = React.useMemo(() => buildFeedSegments(blocks, isWorking, hasPlan), [blocks, isWorking]);
+  const segments = React.useMemo(
+    () => buildFeedSegments(blocks, isWorking, enablePlanParsing ? hasPlan : () => false),
+    [blocks, isWorking, enablePlanParsing]
+  );
 
   const renderBlock = (block: AgentStreamBlock) => {
     let launched = false;
-    if (block.type === 'text' && launchedSet.size > 0) {
+    if (enablePlanParsing && block.type === 'text' && launchedSet.size > 0) {
       const plan = planOf(block.content);
       launched = Boolean(plan && launchedSet.has(plan.tasks.map((task) => task.title).join('\n')));
     }
@@ -410,6 +418,7 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
         block={block}
         isLatestText={block.id === lastTextId}
         isLatestPlan={block.id === latestPlanBlockId}
+        enablePlanParsing={enablePlanParsing}
         launched={launched}
         canUseWorktree={canUseWorktree}
         isActive={isActive}

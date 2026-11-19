@@ -2,6 +2,8 @@ package antigravity
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -170,5 +172,59 @@ func TestBuildArgsOmitsDangerouslySkipPermissionsWhenNotBypass(t *testing.T) {
 
 	if strings.Contains(args, "--dangerously-skip-permissions") {
 		t.Errorf("default permission mode must not pass --dangerously-skip-permissions: %s", args)
+	}
+}
+
+func TestReadFileBaselineAndSubsequentEdits(t *testing.T) {
+	a, s, captured := newTestAdapter()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "example.txt")
+	if err := os.WriteFile(path, []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. read_file with {"Path": "<temp file>"} captures the baseline.
+	readParams := map[string]any{"Path": path}
+	a.handleEnvelope(s, "turn-1", toolFrame(t, 1, StateActive, "read_file", readParams))
+	a.handleEnvelope(s, "turn-1", toolFrame(t, 1, StateDone, "read_file", readParams))
+
+	s.mu.Lock()
+	baseline, hasBaseline := s.baselines[path]
+	s.mu.Unlock()
+	if !hasBaseline || baseline != "alpha\nbeta\ngamma\n" {
+		t.Fatalf("read_file failed to capture baseline: got %q (hasBaseline=%v)", baseline, hasBaseline)
+	}
+
+	// 2. Subsequent edit_file with {"Path": "<temp file>"} produces populated domain.FileDiff entries on DONE.
+	editParams := map[string]any{"Path": path}
+	a.handleEnvelope(s, "turn-1", toolFrame(t, 2, StateActive, "edit_file", editParams))
+	if err := os.WriteFile(path, []byte("alpha\nmodified\ngamma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.handleEnvelope(s, "turn-1", toolFrame(t, 2, StateDone, "edit_file", editParams))
+
+	editTool := lastTool(t, *captured)
+	if len(editTool.Diffs) == 0 {
+		t.Fatal("expected populated domain.FileDiff for edit_file, got none")
+	}
+	if !strings.Contains(editTool.Diffs[0].NewText, "modified") {
+		t.Errorf("expected edit diff to contain 'modified', got %+v", editTool.Diffs[0])
+	}
+
+	// 3. Subsequent write_file with {"Path": "<temp file>"} produces populated domain.FileDiff entries on DONE.
+	writePath := filepath.Join(dir, "created.txt")
+	writeParams := map[string]any{"Path": writePath}
+	a.handleEnvelope(s, "turn-1", toolFrame(t, 3, StateActive, "write_file", writeParams))
+	if err := os.WriteFile(writePath, []byte("hello world\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.handleEnvelope(s, "turn-1", toolFrame(t, 3, StateDone, "write_file", writeParams))
+
+	writeTool := lastTool(t, *captured)
+	if len(writeTool.Diffs) == 0 {
+		t.Fatal("expected populated domain.FileDiff for write_file, got none")
+	}
+	if writeTool.Diffs[0].NewText != "hello world\n" {
+		t.Errorf("expected write diff new text 'hello world\\n', got %+v", writeTool.Diffs[0])
 	}
 }

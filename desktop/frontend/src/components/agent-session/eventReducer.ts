@@ -18,6 +18,7 @@ const BASH_TOOLS = new Set([
 const EDIT_TOOLS = new Set([
   'Edit', 'Write', 'NotebookEdit', 'replace_file_content', 'write_to_file', 'multi_replace_file_content', 'fileChange',
   'edit', 'write', 'notebookedit', 'patch', 'writefile', 'editfile',
+  'edit_file', 'write_file', 'create_file', 'patch_file', 'multi_edit',
 ]);
 const SEARCH_TOOLS = new Set([
   'Glob', 'Grep', 'grep_search', 'find_by_name',
@@ -32,6 +33,7 @@ const COMMAND_KEYS = ['command', 'CommandLine', 'cmd', 'script', 'input', 'args'
 const PATH_KEYS = [
   'filePath',
   'file_path',
+  'Path',
   'path',
   'AbsolutePath',
   'DirectoryPath',
@@ -56,6 +58,15 @@ function field(input: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
     const value = input[key];
     if (typeof value === 'string' && value) return value;
+  }
+  const entries = Object.entries(input);
+  for (const key of keys) {
+    const lowerKey = key.toLowerCase();
+    for (const [k, value] of entries) {
+      if (k.toLowerCase() === lowerKey && typeof value === 'string' && value) {
+        return value;
+      }
+    }
   }
   return '';
 }
@@ -141,10 +152,25 @@ function determineAction(name: string, cmd?: string, driver?: string): { type: T
   if (lower === 'bash' || lower === 'powershell' || lower === 'run_command' || lower === 'commandexecution' || lower === 'terminal' || lower === 'cmd' || lower === 'sh') {
     return { type: 'bash', action: isInspectionCommand(cmd) ? 'Inspect' : 'Ran' };
   }
-  if (lower === 'edit' || lower === 'replace_file_content' || lower === 'multi_replace_file_content' || lower === 'filechange' || lower === 'patch') {
+  if (
+    lower === 'edit' ||
+    lower === 'replace_file_content' ||
+    lower === 'multi_replace_file_content' ||
+    lower === 'filechange' ||
+    lower === 'patch' ||
+    lower === 'edit_file' ||
+    lower === 'patch_file' ||
+    lower === 'multi_edit'
+  ) {
     return { type: 'edit', action: 'Edit' };
   }
-  if (lower === 'write' || lower === 'write_to_file' || lower === 'writefile') {
+  if (
+    lower === 'write' ||
+    lower === 'write_to_file' ||
+    lower === 'writefile' ||
+    lower === 'write_file' ||
+    lower === 'create_file'
+  ) {
     return { type: 'write', action: 'Write' };
   }
   if (lower === 'webfetch' || lower === 'websearch' || lower === 'read_url_content') {
@@ -546,7 +572,6 @@ export function extractMcpAppInfo(tool: domain.ToolCall): { resourceUri?: string
   if (!tool) return null;
 
   const rawInput = (tool.input && typeof tool.input === 'object' ? tool.input : {}) as Record<string, any>;
-  const rawName = String(tool.name || tool.kind || '').trim().toLowerCase();
 
   // 1. Direct input resourceUri (standard MCP Apps spec or host-injected)
   const directInputUri = rawInput.resourceUri || rawInput._meta?.ui?.resourceUri || rawInput.ui?.resourceUri;
@@ -568,10 +593,9 @@ export function extractMcpAppInfo(tool: domain.ToolCall): { resourceUri?: string
   }
 
   // 3b. JSON payload parsing
-  let parsedOutput: any = null;
   if ((output.startsWith('{') && output.endsWith('}')) || (output.startsWith('[') && output.endsWith(']'))) {
     try {
-      parsedOutput = JSON.parse(output);
+      const parsedOutput = JSON.parse(output);
       const uri =
         parsedOutput?._meta?.ui?.resourceUri ||
         parsedOutput?.result?._meta?.ui?.resourceUri ||
@@ -588,7 +612,7 @@ export function extractMcpAppInfo(tool: domain.ToolCall): { resourceUri?: string
         }
       }
     } catch {
-      parsedOutput = null;
+      // ignore JSON parse failure
     }
   }
 
@@ -598,55 +622,6 @@ export function extractMcpAppInfo(tool: domain.ToolCall): { resourceUri?: string
     return { resourceUri: uiMatch[1] };
   }
 
-  // 4. MCP Tools dispatch (e.g. Antigravity lazy call_mcp_tool or eager mcp_server_tool)
-  const serverName = String(rawInput.ServerName || rawInput.server_name || rawInput.server || '').trim().toLowerCase();
-  const subTool = String(rawInput.ToolName || rawInput.tool_name || rawInput.tool || '').trim().toLowerCase();
-
-  let toolArgs: Record<string, any> = {};
-  const rawArgs = rawInput.Arguments ?? rawInput.arguments ?? rawInput.args;
-  if (typeof rawArgs === 'string') {
-    try {
-      toolArgs = JSON.parse(rawArgs);
-    } catch {
-      toolArgs = {};
-    }
-  } else if (rawArgs && typeof rawArgs === 'object') {
-    toolArgs = rawArgs as Record<string, any>;
-  }
-
-  const isFalacy =
-    serverName === 'falacy' ||
-    rawName.includes('falacy') ||
-    subTool.includes('inspiration') ||
-    rawName.includes('inspiration') ||
-    subTool.includes('boards');
-
-  if (isFalacy) {
-    const effectiveTool = subTool || rawName;
-    const wantsUi = Boolean(toolArgs.render_ui || toolArgs.show_ui || toolArgs.ui);
-    const isExplicitShow =
-      effectiveTool.startsWith('show_') ||
-      effectiveTool.startsWith('view_') ||
-      effectiveTool.startsWith('render_');
-
-    // Only promote to visual MCP App block if explicitly requested or via dedicated show tools
-    if (wantsUi || isExplicitShow) {
-      if (effectiveTool.includes('inspiration') && !effectiveTool.includes('board')) {
-        const itemId = toolArgs.item_id || toolArgs.id || parsedOutput?.id || parsedOutput?.item?.id;
-        if (itemId) {
-          return { resourceUri: `ui://falacy/card/${itemId}` };
-        }
-      }
-
-      if (effectiveTool.includes('board') || effectiveTool.includes('search') || effectiveTool.includes('find')) {
-        const boardId = toolArgs.board_id || toolArgs.target_board_id || toolArgs.categoryId || 'all';
-        const q = toolArgs.query || toolArgs.q || '';
-        const queryParam = q ? `?q=${encodeURIComponent(q)}` : '';
-        return { resourceUri: `ui://falacy/board/${boardId}${queryParam}` };
-      }
-    }
-  }
-
   return null;
 }
 
@@ -654,8 +629,10 @@ export function extractMcpAppInfo(tool: domain.ToolCall): { resourceUri?: string
 function isStandaloneTool(name: string, tool: domain.ToolCall): boolean {
   return (
     EDIT_TOOLS.has(name) ||
+    EDIT_TOOLS.has(name.toLowerCase()) ||
     tool.kind === 'fileChange' ||
     TODO_TOOLS.has(name) ||
+    TODO_TOOLS.has(name.toLowerCase()) ||
     isQuestionTool(name) ||
     Boolean(tool.diffs?.length) ||
     Boolean(extractMcpAppInfo(tool))
@@ -698,36 +675,6 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
         driver: (existing as any).driver || event.driver,
       };
 
-      // If an existing Falacy mcp_app block exists in the stream:
-      // Replace it with the more specific or newer widget (e.g. card replaces board, or search replaces old board)
-      const existingMcpIdx = findLastIndex(merged, (b) => {
-        if (b.type !== 'mcp_app') return false;
-        const bUri = (b as any).resourceUri || '';
-        const aUri = appBlock.resourceUri || '';
-        const isFalacyB = bUri.includes('falacy') || (b as any).toolName?.includes('falacy');
-        const isFalacyA = aUri.includes('falacy') || appBlock.toolName?.includes('falacy');
-        return isFalacyB && isFalacyA;
-      });
-
-      if (existingMcpIdx >= 0) {
-        const prevMcp = merged[existingMcpIdx] as any;
-        const prevUri = prevMcp.resourceUri || '';
-        const currUri = appBlock.resourceUri || '';
-
-        // If current is /card/ and previous is /board/, definitely upgrade to the card
-        // If both are /card/ or both are /board/, update to latest
-        // If current is /board/ and previous is /card/, keep the specific card
-        if (currUri.includes('/card/') || !prevUri.includes('/card/')) {
-          merged[existingMcpIdx] = {
-            ...prevMcp,
-            ...appBlock,
-            id: prevMcp.id,
-          };
-          return merged;
-        }
-        return merged;
-      }
-
       if (!merged.some((b) => b.type === 'mcp_app' && (b.id === appBlock.id || b.toolId === tool.id))) {
         merged.push(appBlock);
       }
@@ -747,7 +694,7 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
   const input = asRecord(tool.input);
 
   // Todo lists: one live list, moved to where the agent currently is.
-  if (TODO_TOOLS.has(name)) {
+  if (TODO_TOOLS.has(name) || TODO_TOOLS.has(name.toLowerCase())) {
     const todos = toTodos(input);
     if (todos.length > 0) {
       return [
@@ -987,7 +934,7 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
     };
   }
 
-  if (BASH_TOOLS.has(name) || tool.kind === 'commandExecution') {
+  if (BASH_TOOLS.has(name) || BASH_TOOLS.has(name.toLowerCase()) || tool.kind === 'commandExecution') {
     const summary =
       driver === 'antigravity' && typeof input.toolSummary === 'string' && input.toolSummary.trim()
         ? input.toolSummary.trim()
@@ -1003,7 +950,7 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
     };
   }
 
-  if (EDIT_TOOLS.has(name) || tool.kind === 'fileChange' || tool.diffs?.length) {
+  if (EDIT_TOOLS.has(name) || EDIT_TOOLS.has(name.toLowerCase()) || tool.kind === 'fileChange' || tool.diffs?.length) {
     const computed = editBlockFields(name, input, tool.diffs);
     return {
       type: 'tool_edit',
@@ -1018,7 +965,7 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
     };
   }
 
-  if (SEARCH_TOOLS.has(name)) {
+  if (SEARCH_TOOLS.has(name) || SEARCH_TOOLS.has(name.toLowerCase())) {
     return {
       type: 'tool_search',
       id,
@@ -1029,7 +976,7 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
     };
   }
 
-  if (TODO_TOOLS.has(name)) {
+  if (TODO_TOOLS.has(name) || TODO_TOOLS.has(name.toLowerCase())) {
     const todos = toTodos(input);
     if (todos.length > 0) return { type: 'tool_todo', id, todos };
   }

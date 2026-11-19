@@ -125,14 +125,14 @@ func (a *Adapter) handleTool(s *session, turnID string, step *StepUpdate) {
 		return
 	}
 	path := toolPath(tool.Input)
-	if editTools[step.ToolName] {
+	if isEditTool(step.ToolName) {
 		if seen == "" {
 			s.captureBaseline(path)
 		}
 		if tool.Status == domain.ToolCompleted {
 			tool.Diffs = s.editDiff(path)
 		}
-	} else if step.ToolName == "view_file" && tool.Status == domain.ToolCompleted {
+	} else if isReadTool(step.ToolName) && tool.Status == domain.ToolCompleted {
 		s.rememberFile(path)
 	}
 

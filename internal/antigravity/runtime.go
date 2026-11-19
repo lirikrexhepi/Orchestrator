@@ -17,16 +17,54 @@ var hiddenTools = map[string]bool{
 	"schedule":    true,
 }
 
-var editTools = map[string]bool{
+var editToolNames = map[string]bool{
 	"write_to_file":              true,
 	"replace_file_content":       true,
 	"multi_replace_file_content": true,
+	"edit_file":                  true,
+	"write_file":                 true,
+	"create_file":                true,
+	"patch_file":                 true,
+	"multi_edit":                 true,
+}
+
+var readToolNames = map[string]bool{
+	"view_file": true,
+	"read_file": true,
+	"read":      true,
+}
+
+func isEditTool(name string) bool {
+	return editToolNames[strings.ToLower(name)]
+}
+
+func isReadTool(name string) bool {
+	return readToolNames[strings.ToLower(name)]
 }
 
 func toolPath(input map[string]any) string {
-	for _, key := range []string{"TargetFile", "AbsolutePath", "FilePath", "file_path", "path"} {
-		if value, ok := input[key].(string); ok && value != "" {
-			return value
+	if len(input) == 0 {
+		return ""
+	}
+	candidates := []string{
+		"targetfile",
+		"target_file",
+		"absolutepath",
+		"absolute_path",
+		"filepath",
+		"file_path",
+		"path",
+		"directorypath",
+		"directory_path",
+		"file",
+	}
+	for _, candidate := range candidates {
+		for k, v := range input {
+			if strings.EqualFold(k, candidate) {
+				if s, ok := v.(string); ok && s != "" {
+					return s
+				}
+			}
 		}
 	}
 	return ""
