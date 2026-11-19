@@ -33,8 +33,17 @@ type v2SessionCreate struct {
 	Permissions []v2Rule    `json:"permissions,omitempty"`
 }
 
+type v2Execution struct {
+	Status string   `json:"status,omitempty"`
+	Error  *v2Error `json:"error,omitempty"`
+}
+
 type v2Session struct {
-	ID string `json:"id"`
+	ID        string       `json:"id"`
+	Status    string       `json:"status,omitempty"`
+	State     string       `json:"state,omitempty"`
+	Execution *v2Execution `json:"execution,omitempty"`
+	Error     *v2Error     `json:"error,omitempty"`
 }
 
 type v2PromptFile struct {

@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -189,13 +190,197 @@ func (a *V2Adapter) streamEvents(ctx context.Context, api *httpClient) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err != nil {
-			logger.Debugf("OpenCode", "v2 event stream dropped: %v", err)
+		if err == nil {
+			err = io.EOF
 		}
+		logger.Debugf("OpenCode", "v2 event stream dropped: %v", err)
+		a.reconcileThreads(api)
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func (a *V2Adapter) reconcileThreads(api *httpClient) {
+	if api == nil {
+		return
+	}
+
+	var candidates []*v2Thread
+	a.mu.RLock()
+	for _, t := range a.threads {
+		t.mu.Lock()
+		inTurn := t.turnID != ""
+		t.mu.Unlock()
+		if inTurn {
+			candidates = append(candidates, t)
+		}
+	}
+	a.mu.RUnlock()
+
+	if len(candidates) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	for _, t := range candidates {
+		t.mu.Lock()
+		turnID := t.turnID
+		sessionID := t.sessionID
+		threadID := t.threadID
+		t.mu.Unlock()
+
+		if turnID == "" || sessionID == "" {
+			continue
+		}
+
+		var sessionResp struct {
+			Data      *v2Session   `json:"data,omitempty"`
+			ID        string       `json:"id,omitempty"`
+			Status    string       `json:"status,omitempty"`
+			State     string       `json:"state,omitempty"`
+			Execution *v2Execution `json:"execution,omitempty"`
+			Error     *v2Error     `json:"error,omitempty"`
+		}
+
+		err := api.do(ctx, http.MethodGet, "/api/session/"+url.PathEscape(sessionID), nil, &sessionResp)
+		if err != nil {
+			// Fallback: query /api/session/status
+			var statusMap map[string]struct {
+				Type   string   `json:"type"`
+				Status string   `json:"status"`
+				Error  *v2Error `json:"error"`
+			}
+			if statusErr := api.do(ctx, http.MethodGet, "/api/session/status", nil, &statusMap); statusErr == nil {
+				if entry, ok := statusMap[sessionID]; ok {
+					sessionResp.Status = entry.Type
+					if sessionResp.Status == "" {
+						sessionResp.Status = entry.Status
+					}
+					sessionResp.Error = entry.Error
+					err = nil
+				} else {
+					sessionResp.Status = "idle"
+					err = nil
+				}
+			}
+		}
+
+		if err != nil {
+			continue
+		}
+
+		status := sessionResp.Status
+		if sessionResp.Data != nil && sessionResp.Data.Status != "" {
+			status = sessionResp.Data.Status
+		}
+		if status == "" && sessionResp.State != "" {
+			status = sessionResp.State
+		}
+		if status == "" && sessionResp.Data != nil && sessionResp.Data.State != "" {
+			status = sessionResp.Data.State
+		}
+		var exec *v2Execution
+		if sessionResp.Execution != nil {
+			exec = sessionResp.Execution
+		} else if sessionResp.Data != nil && sessionResp.Data.Execution != nil {
+			exec = sessionResp.Data.Execution
+		}
+
+		if status == "" && exec == nil {
+			var statusMap map[string]struct {
+				Type   string   `json:"type"`
+				Status string   `json:"status"`
+				Error  *v2Error `json:"error"`
+			}
+			if statusErr := api.do(ctx, http.MethodGet, "/api/session/status", nil, &statusMap); statusErr == nil {
+				if entry, ok := statusMap[sessionID]; ok {
+					status = entry.Type
+					if status == "" {
+						status = entry.Status
+					}
+					if sessionResp.Error == nil {
+						sessionResp.Error = entry.Error
+					}
+				} else {
+					status = "idle"
+				}
+			}
+		}
+
+		statusLower := strings.ToLower(status)
+		execStatus := ""
+		if exec != nil {
+			execStatus = strings.ToLower(exec.Status)
+		}
+
+		if statusLower == "busy" || statusLower == "running" || execStatus == "busy" || execStatus == "running" {
+			continue
+		}
+
+		if statusLower == "" && exec == nil {
+			continue
+		}
+
+		var errObj *v2Error
+		if sessionResp.Error != nil {
+			errObj = sessionResp.Error
+		} else if sessionResp.Data != nil && sessionResp.Data.Error != nil {
+			errObj = sessionResp.Data.Error
+		} else if exec != nil && exec.Error != nil {
+			errObj = exec.Error
+		}
+
+		isFailed := statusLower == "failed" || statusLower == "error" || execStatus == "failed" || execStatus == "error" || errObj != nil
+		isInterrupted := statusLower == "interrupted" || statusLower == "cancelled" || execStatus == "interrupted" || execStatus == "cancelled"
+
+		stopReason := domain.StopEndTurn
+		if isInterrupted {
+			stopReason = domain.StopCancelled
+		}
+		errMsg := ""
+		if isFailed {
+			if errObj != nil {
+				errMsg = errObj.String()
+			}
+			if errMsg == "" {
+				errMsg = "OpenCode turn failed"
+			}
+		}
+
+		t.mu.Lock()
+		if t.turnID != turnID {
+			t.mu.Unlock()
+			continue
+		}
+		t.turnID = ""
+		t.toolName = make(map[string]string)
+		t.toolSeen = make(map[string]bool)
+		t.itemText = make(map[string]string)
+		t.mu.Unlock()
+
+		if isFailed {
+			logger.Warnf("OpenCode v2", "Reconciled failed turn on SSE reconnect: turnID=%s error=%s", turnID, errMsg)
+			a.emit.Emit(domain.RuntimeEvent{
+				Kind:     domain.EventTurnFailed,
+				ThreadID: threadID,
+				TurnID:   turnID,
+				Driver:   domain.DriverOpenCode,
+				Error:    errMsg,
+			})
+		} else {
+			logger.Infof("OpenCode v2", "Reconciled completed turn on SSE reconnect: turnID=%s reason=%s", turnID, stopReason)
+			a.emit.Emit(domain.RuntimeEvent{
+				Kind:       domain.EventTurnCompleted,
+				ThreadID:   threadID,
+				TurnID:     turnID,
+				Driver:     domain.DriverOpenCode,
+				StopReason: stopReason,
+			})
 		}
 	}
 }
