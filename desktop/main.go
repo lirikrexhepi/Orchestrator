@@ -9,6 +9,7 @@ import (
 
 	"composer/internal/devserver"
 	"composer/internal/logger"
+	"composer/internal/mcp"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -23,6 +24,9 @@ var assets embed.FS
 func main() {
 	if devserver.IsShim(os.Args[0]) {
 		os.Exit(devserver.RunShim(os.Args[1:]))
+	}
+	if mcp.IsBridgeInvocation(os.Args) {
+		os.Exit(mcp.RunBridgeMain())
 	}
 
 	// Clean up any legacy shim executables so agents never encounter or invoke them.
