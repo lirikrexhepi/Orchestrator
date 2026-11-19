@@ -394,16 +394,16 @@ export function RenameSession(arg1, arg2) {
   return window['go']['main']['App']['RenameSession'](arg1, arg2);
 }
 
+export function ResolveFileRepos(arg1) {
+  return window['go']['main']['App']['ResolveFileRepos'](arg1);
+}
+
 export function RespondToApproval(arg1, arg2, arg3) {
   return window['go']['main']['App']['RespondToApproval'](arg1, arg2, arg3);
 }
 
 export function RespondToQuestion(arg1, arg2, arg3) {
   return window['go']['main']['App']['RespondToQuestion'](arg1, arg2, arg3);
-}
-
-export function ResolveFileRepos(arg1) {
-  return window['go']['main']['App']['ResolveFileRepos'](arg1);
 }
 
 export function ResumeHistory(arg1) {

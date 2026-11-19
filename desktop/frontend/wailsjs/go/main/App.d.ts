@@ -4,6 +4,7 @@ import {provider} from '../models';
 import {projects} from '../models';
 import {activity} from '../models';
 import {main} from '../models';
+import {browser} from '../models';
 import {attachments} from '../models';
 import {domain} from '../models';
 import {session} from '../models';
@@ -16,7 +17,6 @@ import {servers} from '../models';
 import {slashcmd} from '../models';
 import {files} from '../models';
 import {terminal} from '../models';
-import {browser} from '../models';
 
 export function AccountStatus(arg1:string,arg2:string):Promise<provider.AccountStatus>;
 
@@ -214,11 +214,11 @@ export function RenameChat(arg1:string,arg2:string):Promise<void>;
 
 export function RenameSession(arg1:string,arg2:string):Promise<void>;
 
+export function ResolveFileRepos(arg1:Array<string>):Promise<Record<string, main.FileRepoScope>>;
+
 export function RespondToApproval(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RespondToQuestion(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
-
-export function ResolveFileRepos(arg1:Array<string>):Promise<Record<string, main.FileRepoScope>>;
 
 export function ResumeHistory(arg1:string):Promise<session.ResumeResult>;
 

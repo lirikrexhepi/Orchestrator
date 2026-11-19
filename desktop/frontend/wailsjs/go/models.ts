@@ -158,6 +158,39 @@ export namespace attachments {
 
 }
 
+export namespace browser {
+	
+	export class SessionInfo {
+	    id: string;
+	    threadId: string;
+	    url: string;
+	    title: string;
+	    loading: boolean;
+	    canGoBack: boolean;
+	    canGoForward: boolean;
+	    width: number;
+	    height: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.threadId = source["threadId"];
+	        this.url = source["url"];
+	        this.title = source["title"];
+	        this.loading = source["loading"];
+	        this.canGoBack = source["canGoBack"];
+	        this.canGoForward = source["canGoForward"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	    }
+	}
+
+}
+
 export namespace claudeimport {
 	
 	export class ExternalSession {
@@ -621,6 +654,18 @@ export namespace domain {
 	        this.insertions = source["insertions"];
 	        this.deletions = source["deletions"];
 	        this.binary = source["binary"];
+	    }
+	}
+	export class MCPConfig {
+	
+	
+	    static createFrom(source: any = {}) {
+	        return new MCPConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	
 	    }
 	}
 	export class OptionChoice {
@@ -1170,6 +1215,7 @@ export namespace domain {
 	    options?: Record<string, any>;
 	    planOnly?: boolean;
 	    skills?: SkillPolicy;
+	    isSubagent?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionStartInput(source);
@@ -1188,6 +1234,7 @@ export namespace domain {
 	        this.options = source["options"];
 	        this.planOnly = source["planOnly"];
 	        this.skills = this.convertValues(source["skills"], SkillPolicy);
+	        this.isSubagent = source["isSubagent"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1251,6 +1298,9 @@ export namespace domain {
 	    summary?: string;
 	    createdAt: number;
 	    updatedAt: number;
+	    subagent?: boolean;
+	    parentThreadId?: string;
+	    hidden?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Task(source);
@@ -1280,6 +1330,9 @@ export namespace domain {
 	        this.summary = source["summary"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
+	        this.subagent = source["subagent"];
+	        this.parentThreadId = source["parentThreadId"];
+	        this.hidden = source["hidden"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1394,6 +1447,9 @@ export namespace domain {
 	    archived?: boolean;
 	    importedFrom?: string;
 	    importedSession?: string;
+	    subagent?: boolean;
+	    parentThreadId?: string;
+	    hidden?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Workspace(source);
@@ -1410,6 +1466,9 @@ export namespace domain {
 	        this.archived = source["archived"];
 	        this.importedFrom = source["importedFrom"];
 	        this.importedSession = source["importedSession"];
+	        this.subagent = source["subagent"];
+	        this.parentThreadId = source["parentThreadId"];
+	        this.hidden = source["hidden"];
 	    }
 	}
 	
@@ -1697,55 +1756,6 @@ export namespace instructions {
 
 export namespace main {
 	
-	export class BrowserEndpointInfo {
-	    wsUrl: string;
-	    token: string;
-
-	    static createFrom(source: any = {}) {
-	        return new BrowserEndpointInfo(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.wsUrl = source["wsUrl"];
-	        this.token = source["token"];
-	    }
-	}
-
-	export class TerminalEndpointInfo {
-	    wsUrl: string;
-	    token: string;
-
-	    static createFrom(source: any = {}) {
-	        return new TerminalEndpointInfo(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.wsUrl = source["wsUrl"];
-	        this.token = source["token"];
-	    }
-	}
-	
-	export class FileRepoScope {
-	    root: string;
-	    name: string;
-	    branch?: string;
-	    isGit: boolean;
-
-	    static createFrom(source: any = {}) {
-	        return new FileRepoScope(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.root = source["root"];
-	        this.name = source["name"];
-	        this.branch = source["branch"];
-	        this.isGit = source["isGit"];
-	    }
-	}
-	
 	export class AccountAdded {
 	    account: domain.Account;
 	    copied?: string[];
@@ -1796,6 +1806,34 @@ export namespace main {
 	        this.keepRunningOnClose = source["keepRunningOnClose"];
 	        this.supported = source["supported"];
 	        this.exePath = source["exePath"];
+	    }
+	}
+	export class BrowserEndpointInfo {
+	    wsUrl: string;
+	    token: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BrowserEndpointInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.wsUrl = source["wsUrl"];
+	        this.token = source["token"];
+	    }
+	}
+	export class TerminalEndpointInfo {
+	    wsUrl: string;
+	    token: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TerminalEndpointInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.wsUrl = source["wsUrl"];
+	        this.token = source["token"];
 	    }
 	}
 
@@ -2208,6 +2246,9 @@ export namespace session {
 	    title?: string;
 	    prompt?: string;
 	    permissionMode?: string;
+	    subagent?: boolean;
+	    parentThreadId?: string;
+	    hidden?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SpawnOptions(source);
@@ -2225,6 +2266,9 @@ export namespace session {
 	        this.title = source["title"];
 	        this.prompt = source["prompt"];
 	        this.permissionMode = source["permissionMode"];
+	        this.subagent = source["subagent"];
+	        this.parentThreadId = source["parentThreadId"];
+	        this.hidden = source["hidden"];
 	    }
 	}
 	export class SpawnRequest {
@@ -2238,6 +2282,11 @@ export namespace session {
 	    preamble?: string;
 	    skills?: domain.SkillPolicy;
 	    files?: domain.FileRef[];
+	    permissionMode?: string;
+	    isSubagent?: boolean;
+	    subagent?: boolean;
+	    parentThreadId?: string;
+	    hidden?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SpawnRequest(source);
@@ -2255,6 +2304,11 @@ export namespace session {
 	        this.preamble = source["preamble"];
 	        this.skills = this.convertValues(source["skills"], domain.SkillPolicy);
 	        this.files = this.convertValues(source["files"], domain.FileRef);
+	        this.permissionMode = source["permissionMode"];
+	        this.isSubagent = source["isSubagent"];
+	        this.subagent = source["subagent"];
+	        this.parentThreadId = source["parentThreadId"];
+	        this.hidden = source["hidden"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2372,39 +2426,6 @@ export namespace slashcmd {
 
 }
 
-export namespace browser {
-	
-	export class SessionInfo {
-	    id: string;
-	    threadId: string;
-	    url: string;
-	    title: string;
-	    loading: boolean;
-	    canGoBack: boolean;
-	    canGoForward: boolean;
-	    width: number;
-	    height: number;
-
-	    static createFrom(source: any = {}) {
-	        return new SessionInfo(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.threadId = source["threadId"];
-	        this.url = source["url"];
-	        this.title = source["title"];
-	        this.loading = source["loading"];
-	        this.canGoBack = source["canGoBack"];
-	        this.canGoForward = source["canGoForward"];
-	        this.width = source["width"];
-	        this.height = source["height"];
-	    }
-	}
-
-}
-
 export namespace terminal {
 	
 	export class SessionInfo {
@@ -2418,11 +2439,11 @@ export namespace terminal {
 	    running: boolean;
 	    exitCode?: number;
 	    createdAt: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2439,5 +2460,4 @@ export namespace terminal {
 	}
 
 }
-
 

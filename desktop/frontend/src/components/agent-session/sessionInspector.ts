@@ -1,8 +1,12 @@
-import { main } from '../../../wailsjs/go/models';
 import type { AgentStreamBlock, BashToolBlockData, SubagentBlockData, ToolGroupBlockData } from './types';
 import type { ThreadFileChange } from './threadChanges';
 
-export type FileRepoScope = main.FileRepoScope;
+export interface FileRepoScope {
+  root: string;
+  name: string;
+  branch?: string;
+  isGit: boolean;
+}
 
 export interface SessionCheck {
   id: string;
