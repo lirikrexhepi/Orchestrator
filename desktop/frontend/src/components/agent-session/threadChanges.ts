@@ -19,14 +19,16 @@ export interface ThreadFileChange {
   groups: ThreadEditGroup[];
 }
 
-const EDIT_TOOL_NAME = /^(edit|multiedit|write|notebookedit|patch|apply_patch|writefile|editfile|replace_file_content|write_to_file|multi_replace_file_content|filechange)$/i;
+const EDIT_TOOL_NAME = /^(edit|edit_file|multiedit|multi_edit|write|write_file|create_file|notebookedit|patch|patch_file|apply_patch|writefile|editfile|replace_file_content|write_to_file|multi_replace_file_content|filechange)$/i;
 
 export function isEditToolName(name?: string): boolean {
   return Boolean(name) && EDIT_TOOL_NAME.test(name!);
 }
 
-function normalizePath(path: string): string {
-  return path.replace(/\\/g, '/').replace(/:\d+(?:-\d+)?$/, '');
+export function normalizePath(path: string): string {
+  let out = path.replace(/\\/g, '/').replace(/:\d+(?:-\d+)?$/, '');
+  if (/^\/[A-Za-z]:\//.test(out)) out = out.slice(1);
+  return out;
 }
 
 export function collectThreadChanges(blocks: AgentStreamBlock[]): ThreadFileChange[] {

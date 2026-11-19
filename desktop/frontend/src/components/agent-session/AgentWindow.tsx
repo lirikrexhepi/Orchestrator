@@ -24,6 +24,9 @@ import { ChatTitle } from './ChatTitle';
 import { ContextRing } from './ContextRing';
 import type { ContextUsage } from './contextUsage';
 import { collectThreadChanges, ThreadFileChange } from './threadChanges';
+import { extractSessionChecks, extractMcpUsage, FileRepoScope } from './sessionInspector';
+import { SessionInspectorSections } from './SessionInspectorSections';
+import { ResolveFileRepos } from '../../../wailsjs/go/main/App';
 import { parseSwitchNotice } from './NoticeDivider';
 import { formatModelBadge, renderChatIcon } from '../common/DynamicIsland';
 
@@ -460,6 +463,50 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
     if (onCardModeChange) onCardModeChange('changes');
     else setInternalMode('changes');
   }, [onCardModeChange]);
+
+  const checks = useMemo(() => extractSessionChecks(streamBlocks), [streamBlocks]);
+  const mcps = useMemo(() => extractMcpUsage(streamBlocks), [streamBlocks]);
+
+  const [repoScopes, setRepoScopes] = useState<Record<string, FileRepoScope>>({});
+  const resolvedPathsRef = useRef<Record<string, FileRepoScope>>({});
+
+  const uniqueDirsKey = useMemo(() => {
+    const dirs = new Set<string>();
+    if (projectPath) dirs.add(projectPath.trim());
+    for (const change of threadChanges) {
+      if (change.path) {
+        dirs.add(change.path);
+        const lastSlash = Math.max(change.path.lastIndexOf('/'), change.path.lastIndexOf('\\'));
+        if (lastSlash > 0) {
+          dirs.add(change.path.slice(0, lastSlash));
+        }
+      }
+    }
+    return Array.from(dirs).sort().join('||');
+  }, [threadChanges, projectPath]);
+
+  useEffect(() => {
+    if (!uniqueDirsKey) return;
+    const paths = uniqueDirsKey.split('||').filter(Boolean);
+    const needed = paths.filter((p) => !resolvedPathsRef.current[p]);
+    if (needed.length === 0) {
+      setRepoScopes({ ...resolvedPathsRef.current });
+      return;
+    }
+    let cancelled = false;
+    ResolveFileRepos(needed)
+      .then((resolved) => {
+        if (cancelled || !resolved) return;
+        Object.assign(resolvedPathsRef.current, resolved);
+        setRepoScopes({ ...resolvedPathsRef.current });
+      })
+      .catch((err) => {
+        console.warn('ResolveFileRepos error:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [uniqueDirsKey]);
   const showOverview = isDraft && streamBlocks.length === 0;
   const reduceMotion = useReducedMotion();
   const chatCrossfade = reduceMotion
@@ -533,6 +580,22 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
       />
     ),
     [isLight, projectName, projectPath, matchingLane, openChanges, onClose],
+  );
+
+  const inspectorSection = useMemo(
+    () => (
+      <SessionInspectorSections
+        isLight={isLight}
+        changes={threadChanges}
+        repoScopes={repoScopes}
+        checks={checks}
+        contextUsage={contextUsage}
+        mcps={mcps}
+        workspaceCwd={projectPath}
+        onOpenChanges={openChanges}
+      />
+    ),
+    [isLight, threadChanges, repoScopes, checks, contextUsage, mcps, projectPath, openChanges],
   );
 
   const projectMeta = (
@@ -709,7 +772,18 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 </div>
               )}
 
-              {!isGrid && !browserHeader && (subagents.length > 0 || (isFullscreen && isFocused)) && <SubagentMenu agents={subagents} isLight={isLight} driver={activeDriver} modelId={activeModel} dockable={isFullscreen && isFocused} workspace={workspaceSection} onOpenAgent={setOpenSubagentId} />}
+              {!isGrid && !browserHeader && (subagents.length > 0 || (isFullscreen && isFocused)) && (
+                <SubagentMenu
+                  agents={subagents}
+                  isLight={isLight}
+                  driver={activeDriver}
+                  modelId={activeModel}
+                  dockable={isFullscreen && isFocused}
+                  workspace={workspaceSection}
+                  inspector={inspectorSection}
+                  onOpenAgent={setOpenSubagentId}
+                />
+              )}
 
               {/* Minimalist Close Button for Fullscreen: Fixed directly above the docked workspace card */}
               {onClose && isFullscreen && !browserHeader && createPortal(

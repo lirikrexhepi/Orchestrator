@@ -210,6 +210,8 @@ export function RespondToApproval(arg1:string,arg2:string,arg3:string):Promise<v
 
 export function RespondToQuestion(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
 
+export function ResolveFileRepos(arg1:Array<string>):Promise<Record<string, main.FileRepoScope>>;
+
 export function ResumeHistory(arg1:string):Promise<session.ResumeResult>;
 
 export function ResumeHistoryThread(arg1:string,arg2:string):Promise<session.ResumeResult>;

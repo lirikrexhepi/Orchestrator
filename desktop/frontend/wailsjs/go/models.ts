@@ -1697,6 +1697,25 @@ export namespace instructions {
 
 export namespace main {
 	
+	export class FileRepoScope {
+	    root: string;
+	    name: string;
+	    branch?: string;
+	    isGit: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new FileRepoScope(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.root = source["root"];
+	        this.name = source["name"];
+	        this.branch = source["branch"];
+	        this.isGit = source["isGit"];
+	    }
+	}
+	
 	export class AccountAdded {
 	    account: domain.Account;
 	    copied?: string[];

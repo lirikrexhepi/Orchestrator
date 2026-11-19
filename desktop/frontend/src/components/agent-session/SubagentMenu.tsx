@@ -18,6 +18,7 @@ export interface SubagentMenuProps {
   modelId?: string;
   dockable?: boolean;
   workspace?: React.ReactNode;
+  inspector?: React.ReactNode;
   onOpenAgent?: (id: string) => void;
 }
 
@@ -592,7 +593,7 @@ const AgentList: React.FC<{
 const PILL_DARK = 'bg-[#2a2a2a] hover:bg-[#363636] text-white/90 border-white/15';
 const PILL_LIGHT = 'bg-white hover:bg-[#efeff2] text-[#111] border-black/10 shadow-[0_1px_2px_rgba(0,0,0,0.05)]';
 
-export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, driver = 'claude', modelId, dockable = false, workspace, onOpenAgent }) => {
+export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, driver = 'claude', modelId, dockable = false, workspace, inspector, onOpenAgent }) => {
   const [open, setOpen] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -676,7 +677,7 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
     };
   }, [open, close, measure]);
 
-  if (agents.length === 0 && !(docked && workspace)) return null;
+  if (agents.length === 0 && !(docked && (workspace || inspector))) return null;
 
   const width = Math.min(selected ? TRANSCRIPT_WIDTH : listWidth, window.innerWidth - EDGE * 2);
   const list = (
@@ -694,10 +695,11 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
   );
 
   if (docked) {
+    const hasInspector = Boolean(inspector);
     const dockWidth = selected
       ? TRANSCRIPT_WIDTH
       : agents.length === 0
-        ? 280
+        ? (hasInspector ? 300 : 280)
         : dockCollapsed
           ? FOLDED_DOCK_WIDTH
           : compact
@@ -740,7 +742,7 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
           {selected ? (
             <Transcript agent={selected} now={now} tone={tone} onBack={() => setOpenId(null)} />
           ) : (
-            <div className="flex min-h-0 flex-col">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar">
               {workspace}
               {agents.length > 0 && (
                 <div className={`flex min-h-0 flex-col p-2 ${workspace ? `border-t ${tone.divider}` : ''}`}>
@@ -779,6 +781,7 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
                   </AnimatePresence>
                 </div>
               )}
+              {inspector}
             </div>
           )}
         </GlassSquircle>
