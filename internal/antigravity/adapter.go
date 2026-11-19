@@ -1,24 +1,26 @@
 package antigravity
 
 import (
-	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"composer/internal/domain"
+	"composer/internal/jsonrpc"
+	"composer/internal/logger"
 	"composer/internal/process"
 	"composer/internal/provider"
 	"composer/internal/shell"
 )
 
-// Adapter drives Google's `agy` CLI. Unlike the streaming-stdin agents, agy is
-// one-shot per prompt: each turn spawns a process and continuity comes from
-// resuming the conversation id it reports.
 type Adapter struct {
 	settings domain.ProviderSettings
 	emit     provider.Emitter
@@ -28,47 +30,51 @@ type Adapter struct {
 }
 
 func NewAdapter(settings domain.ProviderSettings, emit provider.Emitter) *Adapter {
-	return &Adapter{settings: settings, emit: emit, sessions: make(map[string]*session)}
+	return &Adapter{
+		settings: settings,
+		emit:     emit,
+		sessions: make(map[string]*session),
+	}
 }
 
 func (a *Adapter) Driver() domain.DriverKind { return domain.DriverAntigravity }
 
 func (a *Adapter) Capabilities() provider.Capabilities {
-	return provider.Capabilities{Resume: true, Plans: false, Approvals: true}
+	return provider.Capabilities{Resume: true, Plans: true, Approvals: true, SessionModelSwitch: true}
+}
+
+type pendingApproval struct {
+	options []acpPermissionOption
+	reply   chan acpPermissionOutcome
 }
 
 type session struct {
-	threadID   string
-	cwd        string
-	model      string
-	options    domain.ModelOptions
-	permission domain.PermissionMode
-	skills     *domain.SkillPolicy
+	threadID      string
+	cwd           string
+	model         string
+	options       domain.ModelOptions
+	permission    domain.PermissionMode
+	skills        *domain.SkillPolicy
+	sessionID     string
+	contextWindow int64
 
-	mu             sync.Mutex
-	conversationID string
-	turnID         string
-	cancelTurn     context.CancelFunc
-	tools          map[int]string
-	textSent       bool
-	streamed       string
-	streamedCut    bool
-	// proc is the process running the current turn. Unlike a session-scoped CLI
-	// this adapter spawns one per prompt, so it is only set while a turn is in
-	// flight — long enough for a dev server the turn starts to be attributed.
-	proc *process.Process
+	proc   *process.Process
+	conn   *jsonrpc.Conn
+	cancel context.CancelFunc
 
+	mu           sync.Mutex
+	turnID       string
+	turnSettled  chan struct{}
+	interrupting bool
+
+	activeKind string // "", "message", "thought"
+	segmentSeq int
+
+	tools     map[string]bool
 	baselines map[string]string
-}
 
-const defaultPrintTimeout = "30m"
-
-func snippet(line []byte) string {
-	const limit = 400
-	if len(line) > limit {
-		return string(line[:limit]) + "..."
-	}
-	return string(line)
+	reqSeq  atomic.Uint64
+	pending map[string]*pendingApproval
 }
 
 func (a *Adapter) binary() string {
@@ -78,15 +84,23 @@ func (a *Adapter) binary() string {
 	return "agy"
 }
 
+func permissionMode(mode domain.PermissionMode) string {
+	switch mode {
+	case domain.PermissionBypass:
+		return "auto"
+	case domain.PermissionAcceptEdits:
+		return "accept-edits"
+	case domain.PermissionPlan:
+		return "plan"
+	default:
+		return "default"
+	}
+}
+
 func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput) (domain.Session, error) {
 	env := provider.LaunchEnv(a.settings)
 	if _, ok := shell.LookPath(a.binary(), env); !ok {
 		return domain.Session{}, fmt.Errorf("%w: %s", process.ErrNotFound, a.binary())
-	}
-
-	model := in.Model
-	if model == "" {
-		model = a.settings.Model
 	}
 
 	cwd := in.Cwd
@@ -97,96 +111,468 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 	}
 	in.Cwd = cwd
 
+	args := []string{"acp", "--stdio"}
+	if cwd != "" {
+		args = append(args, "--add-dir", cwd)
+	}
+	if in.Permission == domain.PermissionBypass {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	args = append(args, shell.TokenizeArgs(a.settings.LaunchArgs)...)
+
+	procCtx, cancel := context.WithCancel(context.Background())
+	proc, err := process.Start(procCtx, process.Spec{
+		Command:       a.binary(),
+		Args:          args,
+		Cwd:           cwd,
+		Env:           env,
+		DieWithParent: true,
+	})
+	if err != nil {
+		cancel()
+		return domain.Session{}, fmt.Errorf("start %s: %w", a.binary(), err)
+	}
+
+	model := firstNonEmpty(in.Model, a.settings.Model)
 	s := &session{
-		threadID:       in.ThreadID,
-		cwd:            cwd,
-		model:          model,
-		options:        in.Options,
-		permission:     in.Permission,
-		skills:         in.Skills,
-		conversationID: in.Resume,
-		tools:          make(map[int]string),
-		baselines:      make(map[string]string),
+		threadID:   in.ThreadID,
+		cwd:        cwd,
+		model:      model,
+		options:    in.Options,
+		permission: in.Permission,
+		skills:     in.Skills,
+		proc:       proc,
+		cancel:     cancel,
+		tools:      make(map[string]bool),
+		baselines:  make(map[string]string),
+		pending:    make(map[string]*pendingApproval),
+	}
+
+	conn := jsonrpc.NewConn(proc.Stdout(), proc.Stdin(), a.makeHandler(s))
+	s.conn = conn
+
+	if err := a.initSession(ctx, s, in); err != nil {
+		conn.Close(err)
+		cancel()
+		_ = proc.Shutdown(2 * time.Second)
+		return domain.Session{}, err
 	}
 
 	a.mu.Lock()
 	a.sessions[in.ThreadID] = s
 	a.mu.Unlock()
 
+	go a.monitor(s)
+
 	a.emit.Emit(domain.RuntimeEvent{
-		Kind: domain.EventSessionStarted, ThreadID: in.ThreadID,
-		Driver: domain.DriverAntigravity, Text: in.Resume,
+		Kind:     domain.EventSessionStarted,
+		ThreadID: in.ThreadID,
+		Driver:   domain.DriverAntigravity,
+		Text:     s.sessionID,
 	})
 
 	return domain.Session{
 		ThreadID:          in.ThreadID,
 		InstanceID:        in.InstanceID,
 		Driver:            domain.DriverAntigravity,
-		ProviderSessionID: in.Resume,
-		Cwd:               in.Cwd,
-		Model:             model,
+		ProviderSessionID: s.sessionID,
+		Cwd:               cwd,
+		Model:             s.model,
 		StartedAt:         time.Now().UnixMilli(),
 	}, nil
 }
 
-func (a *Adapter) buildArgs(s *session, prompt string) []string {
-	s.mu.Lock()
-	first := s.conversationID == ""
-	s.mu.Unlock()
-	if instruction := s.skills.Instruction(); instruction != "" && first {
-		prompt = instruction + "\n\n" + prompt
+func (a *Adapter) initSession(ctx context.Context, s *session, in domain.SessionStartInput) error {
+	initCtx, cancelInit := context.WithTimeout(ctx, 20*time.Second)
+	defer cancelInit()
+	var initRes initializeResult
+	if err := s.conn.Call(initCtx, "initialize", initializeParams{
+		ProtocolVersion: 1,
+		ClientCapabilities: acpClientCapabilities{
+			Fs: acpClientFsCaps{
+				ReadTextFile:  false,
+				WriteTextFile: false,
+			},
+			Terminal: false,
+		},
+		ClientInfo: acpClientInfo{
+			Name:    "orchestrator",
+			Version: "0.1.0",
+		},
+	}, &initRes); err != nil {
+		return fmt.Errorf("initialize %s: %w", a.binary(), err)
 	}
-	args := []string{"--print", prompt, "--output-format", "stream-json"}
-	if s.skills != nil && s.skills.Mode == domain.SkillsNone {
-		args = append(args, "--disable-slash-commands")
+
+	var appendParts []string
+	if provider.RuntimeInstructions != "" {
+		appendParts = append(appendParts, provider.RuntimeInstructions)
 	}
-	if s.model != "" {
-		model, effort := SplitModelSelection(s.model, s.options)
-		args = append(args, "--model", model)
-		if effort != "" {
-			args = append(args, "--effort", effort)
+	if in.Skills != nil {
+		if inst := in.Skills.Instruction(); inst != "" {
+			appendParts = append(appendParts, inst)
+		}
+	}
+	appendPrompt := strings.Join(appendParts, "\n\n")
+
+	var sessionID string
+	loaded := false
+	if in.Resume != "" {
+		loadCtx, cancelLoad := context.WithTimeout(ctx, 20*time.Second)
+		var loadRes sessionNewResult
+		err := s.conn.Call(loadCtx, "session/load", sessionLoadParams{
+			SessionID:  in.Resume,
+			Cwd:        s.cwd,
+			MCPServers: []any{},
+		}, &loadRes)
+		cancelLoad()
+		if err == nil {
+			sessionID = loadRes.SessionID
+			if sessionID == "" {
+				sessionID = in.Resume
+			}
+			loaded = true
+		} else {
+			logger.Warnf("Antigravity", "session/load failed for %s, falling back to session/new: %v", in.Resume, err)
 		}
 	}
 
-	if s.cwd != "" {
-		args = append(args, "--add-dir", s.cwd)
+	if !loaded {
+		var meta map[string]any
+		if appendPrompt != "" {
+			meta = map[string]any{
+				"antigravity": map[string]any{
+					"systemPrompt": map[string]any{
+						"append": appendPrompt,
+					},
+				},
+			}
+		}
+		newCtx, cancelNew := context.WithTimeout(ctx, 20*time.Second)
+		var newRes sessionNewResult
+		err := s.conn.Call(newCtx, "session/new", sessionNewParams{
+			Cwd:        s.cwd,
+			MCPServers: []any{},
+			Meta:       meta,
+		}, &newRes)
+		cancelNew()
+		if err != nil {
+			return fmt.Errorf("session/new %s: %w", a.binary(), err)
+		}
+		sessionID = newRes.SessionID
+		if sessionID == "" && in.Resume != "" {
+			sessionID = in.Resume
+		}
 	}
-	args = append(args, "--print-timeout", a.printTimeout())
+	s.sessionID = sessionID
 
-	if mode := permissionMode(s.permission); mode != "" {
-		args = append(args, "--mode", mode)
+	cfgCtx, cancelCfg := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelCfg()
+
+	if s.model != "" {
+		base, effort := SplitModelSelection(s.model, in.Options)
+		if base != "" {
+			if err := s.conn.Call(cfgCtx, "session/set_config_option", sessionSetConfigParams{
+				SessionID: s.sessionID,
+				ConfigID:  "model",
+				Value:     base,
+			}, nil); err != nil {
+				logger.Warnf("Antigravity", "set initial model %q on thread %s: %v", base, in.ThreadID, err)
+			}
+		}
+		if effort != "" {
+			if err := s.conn.Call(cfgCtx, "session/set_config_option", sessionSetConfigParams{
+				SessionID: s.sessionID,
+				ConfigID:  "thought_level",
+				Value:     effort,
+			}, nil); err != nil {
+				logger.Warnf("Antigravity", "set initial thought_level %q on thread %s: %v", effort, in.ThreadID, err)
+			}
+		}
 	}
-	if s.permission == domain.PermissionBypass {
-		args = append(args, "--dangerously-skip-permissions")
+
+	if mode := permissionMode(in.Permission); mode != "" {
+		if err := s.conn.Call(cfgCtx, "session/set_config_option", sessionSetConfigParams{
+			SessionID: s.sessionID,
+			ConfigID:  "mode",
+			Value:     mode,
+		}, nil); err != nil {
+			logger.Warnf("Antigravity", "set initial mode %q on thread %s: %v", mode, in.ThreadID, err)
+		}
 	}
+
+	return nil
+}
+
+func (a *Adapter) monitor(s *session) {
+	if s.proc != nil {
+		select {
+		case <-s.conn.Done():
+		case <-s.proc.Done():
+		}
+	} else {
+		<-s.conn.Done()
+	}
+	a.finish(s)
+}
+
+func (a *Adapter) finish(s *session) {
+	a.mu.Lock()
+	if current, ok := a.sessions[s.threadID]; ok && current == s {
+		delete(a.sessions, s.threadID)
+	}
+	a.mu.Unlock()
 
 	s.mu.Lock()
-	conversationID := s.conversationID
+	turnID := s.turnID
+	interrupting := s.interrupting
+	s.turnID = ""
+	s.interrupting = false
+	pending := s.pending
+	s.pending = make(map[string]*pendingApproval)
 	s.mu.Unlock()
-	if conversationID != "" {
-		args = append(args, "--conversation", conversationID)
+
+	for _, p := range pending {
+		select {
+		case p.reply <- acpPermissionOutcome{Outcome: "cancelled"}:
+		default:
+		}
 	}
-	return append(args, shell.TokenizeArgs(a.settings.LaunchArgs)...)
+
+	if turnID != "" {
+		if interrupting {
+			a.emit.Emit(domain.RuntimeEvent{
+				Kind:       domain.EventTurnCompleted,
+				ThreadID:   s.threadID,
+				TurnID:     turnID,
+				Driver:     domain.DriverAntigravity,
+				StopReason: domain.StopCancelled,
+			})
+		} else {
+			var detail string
+			if s.proc != nil {
+				detail = s.proc.StderrTail()
+			}
+			a.emit.Emit(domain.RuntimeEvent{
+				Kind:     domain.EventTurnFailed,
+				ThreadID: s.threadID,
+				TurnID:   turnID,
+				Driver:   domain.DriverAntigravity,
+				Error:    a.binary() + " exited: " + detail,
+			})
+		}
+	}
+
+	a.emit.Emit(domain.RuntimeEvent{
+		Kind:     domain.EventSessionStopped,
+		ThreadID: s.threadID,
+		Driver:   domain.DriverAntigravity,
+	})
+	s.cancel()
 }
 
-// permissionMode maps canonical modes onto the two agy accepts; the default
-// mode is left unset so the CLI keeps its own request-review behaviour.
-func permissionMode(mode domain.PermissionMode) string {
-	switch mode {
-	case domain.PermissionAcceptEdits, domain.PermissionBypass:
-		return "accept-edits"
-	case domain.PermissionPlan:
-		return "plan"
+func (a *Adapter) makeHandler(s *session) jsonrpc.Handler {
+	return func(ctx context.Context, method string, rawParams json.RawMessage) (any, error) {
+		switch method {
+		case "session/update":
+			var params sessionUpdateParams
+			if err := json.Unmarshal(rawParams, &params); err != nil {
+				logger.Warnf("Antigravity", "unmarshal session/update: %v", err)
+				return nil, nil
+			}
+			s.mu.Lock()
+			turnID := s.turnID
+			s.mu.Unlock()
+			a.handleSessionUpdate(s, turnID, &params.Update)
+			return nil, nil
+
+		case "session/request_permission":
+			var params requestPermissionParams
+			if err := json.Unmarshal(rawParams, &params); err != nil {
+				return nil, fmt.Errorf("unmarshal request_permission: %w", err)
+			}
+			return a.handleRequestPermission(ctx, s, params)
+
+		default:
+			return nil, nil
+		}
+	}
+}
+
+func (a *Adapter) handleRequestPermission(ctx context.Context, s *session, params requestPermissionParams) (any, error) {
+	s.mu.Lock()
+	perm := s.permission
+	s.mu.Unlock()
+
+	if perm == domain.PermissionBypass {
+		var selectedID string
+		for _, opt := range params.Options {
+			if opt.Kind == "allow_always" {
+				selectedID = opt.OptionID
+				break
+			}
+		}
+		if selectedID == "" {
+			for _, opt := range params.Options {
+				if opt.Kind == "allow_once" {
+					selectedID = opt.OptionID
+					break
+				}
+			}
+		}
+		if selectedID == "" && len(params.Options) > 0 {
+			selectedID = params.Options[0].OptionID
+		}
+		if selectedID != "" {
+			return requestPermissionResult{
+				Outcome: acpPermissionOutcome{
+					Outcome:  "selected",
+					OptionID: selectedID,
+				},
+			}, nil
+		}
+		return requestPermissionResult{
+			Outcome: acpPermissionOutcome{
+				Outcome: "cancelled",
+			},
+		}, nil
+	}
+
+	reqID := params.ToolCall.ToolCallID
+	if reqID == "" {
+		reqID = fmt.Sprintf("req-%d", s.reqSeq.Add(1))
+	}
+
+	replyCh := make(chan acpPermissionOutcome, 1)
+	s.mu.Lock()
+	s.pending[reqID] = &pendingApproval{
+		options: params.Options,
+		reply:   replyCh,
+	}
+	turnID := s.turnID
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.pending, reqID)
+		s.mu.Unlock()
+	}()
+
+	domainOpts := make([]domain.ApprovalOption, len(params.Options))
+	for i, opt := range params.Options {
+		domainOpts[i] = domain.ApprovalOption{
+			ID:   opt.OptionID,
+			Name: opt.Name,
+			Kind: mapACPOptionKind(opt.Kind),
+		}
+	}
+
+	tool := &domain.ToolCall{
+		ID:    params.ToolCall.ToolCallID,
+		Name:  params.ToolCall.Title,
+		Kind:  params.ToolCall.Kind,
+		Input: params.ToolCall.RawInput,
+	}
+
+	a.emit.Emit(domain.RuntimeEvent{
+		Kind:     domain.EventApprovalRequest,
+		ThreadID: s.threadID,
+		TurnID:   turnID,
+		Driver:   domain.DriverAntigravity,
+		Approval: &domain.ApprovalRequest{
+			RequestID: reqID,
+			Title:     params.ToolCall.Title,
+			Detail:    params.ToolCall.Kind,
+			Tool:      tool,
+			Options:   domainOpts,
+		},
+	})
+
+	var procDone <-chan struct{}
+	if s.proc != nil {
+		procDone = s.proc.Done()
+	}
+
+	select {
+	case outcome := <-replyCh:
+		return requestPermissionResult{Outcome: outcome}, nil
+	case <-procDone:
+		return requestPermissionResult{Outcome: acpPermissionOutcome{Outcome: "cancelled"}}, nil
+	case <-s.conn.Done():
+		return requestPermissionResult{Outcome: acpPermissionOutcome{Outcome: "cancelled"}}, nil
+	case <-ctx.Done():
+		return requestPermissionResult{Outcome: acpPermissionOutcome{Outcome: "cancelled"}}, ctx.Err()
+	}
+}
+
+func mapACPOptionKind(kind string) domain.ApprovalDecision {
+	switch kind {
+	case "allow_always":
+		return domain.ApprovalAllowAlways
+	case "allow_once":
+		return domain.ApprovalAllowOnce
+	case "reject_once", "reject_always":
+		return domain.ApprovalDeny
 	default:
-		return ""
+		if strings.Contains(kind, "always") {
+			return domain.ApprovalAllowAlways
+		}
+		if strings.Contains(kind, "allow") {
+			return domain.ApprovalAllowOnce
+		}
+		return domain.ApprovalDeny
 	}
 }
 
-func (a *Adapter) printTimeout() string {
-	if a.settings.PrintTimeout != "" {
-		return a.settings.PrintTimeout
+const maxInlineImageBytes = 5 * 1024 * 1024
+
+func buildPromptBlocks(text string, files []domain.FileRef) []any {
+	blocks := make([]any, 0, len(files)+1)
+	mentions := text
+	for _, file := range files {
+		if img, ok := buildImageBlock(file); ok {
+			blocks = append(blocks, img)
+			continue
+		}
+		mentions += "\n@" + file.Path
 	}
-	return defaultPrintTimeout
+	if strings.TrimSpace(mentions) != "" || len(blocks) == 0 {
+		blocks = append(blocks, acpTextContent{Type: "text", Text: mentions})
+	}
+	return blocks
+}
+
+func buildImageBlock(file domain.FileRef) (acpImagePrompt, bool) {
+	mime := strings.ToLower(file.MIME)
+	if mime == "" {
+		switch strings.ToLower(filepath.Ext(file.Path)) {
+		case ".png":
+			mime = "image/png"
+		case ".jpg", ".jpeg":
+			mime = "image/jpeg"
+		case ".gif":
+			mime = "image/gif"
+		case ".webp":
+			mime = "image/webp"
+		}
+	}
+	switch mime {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+	default:
+		return acpImagePrompt{}, false
+	}
+	info, err := os.Stat(file.Path)
+	if err != nil || info.Size() > maxInlineImageBytes {
+		return acpImagePrompt{}, false
+	}
+	data, err := os.ReadFile(file.Path)
+	if err != nil {
+		return acpImagePrompt{}, false
+	}
+	return acpImagePrompt{
+		Type:     "image",
+		MIMEType: mime,
+		Data:     base64.StdEncoding.EncodeToString(data),
+	}, true
 }
 
 func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
@@ -195,194 +581,129 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 		return errors.New("no active session for thread " + in.ThreadID)
 	}
 
-	prompt := in.Text
-	for _, file := range in.Files {
-		prompt += "\n@" + file.Path
-	}
-	prompt += "\n\n" + provider.RuntimeInstructions
-
-	turnCtx, cancelTurn := context.WithCancel(context.Background())
 	s.mu.Lock()
 	if s.turnID != "" {
-		// Steering turn: interrupt the in-flight process so the new steer prompt takes over
-		if prevCancel := s.cancelTurn; prevCancel != nil {
-			prevCancel()
+		s.interrupting = true
+		prevSettled := s.turnSettled
+		sessionID := s.sessionID
+		s.mu.Unlock()
+
+		_ = s.conn.Notify("session/cancel", sessionCancelParams{SessionID: sessionID})
+		if prevSettled != nil {
+			select {
+			case <-prevSettled:
+			case <-time.After(3 * time.Second):
+			}
 		}
+		s.mu.Lock()
 	}
+
 	s.turnID = in.TurnID
-	s.cancelTurn = cancelTurn
-	s.tools = make(map[int]string)
-	s.textSent = false
-	s.streamed = ""
-	s.streamedCut = false
+	s.interrupting = false
+	s.activeKind = ""
+	s.segmentSeq = 0
+	settled := make(chan struct{})
+	s.turnSettled = settled
+	turnID := in.TurnID
 	s.mu.Unlock()
 
-	proc, err := process.Start(turnCtx, process.Spec{
-		Command: a.binary(),
-		Args:    a.buildArgs(s, prompt),
-		Cwd:     s.cwd,
-		Env:     provider.LaunchEnv(a.settings),
-
-		DieWithParent: true,
-	})
-	if err != nil {
-		s.finishTurn()
-		cancelTurn()
-		return fmt.Errorf("start %s: %w", a.binary(), err)
-	}
-
-	s.mu.Lock()
-	s.proc = proc
-	s.mu.Unlock()
+	promptBlocks := buildPromptBlocks(in.Text, in.Files)
 
 	a.emit.Emit(domain.RuntimeEvent{
-		Kind: domain.EventTurnStarted, ThreadID: in.ThreadID, TurnID: in.TurnID,
-		Driver: domain.DriverAntigravity,
+		Kind:     domain.EventTurnStarted,
+		ThreadID: in.ThreadID,
+		TurnID:   in.TurnID,
+		Driver:   domain.DriverAntigravity,
 	})
 
-	go a.runTurn(turnCtx, s, in.TurnID, proc, cancelTurn)
+	go func() {
+		defer close(settled)
+
+		var res sessionPromptResult
+		err := s.conn.Call(context.Background(), "session/prompt", sessionPromptParams{
+			SessionID: s.sessionID,
+			Prompt:    promptBlocks,
+		}, &res)
+
+		s.mu.Lock()
+		interrupting := s.interrupting
+		s.turnID = ""
+		s.interrupting = false
+		s.activeKind = ""
+		ctxWindow := s.contextWindow
+		s.mu.Unlock()
+
+		if err != nil {
+			if interrupting || errors.Is(err, context.Canceled) {
+				a.emit.Emit(domain.RuntimeEvent{
+					Kind:       domain.EventTurnCompleted,
+					ThreadID:   s.threadID,
+					TurnID:     turnID,
+					Driver:     domain.DriverAntigravity,
+					StopReason: domain.StopCancelled,
+				})
+			} else {
+				a.emit.Emit(domain.RuntimeEvent{
+					Kind:     domain.EventTurnFailed,
+					ThreadID: s.threadID,
+					TurnID:   turnID,
+					Driver:   domain.DriverAntigravity,
+					Error:    err.Error(),
+				})
+			}
+			return
+		}
+
+		if res.Usage != nil {
+			contextTokens := res.Usage.TotalTokens
+			if contextTokens == 0 {
+				contextTokens = res.Usage.InputTokens + res.Usage.OutputTokens
+			}
+			a.emit.Emit(domain.RuntimeEvent{
+				Kind:     domain.EventUsage,
+				ThreadID: s.threadID,
+				TurnID:   turnID,
+				Driver:   domain.DriverAntigravity,
+				Usage: &domain.Usage{
+					InputTokens:      res.Usage.InputTokens,
+					OutputTokens:     res.Usage.OutputTokens,
+					CacheReadTokens:  res.Usage.CachedReadTokens,
+					CacheWriteTokens: res.Usage.CachedWriteTokens,
+					ContextTokens:    contextTokens,
+					ContextWindow:    ctxWindow,
+				},
+			})
+		}
+
+		stopReason := mapStopReason(res.StopReason)
+		if interrupting {
+			stopReason = domain.StopCancelled
+		}
+		a.emit.Emit(domain.RuntimeEvent{
+			Kind:       domain.EventTurnCompleted,
+			ThreadID:   s.threadID,
+			TurnID:     turnID,
+			Driver:     domain.DriverAntigravity,
+			StopReason: stopReason,
+		})
+	}()
+
 	return nil
 }
 
-const maxStreamedSample = 64 * 1024
-
-func (s *session) markText(delta string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.textSent = true
-	if len(s.streamed) >= maxStreamedSample {
-		s.streamedCut = true
-		return
+func mapStopReason(reason string) domain.StopReason {
+	switch reason {
+	case "end_turn":
+		return domain.StopEndTurn
+	case "max_tokens":
+		return domain.StopMaxTokens
+	case "refusal":
+		return domain.StopRefusal
+	case "cancelled":
+		return domain.StopCancelled
+	default:
+		return domain.StopEndTurn
 	}
-	s.streamed += delta
-	if len(s.streamed) > maxStreamedSample {
-		s.streamed = s.streamed[:maxStreamedSample]
-		s.streamedCut = true
-	}
-}
-
-func (s *session) sentText() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.textSent
-}
-
-func (s *session) streamedText() (sample string, cut bool, sent bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.streamed, s.streamedCut, s.textSent
-}
-
-func (s *session) resetText() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.textSent = false
-	s.streamed = ""
-	s.streamedCut = false
-}
-
-func (s *session) finishTurn() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	turnID := s.turnID
-	s.turnID = ""
-	s.cancelTurn = nil
-	s.proc = nil
-	return turnID
-}
-
-// Session reports the thread's current session. The conversation id accumulates
-// across turns and is what resumes this thread in a later run.
-func (a *Adapter) Session(threadID string) (domain.Session, bool) {
-	a.mu.RLock()
-	s, ok := a.sessions[threadID]
-	a.mu.RUnlock()
-	if !ok {
-		return domain.Session{}, false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return domain.Session{
-		ThreadID:          threadID,
-		Driver:            domain.DriverAntigravity,
-		ProviderSessionID: s.conversationID,
-		Cwd:               s.cwd,
-		Model:             s.model,
-	}, true
-}
-
-// SessionPID reports the process running the current turn, so servers it starts
-// can be traced back to this agent.
-//
-// A turn-scoped process means attribution only holds while the agent is working.
-// That still covers the case that matters: a dev server is started by a running
-// turn, and once attributed the browser keeps the lane it was given.
-func (a *Adapter) SessionPID(threadID string) (int, bool) {
-	a.mu.RLock()
-	s, ok := a.sessions[threadID]
-	a.mu.RUnlock()
-	if !ok {
-		return 0, false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.proc == nil {
-		return 0, false
-	}
-	return s.proc.PID(), true
-}
-
-func (a *Adapter) runTurn(ctx context.Context, s *session, turnID string, proc *process.Process, cancel context.CancelFunc) {
-	defer cancel()
-
-	scanner := bufio.NewScanner(proc.Stdout())
-	scanner.Buffer(make([]byte, 0, 128*1024), 32*1024*1024)
-
-	completed := false
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var envelope Envelope
-		if err := json.Unmarshal(line, &envelope); err != nil {
-			a.emit.Emit(domain.RuntimeEvent{
-				Kind: domain.EventDiagnostic, ThreadID: s.threadID, TurnID: turnID,
-				Driver: domain.DriverAntigravity,
-				Error:  "unreadable " + a.binary() + " frame: " + err.Error(),
-				Text:   snippet(line),
-			})
-			continue
-		}
-		if envelope.Event == "result" {
-			// Release the turn slot before emitting the terminal event so a
-			// caller reacting to it can immediately send the next turn.
-			completed = true
-			s.finishTurn()
-		}
-		a.handleEnvelope(s, turnID, &envelope)
-	}
-
-	<-proc.Done()
-	s.finishTurn()
-
-	if completed {
-		return
-	}
-
-	// The process ended without a result frame: either cancelled by the user or
-	// died. Report the distinction so the UI does not show a silent stall.
-	if ctx.Err() != nil {
-		a.emit.Emit(domain.RuntimeEvent{
-			Kind: domain.EventTurnCompleted, ThreadID: s.threadID, TurnID: turnID,
-			Driver: domain.DriverAntigravity, StopReason: domain.StopCancelled,
-		})
-		return
-	}
-	a.emit.Emit(domain.RuntimeEvent{
-		Kind: domain.EventTurnFailed, ThreadID: s.threadID, TurnID: turnID,
-		Driver: domain.DriverAntigravity, Error: a.binary() + " exited: " + proc.StderrTail(),
-	})
 }
 
 func (a *Adapter) InterruptTurn(ctx context.Context, threadID string) error {
@@ -390,12 +711,50 @@ func (a *Adapter) InterruptTurn(ctx context.Context, threadID string) error {
 	if !ok {
 		return nil
 	}
+
 	s.mu.Lock()
-	cancel := s.cancelTurn
-	s.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	turnID := s.turnID
+	if turnID == "" {
+		s.mu.Unlock()
+		return nil
 	}
+	s.interrupting = true
+	sessionID := s.sessionID
+	s.mu.Unlock()
+
+	_ = s.conn.Notify("session/cancel", sessionCancelParams{SessionID: sessionID})
+
+	go func() {
+		timer := time.NewTimer(6 * time.Second)
+		defer timer.Stop()
+
+		if s.proc != nil {
+			select {
+			case <-s.proc.Done():
+				return
+			case <-timer.C:
+			}
+		} else {
+			select {
+			case <-s.conn.Done():
+				return
+			case <-timer.C:
+			}
+		}
+
+		s.mu.Lock()
+		stuck := s.turnID == turnID
+		s.mu.Unlock()
+		if stuck {
+			logger.Infof("Antigravity", "interrupt did not settle on %s; killing process", threadID)
+			s.cancel()
+			if s.proc != nil {
+				_ = s.proc.Shutdown(time.Second)
+			}
+			s.conn.Close(errors.New("interrupt timed out"))
+		}
+	}()
+
 	return nil
 }
 
@@ -408,16 +767,16 @@ func (a *Adapter) RespondToApproval(ctx context.Context, threadID, requestID str
 	}
 
 	s.mu.Lock()
-	proc := s.proc
+	pending, ok := s.pending[requestID]
 	s.mu.Unlock()
-
-	choice := "y\n"
-	if decision == domain.ApprovalDeny || decision == domain.ApprovalCancel {
-		choice = "n\n"
+	if !ok {
+		return errors.New("no pending approval for " + requestID)
 	}
 
-	if proc != nil && proc.Stdin() != nil {
-		_, _ = proc.Stdin().Write([]byte(choice))
+	outcome := resolveApprovalOutcome(pending.options, decision)
+	select {
+	case pending.reply <- outcome:
+	default:
 	}
 
 	a.emit.Emit(domain.RuntimeEvent{
@@ -430,6 +789,52 @@ func (a *Adapter) RespondToApproval(ctx context.Context, threadID, requestID str
 	return nil
 }
 
+func resolveApprovalOutcome(options []acpPermissionOption, decision domain.ApprovalDecision) acpPermissionOutcome {
+	if decision == domain.ApprovalCancel {
+		return acpPermissionOutcome{Outcome: "cancelled"}
+	}
+
+	targetKind := "allow_once"
+	switch decision {
+	case domain.ApprovalAllowAlways:
+		targetKind = "allow_always"
+	case domain.ApprovalAllowOnce:
+		targetKind = "allow_once"
+	case domain.ApprovalDeny:
+		targetKind = "reject_once"
+	}
+
+	for _, opt := range options {
+		if opt.Kind == targetKind {
+			return acpPermissionOutcome{Outcome: "selected", OptionID: opt.OptionID}
+		}
+	}
+	if decision == domain.ApprovalAllowAlways {
+		for _, opt := range options {
+			if opt.Kind == "allow_once" {
+				return acpPermissionOutcome{Outcome: "selected", OptionID: opt.OptionID}
+			}
+		}
+	} else if decision == domain.ApprovalAllowOnce {
+		for _, opt := range options {
+			if opt.Kind == "allow_always" {
+				return acpPermissionOutcome{Outcome: "selected", OptionID: opt.OptionID}
+			}
+		}
+	} else if decision == domain.ApprovalDeny {
+		for _, opt := range options {
+			if opt.Kind == "reject_always" {
+				return acpPermissionOutcome{Outcome: "selected", OptionID: opt.OptionID}
+			}
+		}
+	}
+
+	if len(options) > 0 && decision != domain.ApprovalDeny {
+		return acpPermissionOutcome{Outcome: "selected", OptionID: options[0].OptionID}
+	}
+	return acpPermissionOutcome{Outcome: "cancelled"}
+}
+
 func (a *Adapter) RespondToQuestion(ctx context.Context, threadID, requestID string, answers []string) error {
 	a.mu.RLock()
 	s, ok := a.sessions[threadID]
@@ -438,11 +843,18 @@ func (a *Adapter) RespondToQuestion(ctx context.Context, threadID, requestID str
 		return errors.New("no active session for thread " + threadID)
 	}
 
-	// A skip (empty answers) cannot be communicated to the agy CLI as a bare
-	// newline — that causes a MessageAbortedError which silently kills the
-	// agent. Instead, cancel the running turn so the agent can be re-prompted
-	// with a fresh message rather than hanging in a broken state.
+	s.mu.Lock()
+	pending, ok := s.pending[requestID]
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no pending question for %s", requestID)
+	}
+
 	if len(answers) == 0 {
+		select {
+		case pending.reply <- acpPermissionOutcome{Outcome: "cancelled"}:
+		default:
+		}
 		a.emit.Emit(domain.RuntimeEvent{
 			Kind:     domain.EventQuestionAnswered,
 			ThreadID: threadID,
@@ -450,30 +862,44 @@ func (a *Adapter) RespondToQuestion(ctx context.Context, threadID, requestID str
 			Text:     "",
 			Question: &domain.QuestionRequest{RequestID: requestID},
 		})
-
-		s.mu.Lock()
-		cancel := s.cancelTurn
-		s.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
 		return nil
 	}
 
-	s.mu.Lock()
-	proc := s.proc
-	s.mu.Unlock()
+	answerText := answers[0]
+	selectedID := ""
+	for _, opt := range pending.options {
+		if strings.EqualFold(opt.OptionID, answerText) || strings.EqualFold(opt.Name, answerText) {
+			selectedID = opt.OptionID
+			break
+		}
+	}
+	if selectedID == "" {
+		for _, opt := range pending.options {
+			if opt.Kind == "allow_once" || opt.Kind == "allow_always" {
+				selectedID = opt.OptionID
+				break
+			}
+		}
+	}
+	if selectedID == "" && len(pending.options) > 0 {
+		selectedID = pending.options[0].OptionID
+	}
 
-	reply := answers[0] + "\n"
-	if proc != nil && proc.Stdin() != nil {
-		_, _ = proc.Stdin().Write([]byte(reply))
+	outcome := acpPermissionOutcome{Outcome: "cancelled"}
+	if selectedID != "" {
+		outcome = acpPermissionOutcome{Outcome: "selected", OptionID: selectedID}
+	}
+
+	select {
+	case pending.reply <- outcome:
+	default:
 	}
 
 	a.emit.Emit(domain.RuntimeEvent{
 		Kind:     domain.EventQuestionAnswered,
 		ThreadID: threadID,
 		Driver:   domain.DriverAntigravity,
-		Text:     answers[0],
+		Text:     answerText,
 		Question: &domain.QuestionRequest{RequestID: requestID},
 	})
 	return nil
@@ -488,15 +914,15 @@ func (a *Adapter) StopSession(ctx context.Context, threadID string) error {
 		return nil
 	}
 
-	s.mu.Lock()
-	cancel := s.cancelTurn
-	s.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	s.conn.Close(nil)
+	s.cancel()
+	if s.proc != nil {
+		_ = s.proc.Shutdown(2 * time.Second)
 	}
-
 	a.emit.Emit(domain.RuntimeEvent{
-		Kind: domain.EventSessionStopped, ThreadID: threadID, Driver: domain.DriverAntigravity,
+		Kind:     domain.EventSessionStopped,
+		ThreadID: threadID,
+		Driver:   domain.DriverAntigravity,
 	})
 	return nil
 }
@@ -511,14 +937,15 @@ func (a *Adapter) StopAll(ctx context.Context) error {
 	a.mu.Unlock()
 
 	for _, s := range sessions {
-		s.mu.Lock()
-		cancel := s.cancelTurn
-		s.mu.Unlock()
-		if cancel != nil {
-			cancel()
+		s.conn.Close(nil)
+		s.cancel()
+		if s.proc != nil {
+			_ = s.proc.Shutdown(2 * time.Second)
 		}
 		a.emit.Emit(domain.RuntimeEvent{
-			Kind: domain.EventSessionStopped, ThreadID: s.threadID, Driver: domain.DriverAntigravity,
+			Kind:     domain.EventSessionStopped,
+			ThreadID: s.threadID,
+			Driver:   domain.DriverAntigravity,
 		})
 	}
 	return nil
@@ -537,19 +964,86 @@ func (a *Adapter) lookup(threadID string) (*session, bool) {
 }
 
 func (a *Adapter) UpdateModel(threadID, model string, options domain.ModelOptions) bool {
-	a.mu.RLock()
-	s, ok := a.sessions[threadID]
-	a.mu.RUnlock()
+	s, ok := a.lookup(threadID)
 	if !ok {
 		return false
 	}
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if model != "" {
 		s.model = model
 	}
 	if options != nil {
 		s.options = options
 	}
+	currentModel := s.model
+	currentOpts := s.options
+	sessionID := s.sessionID
+	s.mu.Unlock()
+
+	base, effort := SplitModelSelection(currentModel, currentOpts)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if base != "" {
+		if err := s.conn.Call(ctx, "session/set_config_option", sessionSetConfigParams{
+			SessionID: sessionID,
+			ConfigID:  "model",
+			Value:     base,
+		}, nil); err != nil {
+			logger.Warnf("Antigravity", "update model failed on thread %s: %v", threadID, err)
+			return false
+		}
+	}
+	if effort != "" {
+		if err := s.conn.Call(ctx, "session/set_config_option", sessionSetConfigParams{
+			SessionID: sessionID,
+			ConfigID:  "thought_level",
+			Value:     effort,
+		}, nil); err != nil {
+			logger.Warnf("Antigravity", "update thought_level failed on thread %s: %v", threadID, err)
+			return false
+		}
+	}
 	return true
+}
+
+func (a *Adapter) Session(threadID string) (domain.Session, bool) {
+	a.mu.RLock()
+	s, ok := a.sessions[threadID]
+	a.mu.RUnlock()
+	if !ok {
+		return domain.Session{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return domain.Session{
+		ThreadID:          threadID,
+		Driver:            domain.DriverAntigravity,
+		ProviderSessionID: s.sessionID,
+		Cwd:               s.cwd,
+		Model:             s.model,
+	}, true
+}
+
+func (a *Adapter) SessionPID(threadID string) (int, bool) {
+	a.mu.RLock()
+	s, ok := a.sessions[threadID]
+	a.mu.RUnlock()
+	if !ok {
+		return 0, false
+	}
+	if s.proc == nil {
+		return 0, false
+	}
+	return s.proc.PID(), true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
