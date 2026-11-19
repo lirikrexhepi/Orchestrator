@@ -329,3 +329,136 @@ func TestNormalizeEvent(t *testing.T) {
 		t.Fatalf("second call mutated event: %+v", ev.Tool)
 	}
 }
+
+func TestNormalizeToolCall_OrchestratorMCP(t *testing.T) {
+	t.Run("bare delegate_task with driver", func(t *testing.T) {
+		tool := &ToolCall{
+			Name: "delegate_task",
+			Input: map[string]any{
+				"title":  "Explore tests",
+				"driver": "claude",
+			},
+		}
+		NormalizeToolCall(tool)
+		if tool.Category != ToolCategoryMCP {
+			t.Fatalf("expected category %s, got %s", ToolCategoryMCP, tool.Category)
+		}
+		if tool.Target != "Explore tests · claude" {
+			t.Fatalf("expected target 'Explore tests · claude', got %q", tool.Target)
+		}
+		if tool.Summary != "Delegated task" {
+			t.Fatalf("expected summary 'Delegated task', got %q", tool.Summary)
+		}
+	})
+
+	t.Run("prefixed mcp__orchestrator__delegate_task without driver", func(t *testing.T) {
+		tool := &ToolCall{
+			Name: "mcp__orchestrator__delegate_task",
+			Input: map[string]any{
+				"title": "Subagent refactor",
+			},
+		}
+		NormalizeToolCall(tool)
+		if tool.Category != ToolCategoryMCP {
+			t.Fatalf("expected category %s, got %s", ToolCategoryMCP, tool.Category)
+		}
+		if tool.Target != "Subagent refactor" {
+			t.Fatalf("expected target 'Subagent refactor', got %q", tool.Target)
+		}
+		if tool.Summary != "Delegated task" {
+			t.Fatalf("expected summary 'Delegated task', got %q", tool.Summary)
+		}
+	})
+
+	t.Run("prefixed mcp__orchestrator__read_thread", func(t *testing.T) {
+		tool := &ToolCall{
+			Name: "mcp__orchestrator__read_thread",
+			Input: map[string]any{
+				"threadId": "th_12345",
+			},
+		}
+		NormalizeToolCall(tool)
+		if tool.Category != ToolCategoryMCP {
+			t.Fatalf("expected category %s, got %s", ToolCategoryMCP, tool.Category)
+		}
+		if tool.Target != "th_12345" {
+			t.Fatalf("expected target 'th_12345', got %q", tool.Target)
+		}
+		if tool.Summary != "Read thread" {
+			t.Fatalf("expected summary 'Read thread', got %q", tool.Summary)
+		}
+	})
+
+	t.Run("prefixed mcp__orchestrator__send_to_thread", func(t *testing.T) {
+		tool := &ToolCall{
+			Name: "mcp__orchestrator__send_to_thread",
+			Input: map[string]any{
+				"threadId": "th_abcde",
+				"message":  "Please run tests",
+			},
+		}
+		NormalizeToolCall(tool)
+		if tool.Category != ToolCategoryMCP {
+			t.Fatalf("expected category %s, got %s", ToolCategoryMCP, tool.Category)
+		}
+		if tool.Target != "th_abcde" {
+			t.Fatalf("expected target 'th_abcde', got %q", tool.Target)
+		}
+		if tool.Summary != "Messaged thread" {
+			t.Fatalf("expected summary 'Messaged thread', got %q", tool.Summary)
+		}
+	})
+
+	t.Run("orchestrator:stop_thread", func(t *testing.T) {
+		tool := &ToolCall{
+			Name: "orchestrator:stop_thread",
+			Input: map[string]any{
+				"threadId": "th_999",
+			},
+		}
+		NormalizeToolCall(tool)
+		if tool.Category != ToolCategoryMCP {
+			t.Fatalf("expected category %s, got %s", ToolCategoryMCP, tool.Category)
+		}
+		if tool.Target != "th_999" {
+			t.Fatalf("expected target 'th_999', got %q", tool.Target)
+		}
+		if tool.Summary != "Stopped thread" {
+			t.Fatalf("expected summary 'Stopped thread', got %q", tool.Summary)
+		}
+	})
+
+	t.Run("orchestrator_capabilities and list_threads empty target", func(t *testing.T) {
+		caps := &ToolCall{
+			Name:  "orchestrator_capabilities",
+			Input: map[string]any{},
+		}
+		NormalizeToolCall(caps)
+		if caps.Category != ToolCategoryMCP {
+			t.Fatalf("expected category %s, got %s", ToolCategoryMCP, caps.Category)
+		}
+		if caps.Target != "" {
+			t.Fatalf("expected target '', got %q", caps.Target)
+		}
+		if caps.Summary != "Orchestrator capabilities" {
+			t.Fatalf("expected summary 'Orchestrator capabilities', got %q", caps.Summary)
+		}
+
+		list := &ToolCall{
+			Name: "list_threads",
+			Input: map[string]any{
+				"limit": 5,
+			},
+		}
+		NormalizeToolCall(list)
+		if list.Category != ToolCategoryMCP {
+			t.Fatalf("expected category %s, got %s", ToolCategoryMCP, list.Category)
+		}
+		if list.Target != "" {
+			t.Fatalf("expected target '', got %q", list.Target)
+		}
+		if list.Summary != "Listed threads" {
+			t.Fatalf("expected summary 'Listed threads', got %q", list.Summary)
+		}
+	})
+}

@@ -118,6 +118,47 @@ function extractTarget(name: string, input: Record<string, unknown>, driver?: st
   return '';
 }
 
+function orchestratorAction(name: string): string | null {
+  if (!name) return null;
+  let base = name.trim().toLowerCase();
+  if (base.startsWith('mcp__orchestrator__')) {
+    base = base.slice('mcp__orchestrator__'.length);
+  } else if (base.startsWith('mcp_orchestrator_')) {
+    base = base.slice('mcp_orchestrator_'.length);
+  } else if (base.startsWith('orchestrator__')) {
+    base = base.slice('orchestrator__'.length);
+  } else if (base.startsWith('orchestrator:')) {
+    base = base.slice('orchestrator:'.length);
+  } else if (base !== 'orchestrator_capabilities' && base.startsWith('orchestrator_')) {
+    base = base.slice('orchestrator_'.length);
+  }
+  switch (base) {
+    case 'orchestrator_capabilities':
+      return 'Checked Orchestrator';
+    case 'delegate_task':
+      return 'Delegated';
+    case 'list_threads':
+      return 'Listed threads';
+    case 'read_thread':
+      return 'Read thread';
+    case 'send_to_thread':
+      return 'Messaged thread';
+    case 'stop_thread':
+      return 'Stopped thread';
+    default:
+      return null;
+  }
+}
+
+function cleanMcpAction(name: string): string {
+  const stripped = name
+    .replace(/^mcp__[a-zA-Z0-9_-]+__/i, '')
+    .replace(/^mcp__|^mcp_|^orchestrator:/i, '');
+  const clean = stripped.replace(/_/g, ' ').trim();
+  if (!clean || clean.toLowerCase() === 'call mcp tool') return 'MCP';
+  return clean.charAt(0).toUpperCase() + clean.slice(1);
+}
+
 function determineAction(
   name: string,
   cmd?: string,
@@ -126,6 +167,16 @@ function determineAction(
 ): { type: ToolGroupItem['type']; action: string } {
   if (isGitCommand(name, cmd)) {
     return { type: 'git', action: 'Git' };
+  }
+
+  const orch = orchestratorAction(name);
+  if (orch) {
+    return { type: 'mcp', action: orch };
+  }
+
+  const lowerName = name.toLowerCase();
+  if (category === 'mcp' || lowerName.startsWith('mcp__') || lowerName.startsWith('mcp_') || lowerName === 'call_mcp_tool') {
+    return { type: 'mcp', action: cleanMcpAction(name) };
   }
 
   if (category) {
@@ -835,23 +886,28 @@ function groupTitle(items: ToolGroupItem[]): string {
   if (items.every((item) => item.type === 'read')) return 'Read';
   if (items.every((item) => item.type === 'search')) return 'Search';
   if (items.every((item) => item.type === 'bash')) return 'Commands';
+  if (items.every((item) => item.type === 'mcp')) return 'MCP';
   return 'Worked';
 }
 
 function groupSummary(items: ToolGroupItem[]): string {
   if (items.length === 0) return '';
-  if (items.length === 1) return items[0].target || '1 action';
+  if (items.length === 1) return items[0].target || items[0].action || '1 action';
 
   const readCount = items.filter((i) => i.type === 'read').length;
   const searchCount = items.filter((i) => i.type === 'search').length;
   const cmdCount = items.filter((i) => i.type === 'bash' || i.type === 'git').length;
   const editCount = items.filter((i) => i.type === 'edit' || i.type === 'write').length;
+  const delegateCount = items.filter((i) => i.type === 'mcp' && i.action === 'Delegated').length;
+  const mcpOtherCount = items.filter((i) => i.type === 'mcp' && i.action !== 'Delegated').length;
 
   const parts: string[] = [];
   if (readCount > 0) parts.push(`${readCount} ${readCount === 1 ? 'read' : 'reads'}`);
   if (searchCount > 0) parts.push(`${searchCount} ${searchCount === 1 ? 'search' : 'searches'}`);
   if (cmdCount > 0) parts.push(`${cmdCount} ${cmdCount === 1 ? 'command' : 'commands'}`);
   if (editCount > 0) parts.push(`${editCount} ${editCount === 1 ? 'edit' : 'edits'}`);
+  if (delegateCount > 0) parts.push(`${delegateCount} ${delegateCount === 1 ? 'delegation' : 'delegations'}`);
+  if (mcpOtherCount > 0) parts.push(`${mcpOtherCount} ${mcpOtherCount === 1 ? 'MCP call' : 'MCP calls'}`);
 
   return parts.length > 0 ? parts.join(', ') : `${items.length} actions`;
 }
@@ -922,10 +978,17 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
     case 'tool_edit': {
       const next = { ...existing, status, toolName: tool.name || existing.toolName };
       const nextInput = asRecord(tool.input);
-      if (tool.target) {
-        next.filePath = tool.target;
+
+      if (tool.target && (!next.filePath || isPlaceholderPath(next.filePath, existing.toolName || tool.name) || next.filePath !== tool.target)) {
+        if (!isPlaceholderPath(tool.target, existing.toolName || tool.name)) {
+          next.filePath = tool.target;
+        }
       }
-      if (tool.diffs?.length || tool.input) {
+
+      const hasDiffs = Boolean(tool.diffs?.length);
+      const needsDiffs = !existing.diffLines?.length;
+
+      if (hasDiffs || (needsDiffs && (tool.input || tool.diffs))) {
         const computed = editBlockFields(tool.name || existing.toolName || '', nextInput, tool.diffs);
         if (
           computed.filePath &&
@@ -936,6 +999,11 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
         }
         if (computed.diffLines.length > 0) {
           Object.assign(next, computed);
+        }
+      } else if (tool.input && isPlaceholderPath(next.filePath, existing.toolName || tool.name)) {
+        const pathFromInput = field(nextInput, PATH_KEYS);
+        if (pathFromInput && !isPlaceholderPath(pathFromInput, existing.toolName || tool.name)) {
+          next.filePath = pathFromInput;
         }
       }
       return next;

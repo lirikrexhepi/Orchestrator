@@ -1,12 +1,12 @@
 import { MaterialIcon } from '../common/icons';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { Chevron, Collapse, OutputPanel, WorkRow } from './WorkRow';
 import { ROW_DOT_Y, TimelineDot, useInTimeline } from './Timeline';
 import { TextShimmer } from './TextShimmer';
 
 export interface ToolGroupItem {
   id?: string;
-  type: 'read' | 'bash' | 'search' | 'edit' | 'write' | 'git' | 'generic';
+  type: 'read' | 'bash' | 'search' | 'edit' | 'write' | 'git' | 'mcp' | 'generic';
   action: string;
   target: string;
   details?: string;
@@ -30,6 +30,7 @@ const ICONS: Record<ToolGroupItem['type'], string> = {
   git: 'commit',
   edit: 'edit',
   write: 'edit_document',
+  mcp: 'hub',
   generic: 'build',
 };
 
@@ -70,7 +71,7 @@ function parseAntigravityTarget(rawTarget: string) {
 function displayTarget(item: ToolGroupItem): string {
   const target = item.target.trim();
   if (!target) return '';
-  if (FILE_TYPES.has(item.type) || item.driver === 'antigravity') {
+  if (FILE_TYPES.has(item.type)) {
     const base = target.split(/[\\/]/).filter(Boolean).pop();
     return base || target;
   }
@@ -88,6 +89,12 @@ const PRESENT: Record<string, string> = {
   Fetch: 'Fetching',
   Edit: 'Editing',
   Write: 'Writing',
+  Delegated: 'Delegating',
+  'Checked Orchestrator': 'Checking Orchestrator',
+  'Listed threads': 'Listing threads',
+  'Read thread': 'Reading thread',
+  'Messaged thread': 'Messaging thread',
+  'Stopped thread': 'Stopping thread',
 };
 
 export const ToolItemRow = React.memo(function ToolItemRow({
@@ -151,6 +158,7 @@ export const ToolItemRow = React.memo(function ToolItemRow({
 const COLLAPSE_AT = 4;
 
 const ToolGroupImpl: React.FC<ToolGroupProps> = ({
+  summary,
   items = [],
   defaultExpanded,
   className = '',
@@ -160,15 +168,7 @@ const ToolGroupImpl: React.FC<ToolGroupProps> = ({
   const isAntigravity = driver === 'antigravity' || items.some((item) => item.driver === 'antigravity');
   const anyRunning = items.some((item) => item.status === 'running');
   const runningItem = items.find((item) => item.status === 'running');
-  const [open, setOpen] = useState(isAntigravity ? (defaultExpanded ?? false) : (defaultExpanded ?? anyRunning));
-  const touched = useRef(false);
-
-  useEffect(() => {
-    if (touched.current) return;
-    if (!isAntigravity) {
-      setOpen(anyRunning);
-    }
-  }, [anyRunning, isAntigravity]);
+  const [open, setOpen] = useState(defaultExpanded ?? false);
 
   if (items.length < COLLAPSE_AT) {
     return (
@@ -180,26 +180,24 @@ const ToolGroupImpl: React.FC<ToolGroupProps> = ({
     );
   }
 
-  const label = `Used ${items.length} tools`;
+  const label = summary
+    ? summary.charAt(0).toUpperCase() + summary.slice(1)
+    : `Used ${items.length} tools`;
   return (
     <div className={`relative flex flex-col font-(family-name:--app-font) ${className}`}>
       {inTimeline && <TimelineDot y={ROW_DOT_Y} tone={anyRunning ? 'running' : 'row'} />}
       <button
         type="button"
-        onClick={() => {
-          touched.current = true;
-          setOpen((value) => !value);
-        }}
+        onClick={() => setOpen((value) => !value)}
         className="group/work flex items-center gap-2 self-start py-[3px] text-[12.5px] tracking-tight leading-[18px] text-current/55 hover:text-current/85 transition-colors duration-150 cursor-pointer"
       >
         {anyRunning ? <TextShimmer duration={1.6}>{label}</TextShimmer> : <span>{label}</span>}
         <Chevron open={open} direction="down" />
       </button>
 
-      {/* For Antigravity: when the group is collapsed and a tool is running, show the in-flight item right below */}
-      {isAntigravity && !open && anyRunning && runningItem && (
+      {!open && anyRunning && runningItem && (
         <div className="pl-2 pt-0.5">
-          <ToolItemRow item={runningItem} isAntigravity={true} />
+          <ToolItemRow item={runningItem} isAntigravity={isAntigravity} />
         </div>
       )}
 

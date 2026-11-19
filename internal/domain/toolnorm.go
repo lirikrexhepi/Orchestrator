@@ -66,10 +66,9 @@ var (
 		"todo":        {},
 	}
 	subagentToolNames = map[string]struct{}{
-		"task":          {},
-		"agent":         {},
-		"subagent":      {},
-		"delegate_task": {},
+		"task":     {},
+		"agent":    {},
+		"subagent": {},
 	}
 
 	filePathKeys = []string{
@@ -133,6 +132,32 @@ var (
 	}
 )
 
+func orchestratorMCPTool(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return ""
+	}
+	base := lower
+	switch {
+	case strings.HasPrefix(base, "mcp__orchestrator__"):
+		base = strings.TrimPrefix(base, "mcp__orchestrator__")
+	case strings.HasPrefix(base, "mcp_orchestrator_"):
+		base = strings.TrimPrefix(base, "mcp_orchestrator_")
+	case strings.HasPrefix(base, "orchestrator__"):
+		base = strings.TrimPrefix(base, "orchestrator__")
+	case strings.HasPrefix(base, "orchestrator:"):
+		base = strings.TrimPrefix(base, "orchestrator:")
+	case base != "orchestrator_capabilities" && strings.HasPrefix(base, "orchestrator_"):
+		base = strings.TrimPrefix(base, "orchestrator_")
+	}
+	switch base {
+	case "orchestrator_capabilities", "delegate_task", "list_threads", "read_thread", "send_to_thread", "stop_thread":
+		return base
+	default:
+		return ""
+	}
+}
+
 // NormalizeEvent idempotently normalizes tool call fields on ev.Tool if present.
 func NormalizeEvent(ev *RuntimeEvent) {
 	if ev != nil && ev.Tool != nil {
@@ -148,9 +173,17 @@ func NormalizeToolCall(tool *ToolCall) {
 
 	nameLower := strings.ToLower(strings.TrimSpace(tool.Name))
 	kindLower := strings.ToLower(strings.TrimSpace(tool.Kind))
+	lowered := lowerMap(tool.Input)
 
-	// 1. Category (if empty)
-	if tool.Category == "" {
+	orchTool := orchestratorMCPTool(tool.Name)
+	if orchTool == "" && tool.Kind != "" {
+		orchTool = orchestratorMCPTool(tool.Kind)
+	}
+
+	// 1. Category (if empty or orchestrator MCP tool)
+	if orchTool != "" {
+		tool.Category = ToolCategoryMCP
+	} else if tool.Category == "" {
 		if len(tool.Diffs) > 0 || kindLower == "filechange" {
 			if _, ok := writeToolNames[nameLower]; ok {
 				tool.Category = ToolCategoryWrite
@@ -178,51 +211,87 @@ func NormalizeToolCall(tool *ToolCall) {
 		}
 	}
 
-	lowered := lowerMap(tool.Input)
-
 	// 2. Target (if empty)
-	if tool.Target == "" && lowered != nil {
-		switch tool.Category {
-		case ToolCategoryRead, ToolCategoryEdit, ToolCategoryWrite:
-			tool.Target = extractFilePathWithLines(lowered)
-		case ToolCategoryCommand:
-			tool.Target = findFirstString(lowered, commandKeys)
-		case ToolCategorySearch:
-			target := findFirstString(lowered, searchQueryKeys)
-			if target == "" {
-				target = findFirstString(lowered, searchPathKeys)
+	if tool.Target == "" {
+		if orchTool != "" {
+			if lowered != nil {
+				switch orchTool {
+				case "delegate_task":
+					title := findFirstString(lowered, []string{"title", "task", "description"})
+					driver := findFirstString(lowered, []string{"driver"})
+					if title != "" && driver != "" {
+						tool.Target = fmt.Sprintf("%s · %s", title, driver)
+					} else if title != "" {
+						tool.Target = title
+					} else if driver != "" {
+						tool.Target = driver
+					}
+				case "read_thread", "send_to_thread", "stop_thread":
+					tool.Target = findFirstString(lowered, []string{"threadid", "thread_id", "targetthreadid", "target_thread_id", "id"})
+				case "orchestrator_capabilities", "list_threads":
+					tool.Target = ""
+				}
 			}
-			tool.Target = target
-		default:
-			target := extractFilePathWithLines(lowered)
-			if target == "" {
-				target = findFirstString(lowered, commandKeys)
+		} else if lowered != nil {
+			switch tool.Category {
+			case ToolCategoryRead, ToolCategoryEdit, ToolCategoryWrite:
+				tool.Target = extractFilePathWithLines(lowered)
+			case ToolCategoryCommand:
+				tool.Target = findFirstString(lowered, commandKeys)
+			case ToolCategorySearch:
+				target := findFirstString(lowered, searchQueryKeys)
+				if target == "" {
+					target = findFirstString(lowered, searchPathKeys)
+				}
+				tool.Target = target
+			default:
+				target := extractFilePathWithLines(lowered)
+				if target == "" {
+					target = findFirstString(lowered, commandKeys)
+				}
+				if target == "" {
+					target = findFirstString(lowered, searchQueryKeys)
+				}
+				if target == "" {
+					target = findFirstString(lowered, searchPathKeys)
+				}
+				if target == "" {
+					target = findFirstString(lowered, actionKeys)
+				}
+				if target == "" {
+					target = findFirstString(lowered, titleKeys)
+				}
+				if target == "" {
+					target = findFirstString(lowered, summaryKeys)
+				}
+				tool.Target = target
 			}
-			if target == "" {
-				target = findFirstString(lowered, searchQueryKeys)
-			}
-			if target == "" {
-				target = findFirstString(lowered, searchPathKeys)
-			}
-			if target == "" {
-				target = findFirstString(lowered, actionKeys)
-			}
-			if target == "" {
-				target = findFirstString(lowered, titleKeys)
-			}
-			if target == "" {
-				target = findFirstString(lowered, summaryKeys)
-			}
-			tool.Target = target
 		}
 	}
 
 	// 3. Summary (if empty)
-	if tool.Summary == "" && lowered != nil {
-		sum := findFirstString(lowered, []string{"toolsummary", "tool_summary", "description", "title"})
-		sum = strings.TrimSpace(sum)
-		if sum != "" && sum != tool.Target {
-			tool.Summary = sum
+	if tool.Summary == "" {
+		if orchTool != "" {
+			switch orchTool {
+			case "orchestrator_capabilities":
+				tool.Summary = "Orchestrator capabilities"
+			case "delegate_task":
+				tool.Summary = "Delegated task"
+			case "list_threads":
+				tool.Summary = "Listed threads"
+			case "read_thread":
+				tool.Summary = "Read thread"
+			case "send_to_thread":
+				tool.Summary = "Messaged thread"
+			case "stop_thread":
+				tool.Summary = "Stopped thread"
+			}
+		} else if lowered != nil {
+			sum := findFirstString(lowered, []string{"toolsummary", "tool_summary", "description", "title"})
+			sum = strings.TrimSpace(sum)
+			if sum != "" && sum != tool.Target {
+				tool.Summary = sum
+			}
 		}
 	}
 

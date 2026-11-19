@@ -67,16 +67,23 @@ function pushRuns(segments: FeedSegment[], blocks: AgentStreamBlock[]) {
   flush();
 }
 
+export function normalizePathKey(filePath: string): string {
+  let normalized = filePath.trim().replace(/\\/g, '/');
+  if (/^\/[A-Za-z]:\//.test(normalized)) normalized = normalized.slice(1);
+  return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
 export function groupEdits(edits: EditToolBlockData[]): EditToolBlockData[] {
   const byPath = new Map<string, EditToolBlockData>();
   for (const edit of edits) {
     if (edit.status === 'error') continue;
-    const existing = byPath.get(edit.filePath);
+    const key = normalizePathKey(edit.filePath);
+    const existing = byPath.get(key);
     if (!existing) {
-      byPath.set(edit.filePath, { ...edit, diffLines: edit.diffLines ? [...edit.diffLines] : [] });
+      byPath.set(key, { ...edit, diffLines: edit.diffLines ? [...edit.diffLines] : [] });
       continue;
     }
-    byPath.set(edit.filePath, {
+    byPath.set(key, {
       ...existing,
       additions: (existing.additions ?? 0) + (edit.additions ?? 0),
       deletions: (existing.deletions ?? 0) + (edit.deletions ?? 0),
