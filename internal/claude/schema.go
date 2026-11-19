@@ -152,6 +152,11 @@ type streamEvent struct {
 	Message *struct {
 		ID string `json:"id"`
 	} `json:"message,omitempty"`
+	ContentBlock *struct {
+		Type string `json:"type"`
+		ID   string `json:"id,omitempty"`
+		Name string `json:"name,omitempty"`
+	} `json:"content_block,omitempty"`
 	Delta *struct {
 		Type     string `json:"type"`
 		Text     string `json:"text,omitempty"`

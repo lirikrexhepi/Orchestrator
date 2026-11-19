@@ -70,6 +70,26 @@ func (a *Adapter) handleStreamEvent(s *session, envelope *Envelope) {
 			s.currentMsgID = ev.Message.ID
 			s.mu.Unlock()
 		}
+	case "content_block_start":
+		if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" && ev.ContentBlock.ID != "" {
+			if ev.ContentBlock.Name == "AskUserQuestion" {
+				s.mu.Lock()
+				if s.hiddenTools == nil {
+					s.hiddenTools = make(map[string]bool)
+				}
+				s.hiddenTools[ev.ContentBlock.ID] = true
+				s.mu.Unlock()
+				return
+			}
+			event := a.event(s, domain.EventToolCall)
+			event.ItemID = ev.ContentBlock.ID
+			event.Tool = &domain.ToolCall{
+				ID:     ev.ContentBlock.ID,
+				Name:   ev.ContentBlock.Name,
+				Status: domain.ToolInProgress,
+			}
+			a.emit.Emit(event)
+		}
 	case "content_block_delta":
 		if ev.Delta == nil {
 			return
@@ -171,6 +191,9 @@ func (a *Adapter) handleAssistant(s *session, envelope *Envelope) {
 			// interactive card; the raw tool row would duplicate it.
 			if block.Name == "AskUserQuestion" {
 				s.mu.Lock()
+				if s.hiddenTools == nil {
+					s.hiddenTools = make(map[string]bool)
+				}
 				s.hiddenTools[block.ID] = true
 				s.mu.Unlock()
 				continue
