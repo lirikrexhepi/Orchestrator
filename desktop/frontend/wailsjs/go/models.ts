@@ -344,6 +344,9 @@ export namespace domain {
 	    id: string;
 	    name: string;
 	    kind?: string;
+	    category?: string;
+	    target?: string;
+	    summary?: string;
 	    status: string;
 	    input?: Record<string, any>;
 	    output?: string;
@@ -362,6 +365,9 @@ export namespace domain {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.kind = source["kind"];
+	        this.category = source["category"];
+	        this.target = source["target"];
+	        this.summary = source["summary"];
 	        this.status = source["status"];
 	        this.input = source["input"];
 	        this.output = source["output"];

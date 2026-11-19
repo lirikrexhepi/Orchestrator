@@ -94,20 +94,6 @@ function extractTarget(name: string, input: Record<string, unknown>, driver?: st
     return filePath;
   }
 
-  // Antigravity-specific semantic distillation (only for driver === 'antigravity')
-  if (driver === 'antigravity') {
-    const summary = typeof input.toolSummary === 'string' ? input.toolSummary.trim() : '';
-    if (summary) return summary;
-
-    const cmd = field(input, COMMAND_KEYS);
-    if (cmd) {
-      const getContentMatch = cmd.match(/(?:Get-Content|cat|type)\s+["']?([^"'\r\n|]+?)["']?(?:\s*\||$)/i);
-      if (getContentMatch && getContentMatch[1]) {
-        return getContentMatch[1].trim();
-      }
-    }
-  }
-
   const direct =
     field(input, COMMAND_KEYS) ||
     field(input, QUERY_KEYS) ||
@@ -132,14 +118,40 @@ function extractTarget(name: string, input: Record<string, unknown>, driver?: st
   return '';
 }
 
-function determineAction(name: string, cmd?: string, driver?: string): { type: ToolGroupItem['type']; action: string } {
-  const lower = name.toLowerCase();
+function determineAction(
+  name: string,
+  cmd?: string,
+  driver?: string,
+  category?: string,
+): { type: ToolGroupItem['type']; action: string } {
   if (isGitCommand(name, cmd)) {
     return { type: 'git', action: 'Git' };
   }
-  if (driver === 'antigravity' && cmd && /^\s*(?:Get-Content|cat|type)\s+/i.test(cmd)) {
-    return { type: 'read', action: 'Read' };
+
+  if (category) {
+    switch (category) {
+      case 'read':
+        return { type: 'read', action: 'Read' };
+      case 'command':
+        return { type: 'bash', action: isInspectionCommand(cmd) ? 'Inspect' : 'Ran' };
+      case 'search': {
+        const lower = name.toLowerCase();
+        const action = lower.includes('glob') ? 'Glob' : lower.includes('grep') ? 'Grep' : 'Search';
+        return { type: 'search', action };
+      }
+      case 'edit':
+        return { type: 'edit', action: 'Edit' };
+      case 'write':
+        return { type: 'write', action: 'Write' };
+      case 'todo':
+      case 'subagent':
+        return { type: 'generic', action: 'Task' };
+      default:
+        break;
+    }
   }
+
+  const lower = name.toLowerCase();
   if (lower === 'read' || lower === 'view_file' || lower === 'read_file' || lower === 'readfile' || lower === 'cat') {
     return { type: 'read', action: 'Read' };
   }
@@ -149,7 +161,15 @@ function determineAction(name: string, cmd?: string, driver?: string): { type: T
   if (lower === 'grep' || lower === 'grep_search' || lower === 'search') {
     return { type: 'search', action: 'Grep' };
   }
-  if (lower === 'bash' || lower === 'powershell' || lower === 'run_command' || lower === 'commandexecution' || lower === 'terminal' || lower === 'cmd' || lower === 'sh') {
+  if (
+    lower === 'bash' ||
+    lower === 'powershell' ||
+    lower === 'run_command' ||
+    lower === 'commandexecution' ||
+    lower === 'terminal' ||
+    lower === 'cmd' ||
+    lower === 'sh'
+  ) {
     return { type: 'bash', action: isInspectionCommand(cmd) ? 'Inspect' : 'Ran' };
   }
   if (
@@ -627,6 +647,9 @@ export function extractMcpAppInfo(tool: domain.ToolCall): { resourceUri?: string
 
 /** Tools that always render as their own card, never folded into a group. */
 function isStandaloneTool(name: string, tool: domain.ToolCall): boolean {
+  if (tool.category === 'edit' || tool.category === 'write' || tool.category === 'todo') {
+    return true;
+  }
   return (
     EDIT_TOOLS.has(name) ||
     EDIT_TOOLS.has(name.toLowerCase()) ||
@@ -694,7 +717,7 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
   const input = asRecord(tool.input);
 
   // Todo lists: one live list, moved to where the agent currently is.
-  if (TODO_TOOLS.has(name) || TODO_TOOLS.has(name.toLowerCase())) {
+  if (tool.category === 'todo' || TODO_TOOLS.has(name) || TODO_TOOLS.has(name.toLowerCase())) {
     const todos = toTodos(input);
     if (todos.length > 0) {
       return [
@@ -829,10 +852,18 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
   switch (existing.type) {
     case 'tool_bash': {
       const nextInput = asRecord(tool.input);
-      const cmd = field(nextInput, COMMAND_KEYS) || (typeof nextInput.title === 'string' ? nextInput.title : '');
+      const cmd =
+        tool.target ||
+        field(nextInput, COMMAND_KEYS) ||
+        (typeof nextInput.title === 'string' ? nextInput.title : '');
+      const summary = tool.summary || existing.summary;
       return {
         ...existing,
-        command: cmd && (existing.command === 'bash' || existing.command === 'powershell' || existing.command === existing.id) ? cmd : existing.command,
+        command:
+          cmd && (existing.command === 'bash' || existing.command === 'powershell' || existing.command === existing.id || !existing.command)
+            ? cmd
+            : existing.command,
+        summary,
         status,
         output: output(existing.output),
         exitCode: existing.exitCode,
@@ -840,7 +871,7 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
     }
     case 'tool_search': {
       const nextInput = asRecord(tool.input);
-      const query = extractTarget(tool.name || 'search', nextInput) || existing.query;
+      const query = tool.target || (tool.input ? extractTarget(tool.name || 'search', nextInput) : '') || existing.query;
       return {
         ...existing,
         query,
@@ -850,6 +881,9 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
     }
     case 'tool_edit': {
       const next = { ...existing, status };
+      if (tool.target) {
+        next.filePath = tool.target;
+      }
       if (tool.diffs?.length || tool.input) {
         const computed = editBlockFields(tool.name || existing.toolName || '', asRecord(tool.input), tool.diffs);
         if (computed.diffLines.length > 0) Object.assign(next, computed);
@@ -860,7 +894,9 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
       const items = existing.items.map((item) => {
         if (item.id !== tool.id) return item;
         const nextInput = asRecord(tool.input);
-        const extracted = extractTarget(tool.name || item.action, nextInput, item.driver || existing.driver);
+        const extracted =
+          tool.target ||
+          (tool.input ? extractTarget(tool.name || item.action, nextInput, item.driver || existing.driver) : '');
         const nextTarget =
           extracted ||
           (item.target &&
@@ -875,7 +911,7 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
           details: output(item.details),
         };
       });
-      const summary = groupSummary(items);
+      const summary = tool.summary || groupSummary(items);
       return {
         ...existing,
         items,
@@ -927,22 +963,23 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
       type: 'tool_group',
       id,
       title: 'Git',
-      summary: cmd || 'git',
+      summary: tool.target || cmd || 'git',
       items: [item],
       memberIds: [tool.id],
       driver,
     };
   }
 
-  if (BASH_TOOLS.has(name) || BASH_TOOLS.has(name.toLowerCase()) || tool.kind === 'commandExecution') {
+  if (tool.category === 'command' || BASH_TOOLS.has(name) || BASH_TOOLS.has(name.toLowerCase()) || tool.kind === 'commandExecution') {
     const summary =
-      driver === 'antigravity' && typeof input.toolSummary === 'string' && input.toolSummary.trim()
+      tool.summary ||
+      (driver === 'antigravity' && typeof input.toolSummary === 'string' && input.toolSummary.trim()
         ? input.toolSummary.trim()
-        : undefined;
+        : undefined);
     return {
       type: 'tool_bash',
       id,
-      command: cmd || name,
+      command: tool.target || cmd || name,
       summary,
       output: tool.output,
       status: toStatus(tool.status),
@@ -950,12 +987,19 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
     };
   }
 
-  if (EDIT_TOOLS.has(name) || EDIT_TOOLS.has(name.toLowerCase()) || tool.kind === 'fileChange' || tool.diffs?.length) {
+  if (
+    tool.category === 'edit' ||
+    tool.category === 'write' ||
+    EDIT_TOOLS.has(name) ||
+    EDIT_TOOLS.has(name.toLowerCase()) ||
+    tool.kind === 'fileChange' ||
+    tool.diffs?.length
+  ) {
     const computed = editBlockFields(name, input, tool.diffs);
     return {
       type: 'tool_edit',
       id,
-      filePath: computed.filePath || extractTarget(name, input, driver) || name,
+      filePath: tool.target || computed.filePath || extractTarget(name, input, driver) || name,
       additions: computed.additions,
       deletions: computed.deletions,
       diffLines: computed.diffLines,
@@ -965,18 +1009,18 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
     };
   }
 
-  if (SEARCH_TOOLS.has(name) || SEARCH_TOOLS.has(name.toLowerCase())) {
+  if (tool.category === 'search' || SEARCH_TOOLS.has(name) || SEARCH_TOOLS.has(name.toLowerCase())) {
     return {
       type: 'tool_search',
       id,
       files: toFileList(tool.output),
-      query: extractTarget(name, input, driver),
+      query: tool.target || extractTarget(name, input, driver),
       isSearching: tool.status === 'in_progress' || tool.status === 'pending',
       driver,
     };
   }
 
-  if (TODO_TOOLS.has(name) || TODO_TOOLS.has(name.toLowerCase())) {
+  if (tool.category === 'todo' || TODO_TOOLS.has(name) || TODO_TOOLS.has(name.toLowerCase())) {
     const todos = toTodos(input);
     if (todos.length > 0) return { type: 'tool_todo', id, todos };
   }
@@ -990,7 +1034,7 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
     type: 'tool_group',
     id,
     title: item.action,
-    summary: item.target || summarize(tool),
+    summary: tool.summary || item.target || summarize(tool),
     items: [item],
     memberIds: [tool.id],
     driver,
@@ -1052,8 +1096,8 @@ function toGroupItem(
   driver?: string,
 ): ToolGroupItem {
   const cmd = field(input, COMMAND_KEYS);
-  const target = extractTarget(name, input, driver);
-  const { type, action } = determineAction(name, cmd, driver);
+  const target = tool.target || extractTarget(name, input, driver);
+  const { type, action } = determineAction(name, cmd, driver, tool.category);
 
   const cleanTarget =
     target &&

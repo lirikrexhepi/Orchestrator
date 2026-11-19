@@ -30,6 +30,7 @@ func NewBus() *Bus {
 }
 
 func (b *Bus) Publish(event domain.RuntimeEvent) domain.RuntimeEvent {
+	domain.NormalizeEvent(&event)
 	event.Seq = b.seq.Add(1)
 	if event.At == 0 {
 		event.At = time.Now().UnixMilli()

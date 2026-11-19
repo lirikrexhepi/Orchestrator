@@ -160,6 +160,7 @@ func (m *Manager) adapterFor(kind domain.DriverKind, account string) (provider.A
 
 // record stamps the event, appends it to the thread transcript, and publishes.
 func (m *Manager) record(event domain.RuntimeEvent) {
+	domain.NormalizeEvent(&event)
 	// Adapters report their own events and do not all know their driver kind, so
 	// the manager fills it in from the thread's session. Consumers that group by
 	// CLI (usage totals, diagnostics) depend on this being present.
