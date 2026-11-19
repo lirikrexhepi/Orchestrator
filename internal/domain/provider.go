@@ -156,6 +156,12 @@ const (
 	PermissionBypass      PermissionMode = "bypassPermissions"
 )
 
+type MCPConfig struct {
+	ServerName string `json:"-"`
+	Endpoint   string `json:"-"`
+	AuthHeader string `json:"-"`
+}
+
 type SessionStartInput struct {
 	ThreadID   string         `json:"threadId"`
 	InstanceID string         `json:"instanceId"`
@@ -168,8 +174,10 @@ type SessionStartInput struct {
 	Options    ModelOptions   `json:"options,omitempty"`
 	// PlanOnly denies the session every tool. The orchestrator delegates rather
 	// than works, and without this it explores the repo instead of answering.
-	PlanOnly bool `json:"planOnly,omitempty"`
-	Skills   *SkillPolicy `json:"skills,omitempty"`
+	PlanOnly   bool         `json:"planOnly,omitempty"`
+	Skills     *SkillPolicy `json:"skills,omitempty"`
+	MCP        *MCPConfig   `json:"-"`
+	IsSubagent bool         `json:"isSubagent,omitempty"`
 }
 
 type SkillMode string

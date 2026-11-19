@@ -544,3 +544,72 @@ func TestInterruptTurnCancelsPrompt(t *testing.T) {
 		return e.Kind == domain.EventTurnCompleted && e.StopReason == domain.StopCancelled
 	})
 }
+
+func TestInitSessionMCPServers(t *testing.T) {
+	srv := &fakeServer{}
+	s := &session{
+		threadID: "t-mcp",
+		cwd:      `C:\project`,
+	}
+	a, _, _, _ := setupFakeServerPair(t, s, srv)
+
+	in := domain.SessionStartInput{
+		ThreadID: "t-mcp",
+		Cwd:      `C:\project`,
+		MCP: &domain.MCPConfig{
+			ServerName: "orchestrator",
+			Endpoint:   "http://127.0.0.1:4000/mcp",
+			AuthHeader: "Bearer secret-token-123",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := a.initSession(ctx, s, in); err != nil {
+		t.Fatalf("initSession failed: %v", err)
+	}
+
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+
+	if len(srv.newParams.MCPServers) != 1 {
+		t.Fatalf("expected 1 MCP server, got %d", len(srv.newParams.MCPServers))
+	}
+
+	mcpMap, ok := srv.newParams.MCPServers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any, got %T", srv.newParams.MCPServers[0])
+	}
+	if mcpMap["type"] != "http" {
+		t.Errorf("type = %v, want 'http'", mcpMap["type"])
+	}
+	if mcpMap["name"] != "orchestrator" {
+		t.Errorf("name = %v, want 'orchestrator'", mcpMap["name"])
+	}
+	if mcpMap["url"] != "http://127.0.0.1:4000/mcp" {
+		t.Errorf("url = %v, want 'http://127.0.0.1:4000/mcp'", mcpMap["url"])
+	}
+
+	headers, ok := mcpMap["headers"].([]any)
+	if !ok {
+		if hSlice, ok2 := mcpMap["headers"].([]map[string]string); ok2 {
+			if len(hSlice) != 1 || hSlice[0]["name"] != "Authorization" || hSlice[0]["value"] != "Bearer secret-token-123" {
+				t.Errorf("headers = %v", hSlice)
+			}
+		} else {
+			t.Fatalf("unexpected headers type %T: %v", mcpMap["headers"], mcpMap["headers"])
+		}
+	} else {
+		if len(headers) != 1 {
+			t.Fatalf("expected 1 header, got %d", len(headers))
+		}
+		hMap, ok := headers[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected map[string]any for header, got %T", headers[0])
+		}
+		if hMap["name"] != "Authorization" || hMap["value"] != "Bearer secret-token-123" {
+			t.Errorf("header = %v", hMap)
+		}
+	}
+}

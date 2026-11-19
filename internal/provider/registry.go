@@ -217,6 +217,24 @@ func (r *Registry) NewAdapter(kind domain.DriverKind, accountID string, emit Emi
 
 const snapshotTTL = 30 * time.Second
 
+// Snapshots returns currently available provider snapshots, probing if the cache is empty.
+func (r *Registry) Snapshots() []domain.ProviderSnapshot {
+	r.mu.RLock()
+	cachedCount := len(r.cache)
+	r.mu.RUnlock()
+	if cachedCount == 0 {
+		return r.Probe(context.Background(), false)
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]domain.ProviderSnapshot, 0, len(r.cache))
+	for kind, snap := range r.cache {
+		out = append(out, r.withAccounts(kind, snap))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Driver < out[j].Driver })
+	return out
+}
+
 // Probe checks every registered CLI concurrently. Results are cached briefly so
 // repeated UI refreshes do not re-spawn version probes on every render.
 func (r *Registry) Probe(ctx context.Context, force bool) []domain.ProviderSnapshot {

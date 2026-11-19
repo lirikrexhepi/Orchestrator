@@ -222,7 +222,7 @@ func (a *Adapter) initSession(ctx context.Context, s *session, in domain.Session
 		err := s.conn.Call(loadCtx, "session/load", sessionLoadParams{
 			SessionID:  in.Resume,
 			Cwd:        s.cwd,
-			MCPServers: []any{},
+			MCPServers: mcpServersFor(in.MCP),
 		}, &loadRes)
 		cancelLoad()
 		if err == nil {
@@ -251,7 +251,7 @@ func (a *Adapter) initSession(ctx context.Context, s *session, in domain.Session
 		var newRes sessionNewResult
 		err := s.conn.Call(newCtx, "session/new", sessionNewParams{
 			Cwd:        s.cwd,
-			MCPServers: []any{},
+			MCPServers: mcpServersFor(in.MCP),
 			Meta:       meta,
 		}, &newRes)
 		cancelNew()
@@ -1046,4 +1046,20 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func mcpServersFor(cfg *domain.MCPConfig) []any {
+	if cfg == nil || cfg.Endpoint == "" {
+		return []any{}
+	}
+	return []any{
+		map[string]any{
+			"type": "http",
+			"name": firstNonEmpty(cfg.ServerName, "orchestrator"),
+			"url":  cfg.Endpoint,
+			"headers": []map[string]string{
+				{"name": "Authorization", "value": cfg.AuthHeader},
+			},
+		},
+	}
 }

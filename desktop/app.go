@@ -16,6 +16,7 @@ import (
 	"composer/internal/drivers"
 	"composer/internal/history"
 	"composer/internal/logger"
+	"composer/internal/mcp"
 	"composer/internal/memory"
 	"composer/internal/opencode"
 	"composer/internal/projects"
@@ -77,6 +78,7 @@ type App struct {
 	attachments   *attachments.Store
 	memory        *memory.Store
 	remoteServer  *remote.Server
+	mcpServer     *mcp.Server
 	stopFeed      func()
 
 	// headless is set when the app runs without a window (see headless.go).
@@ -235,6 +237,14 @@ func (a *App) startCore(ctx context.Context) {
 		_ = a.remoteServer.Start(ctx)
 		traceStartup("remote started")
 	}
+	a.mcpServer = mcp.NewServer(&appMCPBackend{app: a})
+	if endpoint, err := a.mcpServer.Start(ctx); err != nil {
+		logger.Errorf("App", "Failed to start loopback MCP server: %v", err)
+	} else {
+		logger.Infof("App", "Loopback MCP server bound to %s", endpoint)
+		a.manager.SetMCPProvider(&appMCPProvider{server: a.mcpServer})
+	}
+	traceStartup("mcp server started")
 	a.orchestrator.SetOnSpawn(func(result session.SpawnResult) {
 		if a.sessionService != nil {
 			for _, task := range result.Tasks {
@@ -386,6 +396,11 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.remoteServer != nil {
 		a.remoteServer.Stop()
+	}
+	if a.mcpServer != nil {
+		mcpCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = a.mcpServer.Close(mcpCtx)
+		cancel()
 	}
 	if a.stopFeed != nil {
 		a.stopFeed()

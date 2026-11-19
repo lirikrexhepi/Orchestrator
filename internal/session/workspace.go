@@ -230,6 +230,17 @@ func (w *Workspaces) RestoreTask(task domain.Task) (*domain.Task, bool) {
 	return &stored, true
 }
 
+func (w *Workspaces) AllTasks() []domain.Task {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	out := make([]domain.Task, 0, len(w.tasks))
+	for _, task := range w.tasks {
+		out = append(out, *task)
+	}
+	return out
+}
+
 func (w *Workspaces) List() []domain.Workspace {
 	w.mu.RLock()
 	defer w.mu.RUnlock()

@@ -29,9 +29,11 @@ type SpawnRequest struct {
 	Cwd string `json:"cwd,omitempty"`
 	// Preamble is context sent to the agent ahead of the prompt (project
 	// memory) but not recorded as part of the user's message.
-	Preamble string              `json:"preamble,omitempty"`
-	Skills   *domain.SkillPolicy `json:"skills,omitempty"`
-	Files    []domain.FileRef    `json:"files,omitempty"`
+	Preamble   string                `json:"preamble,omitempty"`
+	Skills     *domain.SkillPolicy   `json:"skills,omitempty"`
+	Files      []domain.FileRef      `json:"files,omitempty"`
+	Permission domain.PermissionMode `json:"permissionMode,omitempty"`
+	IsSubagent bool                  `json:"isSubagent,omitempty"`
 }
 
 // SpawnOptions carries the choices the user makes once per plan.
@@ -201,23 +203,26 @@ func (s *Spawner) spawnOne(
 		worktree, workdir = created, created.Path
 	}
 
-	permission := opts.Permission
+	permission := request.Permission
+	if permission == "" {
+		permission = opts.Permission
+	}
 	if permission == "" {
 		permission = domain.PermissionBypass
 	}
 
 	task, ok := s.workspaces.AddTask(workspace.ID, domain.Task{
 		Permission: permission,
-		ThreadID: threadID,
-		Title:    request.Title,
-		Prompt:   request.Prompt,
-		Driver:   driver,
-		Account:  account,
-		Model:    model,
-		Options:  options,
-		State:    domain.TaskRunning,
-		Worktree: worktree,
-		Cwd:      workdir,
+		ThreadID:   threadID,
+		Title:      request.Title,
+		Prompt:     request.Prompt,
+		Driver:     driver,
+		Account:    account,
+		Model:      model,
+		Options:    options,
+		State:      domain.TaskRunning,
+		Worktree:   worktree,
+		Cwd:        workdir,
 	})
 	if !ok {
 		return nil, fmt.Errorf("workspace %s is gone", workspace.ID)
@@ -238,6 +243,7 @@ func (s *Spawner) spawnOne(
 		Options:    options,
 		Permission: permission,
 		Skills:     request.Skills,
+		IsSubagent: request.IsSubagent,
 	}); err != nil {
 		s.workspaces.SetState(threadID, domain.TaskFailed)
 		return nil, err

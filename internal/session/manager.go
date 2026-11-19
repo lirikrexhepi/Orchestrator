@@ -36,6 +36,18 @@ type Manager struct {
 
 	accountFor AccountResolver
 	expandRefs RefExpander
+	mcp        MCPProvider
+}
+
+type MCPProvider interface {
+	Issue(threadID string, driver domain.DriverKind, cwd string, perm domain.PermissionMode, isSubagent bool) (*domain.MCPConfig, error)
+	RevokeThread(threadID string)
+}
+
+func (m *Manager) SetMCPProvider(p MCPProvider) {
+	m.mu.Lock()
+	m.mcp = p
+	m.mu.Unlock()
 }
 
 type AccountResolver func(kind domain.DriverKind, cwd string) string
@@ -283,6 +295,21 @@ func (m *Manager) Start(ctx context.Context, kind domain.DriverKind, in domain.S
 		return domain.Session{}, err
 	}
 
+	m.mu.RLock()
+	mcpProv := m.mcp
+	m.mu.RUnlock()
+	if mcpProv != nil && !in.PlanOnly && in.MCP == nil {
+		effectivePerm := in.Permission
+		if effectivePerm == "" {
+			effectivePerm = domain.PermissionDefault
+		}
+		mcpCfg, err := mcpProv.Issue(in.ThreadID, kind, in.Cwd, effectivePerm, in.IsSubagent)
+		if err != nil {
+			return domain.Session{}, fmt.Errorf("issue mcp credential: %w", err)
+		}
+		in.MCP = mcpCfg
+	}
+
 	// Registered before the adapter starts: StartSession emits session.started
 	// synchronously on some drivers, and record() stamps the driver from this
 	// map. Registering afterwards would leave those first events unattributed.
@@ -296,6 +323,9 @@ func (m *Manager) Start(ctx context.Context, kind domain.DriverKind, in domain.S
 
 	session, err := adapter.StartSession(ctx, in)
 	if err != nil {
+		if mcpProv != nil {
+			mcpProv.RevokeThread(in.ThreadID)
+		}
 		m.mu.Lock()
 		delete(m.threads, in.ThreadID)
 		m.mu.Unlock()
@@ -396,6 +426,7 @@ func (m *Manager) Send(ctx context.Context, in domain.SendTurnInput) error {
 func (m *Manager) revive(ctx context.Context, threadID string, entry *record) error {
 	in := entry.input
 	in.ThreadID = threadID
+	in.MCP = nil
 	if resume := entry.session.ProviderSessionID; resume != "" {
 		in.Resume = resume
 	}
@@ -644,7 +675,11 @@ func (m *Manager) Stop(ctx context.Context, threadID string) error {
 	m.mu.Lock()
 	entry, ok := m.threads[threadID]
 	delete(m.threads, threadID)
+	mcpProv := m.mcp
 	m.mu.Unlock()
+	if mcpProv != nil {
+		mcpProv.RevokeThread(threadID)
+	}
 	if !ok {
 		logger.Infof("Manager", "Stop: thread=%s found=false", threadID)
 		return nil
@@ -664,8 +699,16 @@ func (m *Manager) StopAll(ctx context.Context) {
 	adapters = append(adapters, m.retired...)
 	m.retired = nil
 	m.adapters = make(map[adapterKey]provider.Adapter)
+	threads := m.threads
 	m.threads = make(map[string]*record)
+	mcpProv := m.mcp
 	m.mu.Unlock()
+
+	if mcpProv != nil {
+		for threadID := range threads {
+			mcpProv.RevokeThread(threadID)
+		}
+	}
 
 	var wg sync.WaitGroup
 	for _, adapter := range adapters {
