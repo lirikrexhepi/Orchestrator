@@ -210,28 +210,33 @@ export const GlassInput: React.FC<GlassInputProps> = ({
     };
   }, [activeChatKey]);
 
-  // Sync selected model and account to current chat's last used model/account
+  // Sync selected model and account to current chat ONLY when switching to a DIFFERENT chat tab
   useEffect(() => {
     if (!activeChatKey || activeChatKey === '__home__') {
       lastSyncedChatKey = activeChatKey ?? null;
       return;
     }
 
+    // Crucial: Only sync once on chat tab switch.
+    // NEVER re-sync while staying on the same chat, otherwise the user's manual picker clicks get overwritten!
+    if (lastSyncedChatKey === activeChatKey) {
+      return;
+    }
+    lastSyncedChatKey = activeChatKey;
+
     const models = store.models;
     if (!models || models.length === 0) return;
 
     const target = resolveMatchingModel(models, activeChatModel, activeChatDriver);
-    lastSyncedChatKey = activeChatKey;
-
     const targetProviderId = target?.providerId || activeChatDriver || store.selectedProviderId;
     const targetModelId = target?.id;
 
     if (activeChatAccount && store.shownAccount(targetProviderId) !== activeChatAccount) {
       store.selectAccount(targetProviderId, activeChatAccount, targetModelId);
-    } else if (targetModelId && (targetModelId !== store.selectedModelId || targetProviderId !== store.selectedProviderId)) {
+    } else if (targetModelId) {
       store.selectModelSilently(targetModelId, targetProviderId);
     }
-  }, [activeChatKey, activeChatModel, activeChatDriver, activeChatAccount, store.models, store.selectedModelId]);
+  }, [activeChatKey, activeChatModel, activeChatDriver, activeChatAccount, store.models]);
 
   // Auto-resize textarea
   useEffect(() => {
