@@ -46,13 +46,16 @@ type Conn struct {
 
 	handler Handler
 
+	ctx       context.Context
+	cancel    context.CancelFunc
 	closeOnce sync.Once
 	closed    chan struct{}
 	closeErr  error
 }
 
 func NewConn(r io.Reader, w io.Writer, handler Handler) *Conn {
-	c := &Conn{w: w, handler: handler, closed: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &Conn{w: w, handler: handler, ctx: ctx, cancel: cancel, closed: make(chan struct{})}
 	go c.read(r)
 	return c
 }
@@ -67,6 +70,9 @@ func (c *Conn) Close(err error) {
 			err = ErrClosed
 		}
 		c.closeErr = err
+		if c.cancel != nil {
+			c.cancel()
+		}
 		close(c.closed)
 		c.pending.Range(func(key, value any) bool {
 			if ch, ok := value.(chan *Message); ok {
@@ -108,7 +114,10 @@ func (c *Conn) dispatch(msg *Message) {
 	isResponse := msg.Method == "" && len(msg.ID) > 0
 	if isResponse {
 		if ch, ok := c.pending.LoadAndDelete(string(msg.ID)); ok {
-			ch.(chan *Message) <- msg
+			select {
+			case ch.(chan *Message) <- msg:
+			default:
+			}
 		}
 		return
 	}
@@ -133,7 +142,11 @@ func (c *Conn) serve(msg *Message) {
 		return
 	}
 
-	result, err := c.handler(context.Background(), msg.Method, msg.Params)
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	result, err := c.handler(ctx, msg.Method, msg.Params)
 	if len(msg.ID) == 0 {
 		return
 	}

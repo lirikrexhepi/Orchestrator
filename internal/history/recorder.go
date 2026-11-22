@@ -2,6 +2,7 @@ package history
 
 import (
 	"sync"
+	"time"
 
 	"composer/internal/domain"
 )
@@ -76,11 +77,52 @@ func (r *Recorder) OpenWorkspace(workspace domain.Workspace, coordinatorThreadID
 		meta.CoordinatorThreadID = coordinatorThreadID
 		r.workspaceOf[coordinatorThreadID] = workspace.ID
 	}
-	snapshot := *meta
+	snapshot := cloneMeta(meta)
 	r.mu.Unlock()
 
 	_ = r.store.SaveMeta(snapshot)
 	r.notifyChanged()
+}
+
+func cloneMeta(meta *Meta) Meta {
+	if meta == nil {
+		return Meta{}
+	}
+	cp := *meta
+	if meta.Tasks != nil {
+		cp.Tasks = make([]domain.Task, len(meta.Tasks))
+		for i, t := range meta.Tasks {
+			if len(t.Drivers) > 0 {
+				d := make([]domain.DriverKind, len(t.Drivers))
+				copy(d, t.Drivers)
+				t.Drivers = d
+			}
+			if len(t.Models) > 0 {
+				m := make([]string, len(t.Models))
+				copy(m, t.Models)
+				t.Models = m
+			}
+			if t.Options != nil {
+				opts := make(domain.ModelOptions, len(t.Options))
+				for k, v := range t.Options {
+					opts[k] = v
+				}
+				t.Options = opts
+			}
+			if t.Worktree != nil {
+				wt := *t.Worktree
+				t.Worktree = &wt
+			}
+			cp.Tasks[i] = t
+		}
+	}
+	if meta.Resume != nil {
+		cp.Resume = make(map[string]string, len(meta.Resume))
+		for k, v := range meta.Resume {
+			cp.Resume[k] = v
+		}
+	}
+	return cp
 }
 
 func (r *Recorder) metaFor(workspaceID string) *Meta {
@@ -132,6 +174,21 @@ func keepKnown(existing, next domain.Task) domain.Task {
 	if existing.UserTurns > next.UserTurns {
 		next.UserTurns = existing.UserTurns
 	}
+	if next.ParentThreadID == "" {
+		next.ParentThreadID = existing.ParentThreadID
+	}
+	if !next.Subagent && existing.Subagent {
+		next.Subagent = true
+	}
+	if !next.Hidden && existing.Hidden {
+		next.Hidden = true
+	}
+	if next.CreatedAt == 0 {
+		next.CreatedAt = existing.CreatedAt
+	}
+	if existing.UpdatedAt > next.UpdatedAt {
+		next.UpdatedAt = existing.UpdatedAt
+	}
 	return next
 }
 
@@ -156,7 +213,7 @@ func (r *Recorder) TrackTask(task domain.Task) {
 	if !replaced {
 		meta.Tasks = append(meta.Tasks, task)
 	}
-	snapshot := *meta
+	snapshot := cloneMeta(meta)
 	r.mu.Unlock()
 
 	_ = r.store.SaveMeta(snapshot)
@@ -188,6 +245,9 @@ func (r *Recorder) Record(threadID string, event domain.RuntimeEvent) {
 		r.streamMu.Unlock()
 		if pending != nil {
 			_ = r.store.Append(pending.workspaceID, threadID, pending.event)
+			if pending.event.Kind == domain.EventAgentMessage && pending.event.Text != "" {
+				r.touchTask(pending.workspaceID, threadID, pending.event.At)
+			}
 		}
 		return
 	}
@@ -207,6 +267,62 @@ func (r *Recorder) Record(threadID string, event domain.RuntimeEvent) {
 			r.flushMeta(workspaceID)
 		}
 	}
+
+	switch event.Kind {
+	case domain.EventUserMessage, domain.EventTurnStarted, domain.EventTurnCompleted, domain.EventTurnFailed:
+		r.touchTask(workspaceID, threadID, event.At)
+	case domain.EventAgentMessage:
+		if !event.Delta {
+			r.touchTask(workspaceID, threadID, event.At)
+		}
+	}
+}
+
+// TouchTask updates both the workspace and matching task UpdatedAt stamps,
+// persists metadata, and notifies listeners.
+func (r *Recorder) TouchTask(workspaceID, threadID string, at int64) {
+	if workspaceID == "" {
+		return
+	}
+	r.touchTask(workspaceID, threadID, at)
+}
+
+func (r *Recorder) touchTask(workspaceID, threadID string, at int64) {
+	if at == 0 {
+		at = time.Now().UnixMilli()
+	}
+	r.mu.Lock()
+	meta := r.metaFor(workspaceID)
+	changed := false
+	if at > meta.Workspace.UpdatedAt {
+		meta.Workspace.UpdatedAt = at
+		changed = true
+	}
+	for i := range meta.Tasks {
+		if meta.Tasks[i].ThreadID == threadID {
+			if at > meta.Tasks[i].UpdatedAt {
+				meta.Tasks[i].UpdatedAt = at
+				changed = true
+			}
+			break
+		}
+	}
+	if !changed {
+		r.mu.Unlock()
+		return
+	}
+	r.dirty[workspaceID] = true
+	snapshot := cloneMeta(meta)
+	r.mu.Unlock()
+
+	if err := r.store.SaveMeta(snapshot); err == nil {
+		r.mu.Lock()
+		if current, ok := r.metas[workspaceID]; ok && current == meta {
+			delete(r.dirty, workspaceID)
+		}
+		r.mu.Unlock()
+	}
+	r.notifyChanged()
 }
 
 func isMergeableDelta(event domain.RuntimeEvent) bool {
@@ -225,6 +341,9 @@ func (r *Recorder) flushStream(threadID string) {
 	r.streamMu.Unlock()
 	if pending != nil {
 		_ = r.store.Append(pending.workspaceID, threadID, pending.event)
+		if pending.event.Kind == domain.EventAgentMessage && pending.event.Text != "" {
+			r.touchTask(pending.workspaceID, threadID, pending.event.At)
+		}
 	}
 }
 
@@ -280,7 +399,7 @@ func (r *Recorder) NoteProviderSession(threadID, providerSessionID string) {
 	}
 	meta.Resume[threadID] = providerSessionID
 	r.dirty[workspaceID] = true
-	snapshot := *meta
+	snapshot := cloneMeta(meta)
 	r.mu.Unlock()
 
 	if err := r.store.SaveMeta(snapshot); err != nil {
@@ -320,7 +439,7 @@ func (r *Recorder) ForgetProviderSession(threadID string) {
 		return
 	}
 	delete(meta.Resume, threadID)
-	snapshot := *meta
+	snapshot := cloneMeta(meta)
 	r.mu.Unlock()
 	_ = r.store.SaveMeta(snapshot)
 }
@@ -355,36 +474,30 @@ func (r *Recorder) UpdateTaskState(threadID string, state domain.TaskState, summ
 	r.mu.Unlock()
 }
 
-func (r *Recorder) touchTask(workspaceID, threadID string, at int64) {
-	if at <= 0 {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	meta, ok := r.metas[workspaceID]
-	if !ok {
-		return
-	}
-	for i := range meta.Tasks {
-		if meta.Tasks[i].ThreadID == threadID && at > meta.Tasks[i].UpdatedAt {
-			meta.Tasks[i].UpdatedAt = at
-			r.dirty[workspaceID] = true
-		}
-	}
-	if at > meta.Workspace.UpdatedAt {
-		meta.Workspace.UpdatedAt = at
-		r.dirty[workspaceID] = true
-	}
-}
-
 // Touch updates a workspace's last-activity stamp so history sorts by use.
 func (r *Recorder) Touch(workspaceID string, at int64) {
-	r.mu.Lock()
-	if meta, ok := r.metas[workspaceID]; ok && at > meta.Workspace.UpdatedAt {
-		meta.Workspace.UpdatedAt = at
-		r.dirty[workspaceID] = true
+	if workspaceID == "" || at <= 0 {
+		return
 	}
+	r.mu.Lock()
+	meta := r.metaFor(workspaceID)
+	if at <= meta.Workspace.UpdatedAt {
+		r.mu.Unlock()
+		return
+	}
+	meta.Workspace.UpdatedAt = at
+	r.dirty[workspaceID] = true
+	snapshot := cloneMeta(meta)
 	r.mu.Unlock()
+
+	if err := r.store.SaveMeta(snapshot); err == nil {
+		r.mu.Lock()
+		if current, ok := r.metas[workspaceID]; ok && current == meta {
+			delete(r.dirty, workspaceID)
+		}
+		r.mu.Unlock()
+	}
+	r.notifyChanged()
 }
 
 // Restore rehydrates in-memory routing from a stored workspace so a restart
@@ -464,7 +577,7 @@ func (r *Recorder) flushMeta(workspaceID string) {
 		r.mu.Unlock()
 		return
 	}
-	snapshot := *meta
+	snapshot := cloneMeta(meta)
 	r.mu.Unlock()
 
 	if err := r.store.SaveMeta(snapshot); err != nil {
@@ -486,7 +599,7 @@ func (r *Recorder) FlushAll() error {
 	ids := make([]string, 0, len(r.dirty))
 	for workspaceID := range r.dirty {
 		if meta, ok := r.metas[workspaceID]; ok {
-			pending = append(pending, *meta)
+			pending = append(pending, cloneMeta(meta))
 			ids = append(ids, workspaceID)
 		}
 	}
@@ -511,7 +624,7 @@ func (r *Recorder) Close() error {
 	ids := make([]string, 0, len(r.dirty))
 	for workspaceID := range r.dirty {
 		if meta, ok := r.metas[workspaceID]; ok {
-			pending = append(pending, *meta)
+			pending = append(pending, cloneMeta(meta))
 			ids = append(ids, workspaceID)
 		}
 	}
@@ -544,7 +657,7 @@ func (r *Recorder) RecordCoordinator(workspaceID, threadID string, events []doma
 	}
 	meta.CoordinatorThreadID = threadID
 	r.workspaceOf[threadID] = workspaceID
-	snapshot := *meta
+	snapshot := cloneMeta(meta)
 	r.mu.Unlock()
 
 	for _, event := range events {
@@ -662,7 +775,7 @@ func (r *Recorder) MoveWorkspace(workspaceID, cwd string) error {
 			meta.Tasks[i].Cwd = cwd
 		}
 	}
-	snapshot := *meta
+	snapshot := cloneMeta(meta)
 	r.mu.Unlock()
 	if err := r.store.SaveMeta(snapshot); err != nil {
 		return err

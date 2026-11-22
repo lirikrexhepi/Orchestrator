@@ -2,7 +2,7 @@ import { domain } from '../../../wailsjs/go/models';
 import { AgentStreamBlock, UserMessageFile } from './types';
 import { ToolGroupItem } from './ToolGroup';
 import { DiffLine } from './EditTool';
-import { isSubagentEvent, trackSubagents } from './subagents';
+import { isSpawnTool, isSubagentEvent, isTrackedSubagentTool, trackSubagents } from './subagents';
 import { chatRefTitle, isChatRefPath } from '../common/chatDrag';
 
 export type RuntimeEvent = domain.RuntimeEvent;
@@ -18,6 +18,7 @@ const BASH_TOOLS = new Set([
 const EDIT_TOOLS = new Set([
   'Edit', 'Write', 'NotebookEdit', 'replace_file_content', 'write_to_file', 'multi_replace_file_content', 'fileChange',
   'edit', 'write', 'notebookedit', 'patch', 'writefile', 'editfile',
+  'edit_file', 'write_file', 'create_file', 'patch_file', 'multi_edit',
 ]);
 const SEARCH_TOOLS = new Set([
   'Glob', 'Grep', 'grep_search', 'find_by_name',
@@ -32,6 +33,7 @@ const COMMAND_KEYS = ['command', 'CommandLine', 'cmd', 'script', 'input', 'args'
 const PATH_KEYS = [
   'filePath',
   'file_path',
+  'Path',
   'path',
   'AbsolutePath',
   'DirectoryPath',
@@ -56,6 +58,15 @@ function field(input: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
     const value = input[key];
     if (typeof value === 'string' && value) return value;
+  }
+  const entries = Object.entries(input);
+  for (const key of keys) {
+    const lowerKey = key.toLowerCase();
+    for (const [k, value] of entries) {
+      if (k.toLowerCase() === lowerKey && typeof value === 'string' && value) {
+        return value;
+      }
+    }
   }
   return '';
 }
@@ -83,20 +94,6 @@ function extractTarget(name: string, input: Record<string, unknown>, driver?: st
     return filePath;
   }
 
-  // Antigravity-specific semantic distillation (only for driver === 'antigravity')
-  if (driver === 'antigravity') {
-    const summary = typeof input.toolSummary === 'string' ? input.toolSummary.trim() : '';
-    if (summary) return summary;
-
-    const cmd = field(input, COMMAND_KEYS);
-    if (cmd) {
-      const getContentMatch = cmd.match(/(?:Get-Content|cat|type)\s+["']?([^"'\r\n|]+?)["']?(?:\s*\||$)/i);
-      if (getContentMatch && getContentMatch[1]) {
-        return getContentMatch[1].trim();
-      }
-    }
-  }
-
   const direct =
     field(input, COMMAND_KEYS) ||
     field(input, QUERY_KEYS) ||
@@ -121,14 +118,91 @@ function extractTarget(name: string, input: Record<string, unknown>, driver?: st
   return '';
 }
 
-function determineAction(name: string, cmd?: string, driver?: string): { type: ToolGroupItem['type']; action: string } {
-  const lower = name.toLowerCase();
+function orchestratorAction(name: string): string | null {
+  if (!name) return null;
+  let base = name.trim().toLowerCase();
+  if (base.startsWith('mcp__orchestrator__')) {
+    base = base.slice('mcp__orchestrator__'.length);
+  } else if (base.startsWith('mcp_orchestrator_')) {
+    base = base.slice('mcp_orchestrator_'.length);
+  } else if (base.startsWith('orchestrator__')) {
+    base = base.slice('orchestrator__'.length);
+  } else if (base.startsWith('orchestrator:')) {
+    base = base.slice('orchestrator:'.length);
+  } else if (base !== 'orchestrator_capabilities' && base.startsWith('orchestrator_')) {
+    base = base.slice('orchestrator_'.length);
+  }
+  switch (base) {
+    case 'orchestrator_capabilities':
+      return 'Checked Orchestrator';
+    case 'delegate_task':
+      return 'Delegated';
+    case 'list_threads':
+      return 'Listed threads';
+    case 'read_thread':
+      return 'Read thread';
+    case 'send_to_thread':
+      return 'Messaged thread';
+    case 'stop_thread':
+      return 'Stopped thread';
+    default:
+      return null;
+  }
+}
+
+function cleanMcpAction(name: string): string {
+  const stripped = name
+    .replace(/^mcp__[a-zA-Z0-9_-]+__/i, '')
+    .replace(/^mcp__|^mcp_|^orchestrator:/i, '');
+  const clean = stripped.replace(/_/g, ' ').trim();
+  if (!clean || clean.toLowerCase() === 'call mcp tool') return 'MCP';
+  return clean.charAt(0).toUpperCase() + clean.slice(1);
+}
+
+function determineAction(
+  name: string,
+  cmd?: string,
+  driver?: string,
+  category?: string,
+): { type: ToolGroupItem['type']; action: string } {
   if (isGitCommand(name, cmd)) {
     return { type: 'git', action: 'Git' };
   }
-  if (driver === 'antigravity' && cmd && /^\s*(?:Get-Content|cat|type)\s+/i.test(cmd)) {
-    return { type: 'read', action: 'Read' };
+
+  const orch = orchestratorAction(name);
+  if (orch) {
+    return { type: 'mcp', action: orch };
   }
+
+  const lowerName = name.toLowerCase();
+  if (category === 'mcp' || lowerName.startsWith('mcp__') || lowerName.startsWith('mcp_') || lowerName === 'call_mcp_tool') {
+    return { type: 'mcp', action: cleanMcpAction(name) };
+  }
+
+  if (category) {
+    switch (category) {
+      case 'read':
+        return { type: 'read', action: 'Read' };
+      case 'command':
+        return { type: 'bash', action: isInspectionCommand(cmd) ? 'Inspect' : 'Ran' };
+      case 'search': {
+        const lower = name.toLowerCase();
+        const action = lower.includes('glob') ? 'Glob' : lower.includes('grep') ? 'Grep' : 'Search';
+        return { type: 'search', action };
+      }
+      case 'edit':
+        return { type: 'edit', action: 'Edit' };
+      case 'write':
+        return { type: 'write', action: 'Write' };
+      case 'todo':
+      case 'subagent':
+        return { type: 'generic', action: 'Task' };
+      default:
+        break;
+    }
+  }
+
+  const lower = name.toLowerCase();
   if (lower === 'read' || lower === 'view_file' || lower === 'read_file' || lower === 'readfile' || lower === 'cat') {
     return { type: 'read', action: 'Read' };
   }
@@ -138,13 +212,36 @@ function determineAction(name: string, cmd?: string, driver?: string): { type: T
   if (lower === 'grep' || lower === 'grep_search' || lower === 'search') {
     return { type: 'search', action: 'Grep' };
   }
-  if (lower === 'bash' || lower === 'powershell' || lower === 'run_command' || lower === 'commandexecution' || lower === 'terminal' || lower === 'cmd' || lower === 'sh') {
+  if (
+    lower === 'bash' ||
+    lower === 'powershell' ||
+    lower === 'run_command' ||
+    lower === 'commandexecution' ||
+    lower === 'terminal' ||
+    lower === 'cmd' ||
+    lower === 'sh'
+  ) {
     return { type: 'bash', action: isInspectionCommand(cmd) ? 'Inspect' : 'Ran' };
   }
-  if (lower === 'edit' || lower === 'replace_file_content' || lower === 'multi_replace_file_content' || lower === 'filechange' || lower === 'patch') {
+  if (
+    lower === 'edit' ||
+    lower === 'replace_file_content' ||
+    lower === 'multi_replace_file_content' ||
+    lower === 'filechange' ||
+    lower === 'patch' ||
+    lower === 'edit_file' ||
+    lower === 'patch_file' ||
+    lower === 'multi_edit'
+  ) {
     return { type: 'edit', action: 'Edit' };
   }
-  if (lower === 'write' || lower === 'write_to_file' || lower === 'writefile') {
+  if (
+    lower === 'write' ||
+    lower === 'write_to_file' ||
+    lower === 'writefile' ||
+    lower === 'write_file' ||
+    lower === 'create_file'
+  ) {
     return { type: 'write', action: 'Write' };
   }
   if (lower === 'webfetch' || lower === 'websearch' || lower === 'read_url_content') {
@@ -165,7 +262,15 @@ function determineAction(name: string, cmd?: string, driver?: string): { type: T
  */
 export function reduceEvent(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStreamBlock[] {
   const tracked = trackSubagents(blocks, event);
-  return isSubagentEvent(event) ? tracked : reduceMain(tracked, event);
+  if (isSubagentEvent(event)) return tracked;
+  if (
+    event.tool &&
+    (event.kind === 'tool.call' || event.kind === 'tool.result') &&
+    (isSpawnTool(event.tool.name) || isTrackedSubagentTool(tracked, event.tool.id))
+  ) {
+    return tracked;
+  }
+  return reduceMain(tracked, event);
 }
 
 function reduceMain(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStreamBlock[] {
@@ -209,15 +314,23 @@ function appendNotice(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStr
   const label = (event.text ?? '').trim();
   if (!label) return blocks;
   const icon = (event as unknown as { icon?: string }).icon || undefined;
-  const last = blocks[blocks.length - 1];
-  if (last?.type === 'notice' && last.label === label) {
-    if (icon && !last.icon) {
-      const updated = [...blocks];
-      updated[updated.length - 1] = { ...last, icon };
-      return updated;
+
+  // Deduplicate against an identical notice already placed optimistically right
+  // before or after the latest user turn (e.g. model/account switch notices).
+  const searchFloor = Math.max(0, blocks.length - 6);
+  for (let i = blocks.length - 1; i >= searchFloor; i--) {
+    const b = blocks[i];
+    if (b.type === 'notice' && b.label === label) {
+      if (icon && !b.icon) {
+        const updated = [...blocks];
+        updated[i] = { ...b, icon };
+        return updated;
+      }
+      return blocks;
     }
-    return blocks;
+    if (b.type === 'text' && !b.isStreaming) break;
   }
+
   return [...blocks, { type: 'notice', id: `notice-${event.seq || Date.now()}`, label, icon }];
 }
 
@@ -260,7 +373,13 @@ function resolveApproval(blocks: AgentStreamBlock[], event: RuntimeEvent): Agent
 
   return blocks.map((b) => {
     if (b.type === 'approval_request' && (!reqID || b.requestID === reqID)) {
-      const isDenied = decision === 'reject' || decision === 'deny' || decision === 'cancel';
+      const normalized = (decision || '').trim().toLowerCase();
+      const isDenied =
+        normalized === 'reject' ||
+        normalized === 'deny' ||
+        normalized === 'denied' ||
+        normalized === 'cancel' ||
+        normalized === 'abort';
       return {
         ...b,
         status: isDenied ? 'denied' : 'resolved',
@@ -284,13 +403,20 @@ function questionOptionDescription(opt: any): string | undefined {
   return undefined;
 }
 
-function toQuestionItems(raw: any[]): Array<{ question: string; options: any[] }> {
+function toQuestionItems(raw: any[]): Array<{ question: string; options: any[]; isMultiSelect?: boolean }> {
   return (raw ?? [])
     .map((entry: any) => {
       const header = typeof entry?.header === 'string' ? entry.header.trim() : '';
       const body = typeof entry?.question === 'string' ? entry.question.trim() : '';
       const text = body && header && body !== header ? `${header}: ${body}` : body || header;
-      return { question: text, options: Array.isArray(entry?.options) ? entry.options : [] };
+      const isMultiSelect = Boolean(
+        entry?.isMultiSelect || entry?.is_multi_select || entry?.multiSelect || entry?.multiple,
+      );
+      return {
+        question: text,
+        options: Array.isArray(entry?.options) ? entry.options : [],
+        ...(isMultiSelect ? { isMultiSelect: true } : {}),
+      };
     })
     // A tool declaration with choices but no actual prompt is not a question.
     // Rendering one produces the misleading “The agent has a question” card.
@@ -319,7 +445,11 @@ function upsertQuestion(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentS
   const rawItems = toQuestionItems(Array.isArray(q.questions) ? q.questions : []);
   if (rawItems.length === 0) return blocks;
 
-  const items = rawItems.map((it) => ({ question: it.question, options: buildQuestionOptions(it.options) }));
+  const items = rawItems.map((it) => ({
+    question: it.question,
+    options: buildQuestionOptions(it.options),
+    ...(it.isMultiSelect ? { isMultiSelect: true } : {}),
+  }));
   const first = items[0];
 
   const block: AgentStreamBlock = {
@@ -480,13 +610,13 @@ function appendText(
   // Find the block this event continues.
   let index = -1;
   if (itemId) {
-    for (let i = blocks.length - 1; i >= Math.max(0, blocks.length - 12); i--) {
+    for (let i = blocks.length - 1; i >= 0; i--) {
       const b = blocks[i];
+      if (b.type === 'user') break;
       if ((b.type === 'text' || b.type === 'thinking') && b.type === kind && b.itemId === itemId) {
         index = i;
         break;
       }
-      if (b.type === 'user') break;
     }
   } else {
     const last = blocks[blocks.length - 1];
@@ -542,108 +672,84 @@ function closeThinking(blocks: AgentStreamBlock[]): AgentStreamBlock[] {
   return next ?? blocks;
 }
 
+function isMcpAppUri(uri: unknown): uri is string {
+  return typeof uri === 'string' && (uri.startsWith('ui://') || uri.startsWith('http://') || uri.startsWith('https://'));
+}
+
 export function extractMcpAppInfo(tool: domain.ToolCall): { resourceUri?: string; htmlContent?: string } | null {
   if (!tool) return null;
+  const isMcp = tool.category === 'mcp' || /^(mcp__|mcp:)/i.test(tool.name || '');
+  if (!isMcp) return null;
 
   const rawInput = (tool.input && typeof tool.input === 'object' ? tool.input : {}) as Record<string, any>;
-  const rawName = String(tool.name || tool.kind || '').trim().toLowerCase();
+  const mcpAppInput = rawInput._mcpApp && typeof rawInput._mcpApp === 'object' ? rawInput._mcpApp : null;
 
-  // 1. Direct input resourceUri (standard MCP Apps spec or host-injected)
-  const directInputUri = rawInput.resourceUri || rawInput._meta?.ui?.resourceUri || rawInput.ui?.resourceUri;
-  if (typeof directInputUri === 'string' && (directInputUri.startsWith('ui://') || directInputUri.startsWith('http://') || directInputUri.startsWith('https://'))) {
-    return { resourceUri: directInputUri };
+  // 1. Explicit MCP App UI metadata in tool input
+  const directInputUri =
+    rawInput._meta?.ui?.resourceUri ||
+    rawInput.ui?.resourceUri ||
+    rawInput.resourceUri ||
+    mcpAppInput?.resourceUri ||
+    mcpAppInput?.embedUrl ||
+    rawInput.embedUrl;
+  const directInputHtml =
+    typeof mcpAppInput?.html === 'string' && mcpAppInput.html.trim()
+      ? mcpAppInput.html.trim()
+      : typeof mcpAppInput?.htmlContent === 'string' && mcpAppInput.htmlContent.trim()
+        ? mcpAppInput.htmlContent.trim()
+        : undefined;
+
+  if (isMcpAppUri(directInputUri) || directInputHtml) {
+    return {
+      ...(isMcpAppUri(directInputUri) ? { resourceUri: directInputUri } : {}),
+      ...(directInputHtml ? { htmlContent: directInputHtml } : {}),
+    };
   }
 
-  // 2. Direct input HTML content (if provided directly)
-  if (typeof rawInput.html === 'string' && rawInput.html.trim().length > 0) {
-    return { htmlContent: rawInput.html.trim() };
-  }
-
-  // 3. Inspect output
+  // 2. Structured JSON metadata in MCP tool output (never raw HTML heuristics)
   const output = (typeof tool.output === 'string' ? tool.output : '').trim();
-
-  // 3a. Raw HTML detection (like T3Code visual renders)
-  if (output.startsWith('<!DOCTYPE html') || output.startsWith('<html') || (output.includes('<head') && output.includes('<body'))) {
-    return { htmlContent: output };
-  }
-
-  // 3b. JSON payload parsing
-  let parsedOutput: any = null;
   if ((output.startsWith('{') && output.endsWith('}')) || (output.startsWith('[') && output.endsWith(']'))) {
     try {
-      parsedOutput = JSON.parse(output);
+      const parsedOutput = JSON.parse(output);
+      const mcpAppOut =
+        parsedOutput?._mcpApp && typeof parsedOutput._mcpApp === 'object' ? parsedOutput._mcpApp : null;
       const uri =
         parsedOutput?._meta?.ui?.resourceUri ||
         parsedOutput?.result?._meta?.ui?.resourceUri ||
         parsedOutput?.ui?.resourceUri ||
-        parsedOutput?.resourceUri;
-      if (typeof uri === 'string' && (uri.startsWith('ui://') || uri.startsWith('http://') || uri.startsWith('https://'))) {
-        return { resourceUri: uri };
+        mcpAppOut?.resourceUri ||
+        mcpAppOut?.embedUrl ||
+        parsedOutput?.embedUrl ||
+        parsedOutput?.resourceUri ||
+        (typeof parsedOutput?.uri === 'string' && parsedOutput.uri.startsWith('ui://') ? parsedOutput.uri : undefined);
+      const outHtml =
+        typeof mcpAppOut?.html === 'string' && mcpAppOut.html.trim()
+          ? mcpAppOut.html.trim()
+          : typeof mcpAppOut?.htmlContent === 'string' && mcpAppOut.htmlContent.trim()
+            ? mcpAppOut.htmlContent.trim()
+            : undefined;
+      if (isMcpAppUri(uri) || outHtml) {
+        return {
+          ...(isMcpAppUri(uri) ? { resourceUri: uri } : {}),
+          ...(outHtml ? { htmlContent: outHtml } : {}),
+        };
       }
       const contents = parsedOutput?.contents || parsedOutput?.result?.contents;
       if (Array.isArray(contents) && contents.length > 0) {
         const first = contents[0];
-        if (typeof first?.mimeType === 'string' && first.mimeType.includes('html') && typeof first?.text === 'string') {
+        const hasUiMeta = Boolean(
+          parsedOutput?._meta?.ui ||
+            parsedOutput?.result?._meta?.ui ||
+            first?._meta?.ui ||
+            (typeof first?.uri === 'string' && first.uri.startsWith('ui://')) ||
+            (typeof first?.mimeType === 'string' && first.mimeType.includes('mcp-app')),
+        );
+        if (hasUiMeta && typeof first?.mimeType === 'string' && first.mimeType.includes('html') && typeof first?.text === 'string') {
           return { resourceUri: first.uri, htmlContent: first.text };
         }
       }
     } catch {
-      parsedOutput = null;
-    }
-  }
-
-  // 3c. Direct regex search for ui:// in output
-  const uiMatch = output.match(/(ui:\/\/[^\s"'`<>]+)/i);
-  if (uiMatch && uiMatch[1]) {
-    return { resourceUri: uiMatch[1] };
-  }
-
-  // 4. MCP Tools dispatch (e.g. Antigravity lazy call_mcp_tool or eager mcp_server_tool)
-  const serverName = String(rawInput.ServerName || rawInput.server_name || rawInput.server || '').trim().toLowerCase();
-  const subTool = String(rawInput.ToolName || rawInput.tool_name || rawInput.tool || '').trim().toLowerCase();
-
-  let toolArgs: Record<string, any> = {};
-  const rawArgs = rawInput.Arguments ?? rawInput.arguments ?? rawInput.args;
-  if (typeof rawArgs === 'string') {
-    try {
-      toolArgs = JSON.parse(rawArgs);
-    } catch {
-      toolArgs = {};
-    }
-  } else if (rawArgs && typeof rawArgs === 'object') {
-    toolArgs = rawArgs as Record<string, any>;
-  }
-
-  const isFalacy =
-    serverName === 'falacy' ||
-    rawName.includes('falacy') ||
-    subTool.includes('inspiration') ||
-    rawName.includes('inspiration') ||
-    subTool.includes('boards');
-
-  if (isFalacy) {
-    const effectiveTool = subTool || rawName;
-    const wantsUi = Boolean(toolArgs.render_ui || toolArgs.show_ui || toolArgs.ui);
-    const isExplicitShow =
-      effectiveTool.startsWith('show_') ||
-      effectiveTool.startsWith('view_') ||
-      effectiveTool.startsWith('render_');
-
-    // Only promote to visual MCP App block if explicitly requested or via dedicated show tools
-    if (wantsUi || isExplicitShow) {
-      if (effectiveTool.includes('inspiration') && !effectiveTool.includes('board')) {
-        const itemId = toolArgs.item_id || toolArgs.id || parsedOutput?.id || parsedOutput?.item?.id;
-        if (itemId) {
-          return { resourceUri: `ui://falacy/card/${itemId}` };
-        }
-      }
-
-      if (effectiveTool.includes('board') || effectiveTool.includes('search') || effectiveTool.includes('find')) {
-        const boardId = toolArgs.board_id || toolArgs.target_board_id || toolArgs.categoryId || 'all';
-        const q = toolArgs.query || toolArgs.q || '';
-        const queryParam = q ? `?q=${encodeURIComponent(q)}` : '';
-        return { resourceUri: `ui://falacy/board/${boardId}${queryParam}` };
-      }
+      // ignore JSON parse failure
     }
   }
 
@@ -652,10 +758,15 @@ export function extractMcpAppInfo(tool: domain.ToolCall): { resourceUri?: string
 
 /** Tools that always render as their own card, never folded into a group. */
 function isStandaloneTool(name: string, tool: domain.ToolCall): boolean {
+  if (tool.category === 'edit' || tool.category === 'write' || tool.category === 'todo') {
+    return true;
+  }
   return (
     EDIT_TOOLS.has(name) ||
+    EDIT_TOOLS.has(name.toLowerCase()) ||
     tool.kind === 'fileChange' ||
     TODO_TOOLS.has(name) ||
+    TODO_TOOLS.has(name.toLowerCase()) ||
     isQuestionTool(name) ||
     Boolean(tool.diffs?.length) ||
     Boolean(extractMcpAppInfo(tool))
@@ -672,7 +783,8 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
     (candidate) =>
       candidate.id === id ||
       candidate.id === `mcp-${tool.id}` ||
-      (candidate.type === 'tool_group' && candidate.memberIds?.includes(tool.id)),
+      (candidate.type === 'tool_group' &&
+        (candidate.memberIds?.includes(tool.id) || candidate.items?.some((item) => item.id === tool.id))),
   );
 
   // A result event carries only id/status/output — the tool name and its input
@@ -698,40 +810,22 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
         driver: (existing as any).driver || event.driver,
       };
 
-      // If an existing Falacy mcp_app block exists in the stream:
-      // Replace it with the more specific or newer widget (e.g. card replaces board, or search replaces old board)
-      const existingMcpIdx = findLastIndex(merged, (b) => {
-        if (b.type !== 'mcp_app') return false;
-        const bUri = (b as any).resourceUri || '';
-        const aUri = appBlock.resourceUri || '';
-        const isFalacyB = bUri.includes('falacy') || (b as any).toolName?.includes('falacy');
-        const isFalacyA = aUri.includes('falacy') || appBlock.toolName?.includes('falacy');
-        return isFalacyB && isFalacyA;
-      });
-
-      if (existingMcpIdx >= 0) {
-        const prevMcp = merged[existingMcpIdx] as any;
-        const prevUri = prevMcp.resourceUri || '';
-        const currUri = appBlock.resourceUri || '';
-
-        // If current is /card/ and previous is /board/, definitely upgrade to the card
-        // If both are /card/ or both are /board/, update to latest
-        // If current is /board/ and previous is /card/, keep the specific card
-        if (currUri.includes('/card/') || !prevUri.includes('/card/')) {
-          merged[existingMcpIdx] = {
-            ...prevMcp,
-            ...appBlock,
-            id: prevMcp.id,
-          };
-          return merged;
-        }
-        return merged;
-      }
-
       if (!merged.some((b) => b.type === 'mcp_app' && (b.id === appBlock.id || b.toolId === tool.id))) {
         merged.push(appBlock);
       }
       return merged;
+    }
+
+    // Check if tool is todo and input has arrived in phase 2
+    const name = tool.name || tool.kind || '';
+    if (tool.category === 'todo' || TODO_TOOLS.has(name) || TODO_TOOLS.has(name.toLowerCase())) {
+      const todos = toTodos(asRecord(tool.input));
+      if (todos.length > 0) {
+        return [
+          ...blocks.filter((b, i) => i !== index && b.type !== 'tool_todo'),
+          { type: 'tool_todo', id: 'session-tasklist', title: 'Tasklist', todos },
+        ];
+      }
     }
 
     const merged = [...blocks];
@@ -747,7 +841,7 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
   const input = asRecord(tool.input);
 
   // Todo lists: one live list, moved to where the agent currently is.
-  if (TODO_TOOLS.has(name)) {
+  if (tool.category === 'todo' || TODO_TOOLS.has(name) || TODO_TOOLS.has(name.toLowerCase())) {
     const todos = toTodos(input);
     if (todos.length > 0) {
       return [
@@ -853,25 +947,47 @@ function groupTitle(items: ToolGroupItem[]): string {
   if (items.every((item) => item.type === 'read')) return 'Read';
   if (items.every((item) => item.type === 'search')) return 'Search';
   if (items.every((item) => item.type === 'bash')) return 'Commands';
+  if (items.every((item) => item.type === 'mcp')) return 'MCP';
   return 'Worked';
 }
 
 function groupSummary(items: ToolGroupItem[]): string {
   if (items.length === 0) return '';
-  if (items.length === 1) return items[0].target || '1 action';
+  if (items.length === 1) return items[0].target || items[0].action || '1 action';
 
   const readCount = items.filter((i) => i.type === 'read').length;
   const searchCount = items.filter((i) => i.type === 'search').length;
   const cmdCount = items.filter((i) => i.type === 'bash' || i.type === 'git').length;
   const editCount = items.filter((i) => i.type === 'edit' || i.type === 'write').length;
+  const delegateCount = items.filter((i) => i.type === 'mcp' && i.action === 'Delegated').length;
+  const mcpOtherCount = items.filter((i) => i.type === 'mcp' && i.action !== 'Delegated').length;
 
   const parts: string[] = [];
   if (readCount > 0) parts.push(`${readCount} ${readCount === 1 ? 'read' : 'reads'}`);
   if (searchCount > 0) parts.push(`${searchCount} ${searchCount === 1 ? 'search' : 'searches'}`);
   if (cmdCount > 0) parts.push(`${cmdCount} ${cmdCount === 1 ? 'command' : 'commands'}`);
   if (editCount > 0) parts.push(`${editCount} ${editCount === 1 ? 'edit' : 'edits'}`);
+  if (delegateCount > 0) parts.push(`${delegateCount} ${delegateCount === 1 ? 'delegation' : 'delegations'}`);
+  if (mcpOtherCount > 0) parts.push(`${mcpOtherCount} ${mcpOtherCount === 1 ? 'MCP call' : 'MCP calls'}`);
 
   return parts.length > 0 ? parts.join(', ') : `${items.length} actions`;
+}
+
+function isPlaceholderCommand(cmd?: string, toolName?: string, id?: string): boolean {
+  if (!cmd) return true;
+  if (id && cmd === id) return true;
+  const trimmed = cmd.trim();
+  if (!trimmed) return true;
+  if (toolName && trimmed.toLowerCase() === toolName.toLowerCase()) return true;
+  return /^(bash|powershell|cmd|sh|terminal|run_command|commandexecution)$/i.test(trimmed);
+}
+
+function isPlaceholderPath(path?: string, toolName?: string): boolean {
+  if (!path) return true;
+  const trimmed = path.trim();
+  if (!trimmed) return true;
+  if (toolName && trimmed.toLowerCase() === toolName.toLowerCase()) return true;
+  return EDIT_TOOLS.has(trimmed) || EDIT_TOOLS.has(trimmed.toLowerCase());
 }
 
 function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta = false): AgentStreamBlock {
@@ -882,10 +998,22 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
   switch (existing.type) {
     case 'tool_bash': {
       const nextInput = asRecord(tool.input);
-      const cmd = field(nextInput, COMMAND_KEYS) || (typeof nextInput.title === 'string' ? nextInput.title : '');
+      const cmd =
+        tool.target ||
+        field(nextInput, COMMAND_KEYS) ||
+        (typeof nextInput.title === 'string' ? nextInput.title : '');
+      const summary =
+        tool.summary ||
+        (typeof nextInput.toolSummary === 'string' && nextInput.toolSummary.trim()
+          ? nextInput.toolSummary.trim()
+          : undefined) ||
+        existing.summary;
+      const shouldUpdateCmd =
+        cmd && (isPlaceholderCommand(existing.command, tool.name || existing.id, existing.id) || existing.command === cmd);
       return {
         ...existing,
-        command: cmd && (existing.command === 'bash' || existing.command === 'powershell' || existing.command === existing.id) ? cmd : existing.command,
+        command: shouldUpdateCmd ? cmd : (existing.command || cmd),
+        summary,
         status,
         output: output(existing.output),
         exitCode: existing.exitCode,
@@ -893,19 +1021,51 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
     }
     case 'tool_search': {
       const nextInput = asRecord(tool.input);
-      const query = extractTarget(tool.name || 'search', nextInput) || existing.query;
+      const extractedQuery = tool.input ? extractTarget(tool.name || 'search', nextInput, existing.driver) : '';
+      const isPlaceholderQuery =
+        !existing.query ||
+        existing.query === existing.id ||
+        existing.query === (tool.name || '') ||
+        SEARCH_TOOLS.has(existing.query) ||
+        SEARCH_TOOLS.has(existing.query.toLowerCase());
+      const query = tool.target || (extractedQuery && isPlaceholderQuery ? extractedQuery : extractedQuery || existing.query);
       return {
         ...existing,
-        query,
+        query: query || existing.query,
         files: tool.output ? toFileList(tool.output) : existing.files,
         isSearching: status === 'running',
       };
     }
     case 'tool_edit': {
-      const next = { ...existing, status };
-      if (tool.diffs?.length || tool.input) {
-        const computed = editBlockFields(tool.name || existing.toolName || '', asRecord(tool.input), tool.diffs);
-        if (computed.diffLines.length > 0) Object.assign(next, computed);
+      const next = { ...existing, status, toolName: tool.name || existing.toolName };
+      const nextInput = asRecord(tool.input);
+
+      if (tool.target && (!next.filePath || isPlaceholderPath(next.filePath, existing.toolName || tool.name) || next.filePath !== tool.target)) {
+        if (!isPlaceholderPath(tool.target, existing.toolName || tool.name)) {
+          next.filePath = tool.target;
+        }
+      }
+
+      const hasDiffs = Boolean(tool.diffs?.length);
+      const needsDiffs = !existing.diffLines?.length;
+
+      if (hasDiffs || (needsDiffs && (tool.input || tool.diffs))) {
+        const computed = editBlockFields(tool.name || existing.toolName || '', nextInput, tool.diffs);
+        if (
+          computed.filePath &&
+          (isPlaceholderPath(next.filePath, existing.toolName || tool.name) ||
+            computed.filePath !== (tool.name || existing.toolName || ''))
+        ) {
+          next.filePath = computed.filePath;
+        }
+        if (computed.diffLines.length > 0) {
+          Object.assign(next, computed);
+        }
+      } else if (tool.input && isPlaceholderPath(next.filePath, existing.toolName || tool.name)) {
+        const pathFromInput = field(nextInput, PATH_KEYS);
+        if (pathFromInput && !isPlaceholderPath(pathFromInput, existing.toolName || tool.name)) {
+          next.filePath = pathFromInput;
+        }
       }
       return next;
     }
@@ -913,9 +1073,21 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
       const items = existing.items.map((item) => {
         if (item.id !== tool.id) return item;
         const nextInput = asRecord(tool.input);
-        const extracted = extractTarget(tool.name || item.action, nextInput, item.driver || existing.driver);
+        const cmd = field(nextInput, COMMAND_KEYS);
+        const { type: newType, action: newAction } = tool.name
+          ? determineAction(tool.name, cmd, item.driver || existing.driver, tool.category)
+          : { type: item.type, action: item.action };
+        const extracted =
+          tool.target ||
+          (tool.input ? extractTarget(tool.name || newAction, nextInput, item.driver || existing.driver) : '');
+        const cleanExtracted =
+          extracted &&
+          extracted.toLowerCase() !== (tool.name || '').toLowerCase() &&
+          extracted.toLowerCase() !== newAction.toLowerCase()
+            ? extracted
+            : '';
         const nextTarget =
-          extracted ||
+          cleanExtracted ||
           (item.target &&
           item.target.toLowerCase() !== item.action.toLowerCase() &&
           item.target.toLowerCase() !== (tool.name || '').toLowerCase()
@@ -923,17 +1095,27 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
             : '');
         return {
           ...item,
+          type: newType || item.type,
+          action: newAction || item.action,
           status,
           target: nextTarget,
           details: output(item.details),
         };
       });
-      const summary = groupSummary(items);
+      const computed = groupSummary(items);
       return {
         ...existing,
         items,
         title: groupTitle(items),
-        summary: items.length > 1 ? summary : (items[0]?.target || summary),
+        summary: items.length > 1 ? computed : (tool.summary || items[0]?.target || computed),
+      };
+    }
+    case 'tool_todo': {
+      const nextInput = asRecord(tool.input);
+      const todos = toTodos(nextInput);
+      return {
+        ...existing,
+        todos: todos.length > 0 ? todos : existing.todos,
       };
     }
     case 'mcp_app': {
@@ -980,22 +1162,23 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
       type: 'tool_group',
       id,
       title: 'Git',
-      summary: cmd || 'git',
+      summary: tool.target || cmd || 'git',
       items: [item],
       memberIds: [tool.id],
       driver,
     };
   }
 
-  if (BASH_TOOLS.has(name) || tool.kind === 'commandExecution') {
+  if (tool.category === 'command' || BASH_TOOLS.has(name) || BASH_TOOLS.has(name.toLowerCase()) || tool.kind === 'commandExecution') {
     const summary =
-      driver === 'antigravity' && typeof input.toolSummary === 'string' && input.toolSummary.trim()
+      tool.summary ||
+      (driver === 'antigravity' && typeof input.toolSummary === 'string' && input.toolSummary.trim()
         ? input.toolSummary.trim()
-        : undefined;
+        : undefined);
     return {
       type: 'tool_bash',
       id,
-      command: cmd || name,
+      command: tool.target || cmd || name,
       summary,
       output: tool.output,
       status: toStatus(tool.status),
@@ -1003,12 +1186,19 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
     };
   }
 
-  if (EDIT_TOOLS.has(name) || tool.kind === 'fileChange' || tool.diffs?.length) {
+  if (
+    tool.category === 'edit' ||
+    tool.category === 'write' ||
+    EDIT_TOOLS.has(name) ||
+    EDIT_TOOLS.has(name.toLowerCase()) ||
+    tool.kind === 'fileChange' ||
+    tool.diffs?.length
+  ) {
     const computed = editBlockFields(name, input, tool.diffs);
     return {
       type: 'tool_edit',
       id,
-      filePath: computed.filePath || extractTarget(name, input, driver) || name,
+      filePath: tool.target || computed.filePath || extractTarget(name, input, driver) || name,
       additions: computed.additions,
       deletions: computed.deletions,
       diffLines: computed.diffLines,
@@ -1018,18 +1208,18 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
     };
   }
 
-  if (SEARCH_TOOLS.has(name)) {
+  if (tool.category === 'search' || SEARCH_TOOLS.has(name) || SEARCH_TOOLS.has(name.toLowerCase())) {
     return {
       type: 'tool_search',
       id,
       files: toFileList(tool.output),
-      query: extractTarget(name, input, driver),
+      query: tool.target || extractTarget(name, input, driver),
       isSearching: tool.status === 'in_progress' || tool.status === 'pending',
       driver,
     };
   }
 
-  if (TODO_TOOLS.has(name)) {
+  if (tool.category === 'todo' || TODO_TOOLS.has(name) || TODO_TOOLS.has(name.toLowerCase())) {
     const todos = toTodos(input);
     if (todos.length > 0) return { type: 'tool_todo', id, todos };
   }
@@ -1043,7 +1233,7 @@ function toToolBlock(tool: domain.ToolCall, driver?: string): AgentStreamBlock |
     type: 'tool_group',
     id,
     title: item.action,
-    summary: item.target || summarize(tool),
+    summary: tool.summary || item.target || summarize(tool),
     items: [item],
     memberIds: [tool.id],
     driver,
@@ -1071,16 +1261,20 @@ function toQuestionBlock(tool: domain.ToolCall): AgentStreamBlock | null {
     items = input.questions as any;
   } else if (typeof input.question === 'string') {
     const opts = Array.isArray(input.options) ? (input.options as any[]) : [];
-    items = [{ question: input.question, options: opts, isMultiSelect: !!input.is_multi_select || !!input.multiple }];
+    items = [{ question: input.question, options: opts, isMultiSelect: Boolean(input.isMultiSelect || input.is_multi_select || input.multiSelect || input.multiple) }];
   } else if (typeof input.prompt === 'string') {
-    items = [{ question: input.prompt, options: Array.isArray(input.options) ? (input.options as any[]) : [] }];
+    items = [{ question: input.prompt, options: Array.isArray(input.options) ? (input.options as any[]) : [], isMultiSelect: Boolean(input.isMultiSelect || input.is_multi_select || input.multiSelect || input.multiple) }];
   } else if (typeof input.header === 'string') {
-    items = [{ question: input.header, options: Array.isArray(input.options) ? (input.options as any[]) : [] }];
+    items = [{ question: input.header, options: Array.isArray(input.options) ? (input.options as any[]) : [], isMultiSelect: Boolean(input.isMultiSelect || input.is_multi_select || input.multiSelect || input.multiple) }];
   }
 
   const rawItems = toQuestionItems(items.length > 0 ? items : [{ question: input.question || input.prompt || input.header || input.title, options: input.options }]);
   if (rawItems.length === 0) return null;
-  const built = rawItems.map((it) => ({ question: it.question, options: buildQuestionOptions(it.options) }));
+  const built = rawItems.map((it) => ({
+    question: it.question,
+    options: buildQuestionOptions(it.options),
+    ...(it.isMultiSelect ? { isMultiSelect: true } : {}),
+  }));
   const first = built[0];
 
   return {
@@ -1098,6 +1292,75 @@ function asRecord(value: unknown): Record<string, unknown> {
   return (value ?? {}) as Record<string, unknown>;
 }
 
+function extractMcpCallDetails(
+  name: string,
+  input: Record<string, unknown>,
+  rawTarget?: string,
+): { server?: string; action?: string; target?: string } {
+  const lower = name.trim().toLowerCase();
+  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+
+  if (lower === 'call_mcp_tool') {
+    let server =
+      str(input.ServerName) ||
+      str(input.serverName) ||
+      str(input.server_name) ||
+      str(input.server);
+    let toolName =
+      str(input.ToolName) ||
+      str(input.toolName) ||
+      str(input.tool_name) ||
+      str(input.tool);
+
+    if ((!server || !toolName) && rawTarget && rawTarget.includes(':')) {
+      const idx = rawTarget.indexOf(':');
+      if (!server) server = rawTarget.slice(0, idx).trim();
+      if (!toolName) toolName = rawTarget.slice(idx + 1).trim();
+    }
+
+    let argTarget = '';
+    const args = asRecord(input.Arguments ?? input.arguments);
+    argTarget =
+      str(args.board_name) ||
+      str(args.query) ||
+      str(args.title) ||
+      str(args.name) ||
+      str(args.item_id) ||
+      str(args.id) ||
+      str(args.uri) ||
+      str(args.path);
+
+    const action = toolName ? cleanMcpAction(toolName) : undefined;
+    return {
+      server: server || undefined,
+      action,
+      target: argTarget || undefined,
+    };
+  }
+
+  const orch = orchestratorAction(name);
+  if (orch) {
+    return { server: 'orchestrator', action: orch };
+  }
+
+  const doubleUnder = name.match(/^mcp__([^_]+)__/i);
+  if (doubleUnder) {
+    return { server: doubleUnder[1], action: cleanMcpAction(name) };
+  }
+
+  const colon = name.match(/^([^:]+):(.+)$/);
+  if (colon) {
+    return { server: colon[1], action: cleanMcpAction(colon[2]) };
+  }
+
+  const singleUnder = name.match(/^mcp_([a-zA-Z0-9-]+)_(.+)$/i);
+  if (singleUnder) {
+    return { server: singleUnder[1], action: cleanMcpAction(singleUnder[2]) };
+  }
+
+  return {};
+}
+
 function toGroupItem(
   name: string,
   tool: domain.ToolCall,
@@ -1105,8 +1368,20 @@ function toGroupItem(
   driver?: string,
 ): ToolGroupItem {
   const cmd = field(input, COMMAND_KEYS);
-  const target = extractTarget(name, input, driver);
-  const { type, action } = determineAction(name, cmd, driver);
+  const rawTarget = tool.target || extractTarget(name, input, driver);
+  const determined = determineAction(name, cmd, driver, tool.category);
+  let { type, action } = determined;
+  let target = rawTarget;
+  let mcpServer: string | undefined;
+
+  if (type === 'mcp') {
+    const details = extractMcpCallDetails(name, input, rawTarget);
+    if (details.server) mcpServer = details.server;
+    if (details.action) action = details.action;
+    if (name.trim().toLowerCase() === 'call_mcp_tool') {
+      target = details.target || '';
+    }
+  }
 
   const cleanTarget =
     target &&
@@ -1120,6 +1395,7 @@ function toGroupItem(
     type,
     action,
     target: cleanTarget,
+    ...(mcpServer ? { mcpServer } : {}),
     status: toStatus(tool.status),
     details: tool.output || undefined,
     driver,
@@ -1229,6 +1505,9 @@ export function settleAllBlocks(blocks: AgentStreamBlock[], failed = false): Age
         return b;
       }
       case 'subagent': {
+        if (!failed && b.isAsync && b.status === 'running') {
+          return b;
+        }
         const isRunning = b.status === 'running';
         const hasRunningEntries = b.entries?.some((e) => e.kind === 'tool' && e.status === 'running');
         if (isRunning || hasRunningEntries) {
@@ -1392,38 +1671,72 @@ export function editBlockFields(
 
 const MAX_LCS_CELLS = 250_000;
 
-/** Line diff via LCS; very large inputs degrade to delete-all/add-all. */
+/** Line diff via LCS after trimming common prefix/suffix lines so edits in large files stay exact. */
 function lineDiff(oldText: string, newText: string): DiffLine[] {
   const a = oldText ? oldText.replace(/\r\n/g, '\n').split('\n') : [];
   const b = newText ? newText.replace(/\r\n/g, '\n').split('\n') : [];
+
+  let prefix = 0;
+  const minLen = Math.min(a.length, b.length);
+  while (prefix < minLen && a[prefix] === b[prefix]) {
+    prefix++;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < a.length - prefix &&
+    suffix < b.length - prefix &&
+    a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+
+  const aMid = a.slice(prefix, a.length - suffix);
+  const bMid = b.slice(prefix, b.length - suffix);
   const out: DiffLine[] = [];
-  if (a.length * b.length > MAX_LCS_CELLS) {
-    a.forEach((content, i) => out.push({ type: 'delete', lineNum: i + 1, content }));
-    b.forEach((content, i) => out.push({ type: 'add', lineNum: i + 1, content }));
+
+  if (aMid.length === 0 && bMid.length === 0) {
     return out;
   }
-  const n = a.length;
-  const m = b.length;
-  const dp: Uint32Array[] = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+
+  const ctxBeforeStart = Math.max(0, prefix - 3);
+  for (let k = ctxBeforeStart; k < prefix; k++) {
+    out.push({ type: 'context', lineNum: k + 1, content: b[k] });
+  }
+
+  if (aMid.length * bMid.length > MAX_LCS_CELLS) {
+    aMid.forEach((content, idx) => out.push({ type: 'delete', lineNum: prefix + idx + 1, content }));
+    bMid.forEach((content, idx) => out.push({ type: 'add', lineNum: prefix + idx + 1, content }));
+  } else {
+    const n = aMid.length;
+    const m = bMid.length;
+    const dp: Uint32Array[] = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = aMid[i] === bMid[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && aMid[i] === bMid[j]) {
+        out.push({ type: 'context', lineNum: prefix + j + 1, content: aMid[i] });
+        i++;
+        j++;
+      } else if (i < n && (j >= m || dp[i + 1][j] >= dp[i][j + 1])) {
+        out.push({ type: 'delete', lineNum: prefix + i + 1, content: aMid[i] });
+        i++;
+      } else {
+        out.push({ type: 'add', lineNum: prefix + j + 1, content: bMid[j] });
+        j++;
+      }
     }
   }
-  let i = 0;
-  let j = 0;
-  while (i < n || j < m) {
-    if (i < n && j < m && a[i] === b[j]) {
-      out.push({ type: 'context', lineNum: j + 1, content: a[i] });
-      i++;
-      j++;
-    } else if (i < n && (j >= m || dp[i + 1][j] >= dp[i][j + 1])) {
-      out.push({ type: 'delete', lineNum: i + 1, content: a[i] });
-      i++;
-    } else {
-      out.push({ type: 'add', lineNum: j + 1, content: b[j] });
-      j++;
-    }
+
+  const ctxAfterEnd = Math.min(b.length, b.length - suffix + 3);
+  for (let k = b.length - suffix; k < ctxAfterEnd; k++) {
+    out.push({ type: 'context', lineNum: k + 1, content: b[k] });
   }
+
   return out;
 }

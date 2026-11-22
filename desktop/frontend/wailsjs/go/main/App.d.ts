@@ -4,6 +4,7 @@ import {provider} from '../models';
 import {projects} from '../models';
 import {activity} from '../models';
 import {main} from '../models';
+import {browser} from '../models';
 import {attachments} from '../models';
 import {domain} from '../models';
 import {session} from '../models';
@@ -15,6 +16,7 @@ import {devserver} from '../models';
 import {servers} from '../models';
 import {slashcmd} from '../models';
 import {files} from '../models';
+import {terminal} from '../models';
 
 export function AccountStatus(arg1:string,arg2:string):Promise<provider.AccountStatus>;
 
@@ -24,9 +26,19 @@ export function ActivityOverview(arg1:string,arg2:string):Promise<activity.Overv
 
 export function AddAccount(arg1:string,arg2:string,arg3:boolean):Promise<main.AccountAdded>;
 
+export function AddAntigravityAccount(arg1:string,arg2:string,arg3:string):Promise<main.AccountAdded>;
+
 export function AddProject(arg1:string):Promise<projects.Project>;
 
 export function AvailableEditors():Promise<Array<string>>;
+
+export function BrowserClose(arg1:string):Promise<void>;
+
+export function BrowserEndpoint():Promise<main.BrowserEndpointInfo>;
+
+export function BrowserOpen(arg1:string,arg2:string,arg3:number,arg4:number):Promise<browser.SessionInfo>;
+
+export function CaptureAntigravityProfile(arg1:string):Promise<void>;
 
 export function ChooseAttachments():Promise<Array<attachments.Attachment>>;
 
@@ -57,6 +69,8 @@ export function DeleteTaskHistory(arg1:string,arg2:string):Promise<void>;
 export function DeleteTurn(arg1:string,arg2:string):Promise<Array<domain.RuntimeEvent>>;
 
 export function DiscardAttachment(arg1:string):Promise<void>;
+
+export function GetAccountModels(arg1:string,arg2:string):Promise<Array<domain.Model>>;
 
 export function GetAgentTasks(arg1:string):Promise<Array<domain.PlanEntry>>;
 
@@ -176,8 +190,6 @@ export function OrchestratorSetAuto(arg1:boolean):Promise<void>;
 
 export function OrchestratorStopAgent(arg1:string):Promise<void>;
 
-export function ParseTasks(arg1:string):Promise<Array<session.TaskRequest>>;
-
 export function PreviewAttachment(arg1:string):Promise<string>;
 
 export function ProjectFile(arg1:string,arg2:string):Promise<files.Content>;
@@ -208,9 +220,13 @@ export function RenameChat(arg1:string,arg2:string):Promise<void>;
 
 export function RenameSession(arg1:string,arg2:string):Promise<void>;
 
+export function ResolveFileRepos(arg1:Array<string>):Promise<Record<string, main.FileRepoScope>>;
+
 export function RespondToApproval(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RespondToQuestion(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
+
+export function RestoreAntigravityDefault():Promise<void>;
 
 export function ResumeHistory(arg1:string):Promise<session.ResumeResult>;
 
@@ -269,6 +285,16 @@ export function SwitchTaskProvider(arg1:string,arg2:string,arg3:string):Promise<
 export function SwitchTaskProviderWithOptions(arg1:string,arg2:string,arg3:string,arg4:domain.ModelOptions,arg5:string,arg6:string,arg7:string,arg8:Array<domain.FileRef>):Promise<domain.Task>;
 
 export function TaskHandoff(arg1:string):Promise<domain.TaskHandoff>;
+
+export function TerminalClose(arg1:string):Promise<void>;
+
+export function TerminalEndpoint():Promise<main.TerminalEndpointInfo>;
+
+export function TerminalList(arg1:string):Promise<Array<terminal.SessionInfo>>;
+
+export function TerminalOpen(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<terminal.SessionInfo>;
+
+export function TerminalResize(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function ThreadHistory(arg1:string):Promise<Array<domain.RuntimeEvent>>;
 

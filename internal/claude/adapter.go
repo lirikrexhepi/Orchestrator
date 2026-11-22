@@ -60,6 +60,7 @@ type pendingControl struct {
 
 type session struct {
 	threadID   string
+	account    string
 	permission domain.PermissionMode
 	proc       *process.Process
 	cancel     context.CancelFunc
@@ -88,6 +89,7 @@ type session struct {
 	pending     map[string]*pendingControl
 	badFrames   int
 	ctrlSeq     atomic.Uint64
+	mcpConfigFile string
 }
 
 func (s *session) providerSessionID() string {
@@ -103,7 +105,7 @@ func (a *Adapter) binary() string {
 	return defaultBinary
 }
 
-func (a *Adapter) buildArgs(in domain.SessionStartInput) []string {
+func (a *Adapter) buildArgs(in domain.SessionStartInput, mcpConfigFile ...string) []string {
 	args := []string{
 		"--print",
 		"--input-format", "stream-json",
@@ -114,6 +116,10 @@ func (a *Adapter) buildArgs(in domain.SessionStartInput) []string {
 		// Permission prompts (and AskUserQuestion) come back to us as
 		// can_use_tool control requests instead of being auto-denied.
 		"--permission-prompt-tool", "stdio",
+	}
+
+	if len(mcpConfigFile) > 0 && mcpConfigFile[0] != "" {
+		args = append(args, "--mcp-config", mcpConfigFile[0], "--allowedTools", "mcp__orchestrator__*")
 	}
 
 	if model := firstNonEmpty(in.Model, a.settings.Model); model != "" {
@@ -185,8 +191,8 @@ func sessionSettings(options domain.ModelOptions, policy *domain.SkillPolicy) st
 	if _, ok := options[domain.OptionThinking]; ok {
 		fields["alwaysThinkingEnabled"] = options.Bool(domain.OptionThinking)
 	}
-	if options.Bool(domain.OptionFastMode) {
-		fields["fastMode"] = true
+	if _, ok := options[domain.OptionFastMode]; ok {
+		fields["fastMode"] = options.Bool(domain.OptionFastMode)
 	}
 	if thinkingSummaries(options) {
 		fields["showThinkingSummaries"] = true
@@ -215,12 +221,43 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func writeMCPConfig(mcp *domain.MCPConfig) (string, error) {
+	if mcp == nil || mcp.Endpoint == "" {
+		return "", nil
+	}
+	tmp, err := os.CreateTemp("", "orchestrator-mcp-*.json")
+	if err != nil {
+		return "", err
+	}
+	data := map[string]any{
+		"mcpServers": map[string]any{
+			"orchestrator": map[string]any{
+				"type": "http",
+				"url":  mcp.Endpoint,
+				"headers": map[string]string{
+					"Authorization": mcp.AuthHeader,
+				},
+			},
+		},
+	}
+	enc := json.NewEncoder(tmp)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return "", err
+	}
+	return tmp.Name(), nil
+}
+
 func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput) (domain.Session, error) {
-	cwd := in.Cwd
+	cwd := strings.TrimSpace(in.Cwd)
 	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
-		}
+		return domain.Session{}, errors.New("working directory is required")
 	}
 	env := provider.LaunchEnv(a.settings)
 	if in.Resume != "" {
@@ -228,40 +265,51 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		if err != nil {
 			return domain.Session{}, err
 		}
-		if !samePath(resolved, cwd) {
-			logger.Infof("Claude", "Resuming session %s in %s, where it was recorded, instead of %s", in.Resume, resolved, cwd)
-			cwd = resolved
-		}
+		cwd = resolved
 	}
 	in.Cwd = cwd
+
+	var mcpConfigFile string
+	if in.MCP != nil && in.MCP.Endpoint != "" && !in.PlanOnly {
+		path, err := writeMCPConfig(in.MCP)
+		if err != nil {
+			return domain.Session{}, fmt.Errorf("write mcp config: %w", err)
+		}
+		mcpConfigFile = path
+	}
 
 	procCtx, cancel := context.WithCancel(context.Background())
 
 	proc, err := process.Start(procCtx, process.Spec{
-		Command: a.binary(),
-		Args:    a.buildArgs(in),
-		Cwd:     cwd,
-		Env:     env,
-
+		Command:       a.binary(),
+		Args:          a.buildArgs(in, mcpConfigFile),
+		Cwd:           cwd,
+		Env:           env,
+		KillTree:      true,
 		DieWithParent: true,
 	})
 	if err != nil {
+		if mcpConfigFile != "" {
+			_ = os.Remove(mcpConfigFile)
+		}
 		cancel()
 		return domain.Session{}, fmt.Errorf("start %s: %w", a.binary(), err)
 	}
 
 	s := &session{
-		threadID:     in.ThreadID,
-		permission:   in.Permission,
-		proc:         proc,
-		cancel:       cancel,
-		encoder:      json.NewEncoder(proc.Stdin()),
-		model:        in.Model,
-		options:      in.Options,
-		sessionID:    in.Resume,
-		streamedMsgs: make(map[string]bool),
-		hiddenTools:  make(map[string]bool),
-		pending:      make(map[string]*pendingControl),
+		threadID:      in.ThreadID,
+		account:       domain.NormalizeAccount(in.Account),
+		permission:    in.Permission,
+		proc:          proc,
+		cancel:        cancel,
+		encoder:       json.NewEncoder(proc.Stdin()),
+		model:         in.Model,
+		options:       in.Options,
+		sessionID:     in.Resume,
+		mcpConfigFile: mcpConfigFile,
+		streamedMsgs:  make(map[string]bool),
+		hiddenTools:   make(map[string]bool),
+		pending:       make(map[string]*pendingControl),
 	}
 
 	a.mu.Lock()
@@ -278,6 +326,7 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		ThreadID:          in.ThreadID,
 		InstanceID:        in.InstanceID,
 		Driver:            domain.DriverClaude,
+		Account:           s.account,
 		ProviderSessionID: s.providerSessionID(),
 		Cwd:               in.Cwd,
 		Model:             in.Model,
@@ -342,7 +391,7 @@ func (a *Adapter) finish(s *session, err error) {
 		if interrupting {
 			a.emit.Emit(domain.RuntimeEvent{
 				Kind: domain.EventTurnCompleted, ThreadID: s.threadID, TurnID: turnID,
-				Driver: domain.DriverClaude, StopReason: domain.StopCancelled,
+				Driver: domain.DriverClaude, Account: s.account, StopReason: domain.StopCancelled,
 			})
 		} else {
 			detail := s.proc.StderrTail()
@@ -351,14 +400,18 @@ func (a *Adapter) finish(s *session, err error) {
 			}
 			a.emit.Emit(domain.RuntimeEvent{
 				Kind: domain.EventTurnFailed, ThreadID: s.threadID, TurnID: turnID,
-				Driver: domain.DriverClaude, Error: a.binary() + " exited: " + detail,
+				Driver: domain.DriverClaude, Account: s.account, Error: a.binary() + " exited: " + detail,
 			})
 		}
 	}
 
 	a.emit.Emit(domain.RuntimeEvent{
-		Kind: domain.EventSessionStopped, ThreadID: s.threadID, Driver: domain.DriverClaude,
+		Kind: domain.EventSessionStopped, ThreadID: s.threadID, Driver: domain.DriverClaude, Account: s.account,
 	})
+	if s.mcpConfigFile != "" {
+		_ = os.Remove(s.mcpConfigFile)
+		s.mcpConfigFile = ""
+	}
 	s.cancel()
 }
 
@@ -388,10 +441,23 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 	s.mu.Unlock()
 
 	a.emit.Emit(domain.RuntimeEvent{
-		Kind: domain.EventTurnStarted, ThreadID: in.ThreadID, TurnID: in.TurnID, Driver: domain.DriverClaude,
+		Kind: domain.EventTurnStarted, ThreadID: in.ThreadID, TurnID: in.TurnID, Driver: domain.DriverClaude, Account: s.account,
 	})
 
 	if err := s.write(buildUserMessage(in.Text, in.Files)); err != nil {
+		s.mu.Lock()
+		if s.turnID == in.TurnID {
+			s.turnID = ""
+		}
+		s.mu.Unlock()
+		a.emit.Emit(domain.RuntimeEvent{
+			Kind:     domain.EventTurnFailed,
+			ThreadID: in.ThreadID,
+			TurnID:   in.TurnID,
+			Driver:   domain.DriverClaude,
+			Account:  s.account,
+			Error:    err.Error(),
+		})
 		return fmt.Errorf("write turn: %w", err)
 	}
 	return nil
@@ -540,6 +606,7 @@ func (a *Adapter) RespondToApproval(ctx context.Context, threadID, requestID str
 		ThreadID: threadID,
 		TurnID:   a.event(s, "").TurnID,
 		Driver:   domain.DriverClaude,
+		Account:  s.account,
 		Approval: &domain.ApprovalRequest{RequestID: requestID},
 		Text:     behavior,
 	})
@@ -600,6 +667,7 @@ func (a *Adapter) RespondToQuestion(ctx context.Context, threadID, requestID str
 		Kind:     domain.EventQuestionAnswered,
 		ThreadID: threadID,
 		Driver:   domain.DriverClaude,
+		Account:  s.account,
 		Text:     strings.Join(answers, " / "),
 		Question: &domain.QuestionRequest{RequestID: requestID},
 	})
@@ -631,8 +699,15 @@ func (a *Adapter) StopSession(ctx context.Context, threadID string) error {
 	if !ok {
 		return nil
 	}
+	if s.mcpConfigFile != "" {
+		_ = os.Remove(s.mcpConfigFile)
+		s.mcpConfigFile = ""
+	}
 	s.cancel()
-	return s.proc.Shutdown(2 * time.Second)
+	if s.proc != nil {
+		return s.proc.Shutdown(2 * time.Second)
+	}
+	return nil
 }
 
 func (a *Adapter) StopAll(ctx context.Context) error {
@@ -649,8 +724,14 @@ func (a *Adapter) StopAll(ctx context.Context) error {
 		wg.Add(1)
 		go func(s *session) {
 			defer wg.Done()
+			if s.mcpConfigFile != "" {
+				_ = os.Remove(s.mcpConfigFile)
+				s.mcpConfigFile = ""
+			}
 			s.cancel()
-			_ = s.proc.Shutdown(2 * time.Second)
+			if s.proc != nil {
+				_ = s.proc.Shutdown(2 * time.Second)
+			}
 		}(s)
 	}
 	wg.Wait()
@@ -673,18 +754,24 @@ func (a *Adapter) UpdateModel(threadID, model string, options domain.ModelOption
 	s.mu.Lock()
 	sameOpts := sameOptions(s.options, options)
 	current := s.model
+	effectiveOpts := s.options
 	s.mu.Unlock()
 	if options != nil && !sameOpts {
 		return false
 	}
+	if options != nil {
+		effectiveOpts = options
+	}
 	if model == "" || model == current {
 		return true
 	}
-	if err := s.control(map[string]any{"subtype": "set_model", "model": ResolveModelID(model, options)}); err != nil {
+	if err := s.control(map[string]any{"subtype": "set_model", "model": ResolveModelID(model, effectiveOpts)}); err != nil {
 		return false
 	}
 	s.mu.Lock()
 	s.model = model
+	s.runningModel = ""
+	s.contextWindow = 0
 	s.mu.Unlock()
 	return true
 }

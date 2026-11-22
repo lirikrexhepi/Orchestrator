@@ -1,6 +1,7 @@
 package antigravity
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 
@@ -17,19 +18,91 @@ var hiddenTools = map[string]bool{
 	"schedule":    true,
 }
 
-var editTools = map[string]bool{
+var editToolNames = map[string]bool{
 	"write_to_file":              true,
 	"replace_file_content":       true,
 	"multi_replace_file_content": true,
+	"edit_file":                  true,
+	"write_file":                 true,
+	"create_file":                true,
+	"patch_file":                 true,
+	"multi_edit":                 true,
+}
+
+var readToolNames = map[string]bool{
+	"view_file": true,
+	"read_file": true,
+	"read":      true,
+}
+
+func isEditTool(name string) bool {
+	return editToolNames[strings.ToLower(name)]
+}
+
+func isReadTool(name string) bool {
+	return readToolNames[strings.ToLower(name)]
+}
+
+var toolPathCandidates = []string{
+	"targetfile",
+	"target_file",
+	"absolutepath",
+	"absolute_path",
+	"filepath",
+	"file_path",
+	"path",
+	"directorypath",
+	"directory_path",
+	"file",
 }
 
 func toolPath(input map[string]any) string {
-	for _, key := range []string{"TargetFile", "AbsolutePath", "FilePath", "file_path", "path"} {
-		if value, ok := input[key].(string); ok && value != "" {
-			return value
+	if len(input) == 0 {
+		return ""
+	}
+	for _, candidate := range toolPathCandidates {
+		for k, v := range input {
+			if strings.EqualFold(k, candidate) {
+				if s, ok := v.(string); ok && s != "" {
+					return normalizeACPPath(s)
+				}
+			}
 		}
 	}
 	return ""
+}
+
+func normalizeACPPath(p string) string {
+	if len(p) >= 4 && p[0] == '/' && ((p[1] >= 'a' && p[1] <= 'z') || (p[1] >= 'A' && p[1] <= 'Z')) && p[2] == ':' && (p[3] == '/' || p[3] == '\\') {
+		return p[1:]
+	}
+	return p
+}
+
+func extractRawOutput(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return string(raw)
+}
+
+func mapToolStatus(status string) domain.ToolStatus {
+	switch strings.ToLower(status) {
+	case "pending":
+		return domain.ToolPending
+	case "in_progress":
+		return domain.ToolInProgress
+	case "completed":
+		return domain.ToolCompleted
+	case "failed", "error":
+		return domain.ToolFailed
+	default:
+		return domain.ToolPending
+	}
 }
 
 func readCapped(path string) (string, bool) {

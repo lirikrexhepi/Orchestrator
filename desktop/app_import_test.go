@@ -55,8 +55,8 @@ func TestImportClaudeCodeSessionStoresReplayableWorkspace(t *testing.T) {
 	if task.Driver != "claude" || task.State != "complete" {
 		t.Fatalf("task = %+v", task)
 	}
-	if _, ok := loaded.Meta.Resume[task.ThreadID]; ok {
-		t.Fatalf("import must not store a resume id: %+v", loaded.Meta.Resume)
+	if resume, ok := loaded.Meta.Resume[task.ThreadID]; !ok || resume != "sess-9" {
+		t.Fatalf("import must store a resume id: %+v", loaded.Meta.Resume)
 	}
 	events := loaded.Transcripts[task.ThreadID]
 	if len(events) == 0 {

@@ -81,7 +81,7 @@ export const DiffView = React.memo(function DiffView({ lines }: { lines: DiffLin
 });
 
 export function editVerb(toolName?: string, status?: string): string {
-  const write = /^(write|write_to_file|writefile|create)$/i.test(toolName || '');
+  const write = /^(write|write_file|write_to_file|writefile|create|create_file)$/i.test(toolName || '');
   if (status === 'running') return write ? 'Writing' : 'Editing';
   if (status === 'error') return write ? 'Failed to write' : 'Failed to edit';
   return write ? 'Wrote' : 'Edited';

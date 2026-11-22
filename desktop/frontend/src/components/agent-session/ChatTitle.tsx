@@ -1,5 +1,6 @@
 import React, { useLayoutEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
+import { MaterialIcon } from '../common/icons';
 
 interface ChatTitleProps {
   title: string;
@@ -76,7 +77,7 @@ export const ChatTitle: React.FC<ChatTitleProps> = ({ title, className, onRename
   return (
     <span
       key="view"
-      className="relative grid min-w-0"
+      className="group/title relative inline-flex items-center gap-1 min-w-0 max-w-full"
       onDoubleClick={
         onRename
           ? (event) => {
@@ -86,18 +87,36 @@ export const ChatTitle: React.FC<ChatTitleProps> = ({ title, className, onRename
           : undefined
       }
     >
-      <AnimatePresence initial={false}>
-        <motion.span
-          key={title}
-          initial={{ opacity: 0, filter: 'blur(3px)' }}
-          animate={{ opacity: 1, filter: 'blur(0px)' }}
-          exit={{ opacity: 0, filter: 'blur(3px)' }}
-          transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
-          className={`${className} [grid-area:1/1] truncate`}
+      <span className="relative grid min-w-0">
+        <AnimatePresence initial={false}>
+          <motion.span
+            key={title}
+            initial={{ opacity: 0, filter: 'blur(3px)' }}
+            animate={{ opacity: 1, filter: 'blur(0px)' }}
+            exit={{ opacity: 0, filter: 'blur(3px)' }}
+            transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+            className={`${className} [grid-area:1/1] truncate`}
+          >
+            {title}
+          </motion.span>
+        </AnimatePresence>
+      </span>
+      {onRename && (
+        <button
+          type="button"
+          aria-label="Rename chat"
+          title="Rename chat"
+          onClick={(event) => {
+            event.stopPropagation();
+            setEditing(true);
+          }}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          className="shrink-0 opacity-0 group-hover/title:opacity-60 hover:!opacity-100 focus-visible:opacity-100 transition-opacity duration-150 p-0.5 rounded text-current cursor-pointer inline-flex items-center justify-center"
         >
-          {title}
-        </motion.span>
-      </AnimatePresence>
+          <MaterialIcon name="edit" size={12} />
+        </button>
+      )}
     </span>
   );
 };

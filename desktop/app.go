@@ -9,13 +9,16 @@ import (
 	"time"
 
 	"composer/internal/activity"
+	"composer/internal/antigravity"
 	"composer/internal/attachments"
+	"composer/internal/browser"
 	"composer/internal/claude"
 	"composer/internal/devserver"
 	"composer/internal/domain"
 	"composer/internal/drivers"
 	"composer/internal/history"
 	"composer/internal/logger"
+	"composer/internal/mcp"
 	"composer/internal/memory"
 	"composer/internal/opencode"
 	"composer/internal/projects"
@@ -25,6 +28,7 @@ import (
 	"composer/internal/service"
 	"composer/internal/session"
 	"composer/internal/storage/sqlite"
+	"composer/internal/terminal"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -64,10 +68,11 @@ type App struct {
 	workspaces    *session.Workspaces
 	spawner       *session.Spawner
 	orchestrator  *session.Constructor
-	usage         *session.UsageTracker
-	quota         *claude.QuotaSource
-	opencodeQuota *opencode.GoQuotaSource
-	accountQuota  *accountQuotas
+	usage            *session.UsageTracker
+	quota            *claude.QuotaSource
+	opencodeQuota    *opencode.GoQuotaSource
+	antigravityQuota *antigravity.QuotaSource
+	accountQuota     *accountQuotas
 	scanner       *servers.Scanner
 	devservers    *devserver.Manager
 	control       *devserver.Control
@@ -76,8 +81,13 @@ type App struct {
 	projects      *projects.Store
 	attachments   *attachments.Store
 	memory        *memory.Store
-	remoteServer  *remote.Server
-	stopFeed      func()
+	remoteServer   *remote.Server
+	mcpServer      *mcp.Server
+	terminals      *terminal.Manager
+	terminalServer *terminal.Server
+	browsers       *browser.Manager
+	browserServer  *browser.Server
+	stopFeed       func()
 
 	// headless is set when the app runs without a window (see headless.go).
 	// Window-bound calls check it, since Wails' runtime exits the process when
@@ -102,6 +112,7 @@ func NewApp() *App {
 	// run is already in effect for the first CLI detection.
 	registry.UsePrefs(provider.NewPrefs(configRoot()))
 	registry.UseAccounts(provider.NewAccounts(configRoot()))
+	antigravity.InitAccountModelsCache(filepath.Join(configRoot(), "account_models.json"))
 	manager := session.NewManager(registry)
 	workspaces := session.NewWorkspaces()
 	coordinator := session.NewCoordinator(manager)
@@ -160,6 +171,13 @@ func NewApp() *App {
 	remoteServer := remote.NewServer(4545, manager, coordinator, constructor, spawner, projectsStore, recorder, store)
 	remoteServer.SetStoragePath(filepath.Join(configRoot(), "remote_auth.json"))
 
+	var quotaSource *claude.QuotaSource
+	if cfgDir := claudeConfigDir(registry); cfgDir != "" {
+		quotaSource = claude.NewAccountQuotaSource(cfgDir)
+	} else {
+		quotaSource = claude.NewQuotaSource("")
+	}
+
 	app := &App{
 		registry:       registry,
 		manager:        manager,
@@ -167,10 +185,11 @@ func NewApp() *App {
 		workspaces:     workspaces,
 		spawner:        spawner,
 		orchestrator:   constructor,
-		usage:          session.NewUsageTracker(),
-		quota:          claude.NewQuotaSource(""),
-		opencodeQuota:  opencode.NewGoQuotaSource(),
-		accountQuota:   &accountQuotas{sources: make(map[string]*claude.QuotaSource)},
+		usage:            session.NewUsageTracker(),
+		quota:            quotaSource,
+		opencodeQuota:    opencode.NewGoQuotaSource(),
+		antigravityQuota: antigravity.NewQuotaSource(""),
+		accountQuota:     &accountQuotas{sources: make(map[string]*claude.QuotaSource), agSources: make(map[string]*antigravity.QuotaSource)},
 		scanner:        servers.NewScanner(),
 		devservers:     devservers,
 		control:        control,
@@ -186,6 +205,8 @@ func NewApp() *App {
 		prefService:    prefService,
 		activityRepo:   activityRepo,
 		prefRepo:       prefRepo,
+		terminals:      terminal.NewManager(),
+		browsers:       browser.NewManager(filepath.Join(configRoot(), "browser-profile")),
 	}
 	if activityRepo != nil {
 		app.activity = activity.NewTracker(activityRepo, app.activityThread)
@@ -235,6 +256,28 @@ func (a *App) startCore(ctx context.Context) {
 		_ = a.remoteServer.Start(ctx)
 		traceStartup("remote started")
 	}
+	a.mcpServer = mcp.NewServer(&appMCPBackend{app: a})
+	if endpoint, err := a.mcpServer.Start(ctx); err != nil {
+		logger.Errorf("App", "Failed to start loopback MCP server: %v", err)
+	} else {
+		logger.Infof("App", "Loopback MCP server bound to %s", endpoint)
+		a.manager.SetMCPProvider(&appMCPProvider{server: a.mcpServer})
+	}
+	traceStartup("mcp server started")
+	a.terminalServer = terminal.NewServer(a.terminals)
+	if wsURL, _, err := a.terminalServer.Start(ctx); err != nil {
+		logger.Errorf("App", "Failed to start loopback terminal server: %v", err)
+	} else {
+		logger.Infof("App", "Loopback terminal server bound to %s", wsURL)
+	}
+	traceStartup("terminal server started")
+	a.browserServer = browser.NewServer(a.browsers)
+	if wsURL, _, err := a.browserServer.Start(ctx); err != nil {
+		logger.Errorf("App", "Failed to start loopback browser server: %v", err)
+	} else {
+		logger.Infof("App", "Loopback browser server bound to %s", wsURL)
+	}
+	traceStartup("browser server started")
 	a.orchestrator.SetOnSpawn(func(result session.SpawnResult) {
 		if a.sessionService != nil {
 			for _, task := range result.Tasks {
@@ -258,6 +301,11 @@ func (a *App) startCore(ctx context.Context) {
 	a.opencodeQuota.OnUpdate(func() {
 		a.emit(quotaChangedChannel)
 	})
+	if a.antigravityQuota != nil {
+		a.antigravityQuota.OnUpdate(func() {
+			a.emit(quotaChangedChannel)
+		})
+	}
 
 	if a.recorder != nil {
 		a.recorder.OnChanged(func() {
@@ -269,6 +317,40 @@ func (a *App) startCore(ctx context.Context) {
 	a.stopFeed = cancel
 
 	go a.pumpEvents(ctx, events)
+	go a.prewarmAccountModels(ctx)
+}
+
+func (a *App) prewarmAccountModels(ctx context.Context) {
+	select {
+	case <-time.After(500 * time.Millisecond):
+	case <-ctx.Done():
+		return
+	}
+	accounts := a.registry.Accounts(domain.DriverAntigravity)
+	for _, acc := range accounts {
+		if ctx.Err() != nil {
+			return
+		}
+		_, _ = a.GetAccountModels(string(domain.DriverAntigravity), acc.ID)
+	}
+}
+
+type streamKey struct {
+	threadID string
+	turnID   string
+	itemID   string
+	kind     domain.EventKind
+}
+
+func claudeConfigDir(registry *provider.Registry) string {
+	if registry != nil {
+		for k, v := range registry.Settings(domain.DriverClaude).Env {
+			if strings.EqualFold(k, "CLAUDE_CONFIG_DIR") && strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		}
+	}
+	return strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
 }
 
 // pumpEvents feeds every runtime event to the backend observers immediately
@@ -277,6 +359,7 @@ func (a *App) pumpEvents(ctx context.Context, events <-chan domain.RuntimeEvent)
 	ticker := time.NewTicker(eventFlushInterval)
 	defer ticker.Stop()
 	batch := make([]domain.RuntimeEvent, 0, eventBatchLimit)
+	deltaIndex := make(map[streamKey]int)
 
 	flush := func() {
 		if len(batch) == 0 {
@@ -284,6 +367,7 @@ func (a *App) pumpEvents(ctx context.Context, events <-chan domain.RuntimeEvent)
 		}
 		a.emit(runtimeEventsChannel, batch)
 		batch = make([]domain.RuntimeEvent, 0, eventBatchLimit)
+		clear(deltaIndex)
 	}
 
 	for {
@@ -298,10 +382,26 @@ func (a *App) pumpEvents(ctx context.Context, events <-chan domain.RuntimeEvent)
 				// No window to batch for; the phone gateway has its own feed.
 				continue
 			}
-			// Consecutive deltas of one streamed item become a single event.
-			if n := len(batch); n > 0 && event.Delta && sameStreamItem(batch[n-1], event) {
-				batch[n-1].Text += event.Text
+			if isCoalescableDelta(event) {
+				key := streamKey{
+					threadID: event.ThreadID,
+					turnID:   event.TurnID,
+					itemID:   event.ItemID,
+					kind:     event.Kind,
+				}
+				if idx, exists := deltaIndex[key]; exists {
+					batch[idx].Text += event.Text
+					batch[idx].Seq = event.Seq
+					continue
+				}
+				deltaIndex[key] = len(batch)
+				batch = append(batch, event)
 			} else {
+				for k := range deltaIndex {
+					if k.threadID == event.ThreadID {
+						delete(deltaIndex, k)
+					}
+				}
 				batch = append(batch, event)
 			}
 			if len(batch) >= eventBatchLimit {
@@ -313,10 +413,8 @@ func (a *App) pumpEvents(ctx context.Context, events <-chan domain.RuntimeEvent)
 	}
 }
 
-func sameStreamItem(prev, next domain.RuntimeEvent) bool {
-	return prev.Delta && prev.Kind == next.Kind && prev.ThreadID == next.ThreadID &&
-		prev.TurnID == next.TurnID && prev.ItemID == next.ItemID &&
-		(next.Kind == domain.EventAgentMessage || next.Kind == domain.EventAgentThought)
+func isCoalescableDelta(event domain.RuntimeEvent) bool {
+	return event.Delta && (event.Kind == domain.EventAgentMessage || event.Kind == domain.EventAgentThought)
 }
 
 func (a *App) observe(event domain.RuntimeEvent) {
@@ -368,7 +466,7 @@ func (a *App) trackTaskState(event domain.RuntimeEvent) {
 	a.workspaces.SetState(event.ThreadID, state)
 	a.recorder.UpdateTaskState(event.ThreadID, state, "")
 	if workspaceID, ok := a.recorder.WorkspaceOf(event.ThreadID); ok {
-		a.recorder.Touch(workspaceID, event.At)
+		a.recorder.TouchTask(workspaceID, event.ThreadID, event.At)
 	}
 	if a.sessionService != nil {
 		status := "completed"
@@ -386,6 +484,27 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.remoteServer != nil {
 		a.remoteServer.Stop()
+	}
+	if a.mcpServer != nil {
+		mcpCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = a.mcpServer.Close(mcpCtx)
+		cancel()
+	}
+	if a.terminalServer != nil {
+		termCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = a.terminalServer.Close(termCtx)
+		cancel()
+	}
+	if a.terminals != nil {
+		a.terminals.CloseAll()
+	}
+	if a.browserServer != nil {
+		browserCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = a.browserServer.Close(browserCtx)
+		cancel()
+	}
+	if a.browsers != nil {
+		a.browsers.CloseAll()
 	}
 	if a.stopFeed != nil {
 		a.stopFeed()

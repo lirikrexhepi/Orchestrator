@@ -12,6 +12,11 @@ import { readChatDrag, isChatDrag } from '../common/chatDrag';
 import { markChatContextTarget, leaveChatContextTarget } from '../common/ChatDragLayer';
 import { AIModel } from '../orchestrator/types';
 
+// Persist the last synced chat key across GlassInput unmounts (e.g. switching
+// to full-page Web or Terminal and coming back to the same chat) so returning
+// never overwrites the user's currently selected model.
+let lastSyncedChatKey: string | null = null;
+
 export function resolveMatchingModel(
   models: AIModel[],
   taskModel?: string,
@@ -24,24 +29,24 @@ export function resolveMatchingModel(
   const driverLower = (taskDriver || '').toLowerCase();
   const strip = (s: string) => s.replace(/^(opencode|anthropic|openai|google)[\/:]/, '').toLowerCase();
 
-  // 1. Exact ID match
-  if (raw) {
-    const exact = models.find((m) => m.id === raw || strip(m.id) === strip(raw));
-    if (exact) return exact;
-
-    // 2. Case-insensitive ID match
-    const caseInsensitive = models.find((m) => m.id.toLowerCase() === lower || strip(m.id) === strip(lower));
-    if (caseInsensitive) return caseInsensitive;
-
-    // 3. Match by name exact or case-insensitive
-    const nameMatch = models.find((m) => m.name.toLowerCase() === lower);
-    if (nameMatch) return nameMatch;
-  }
-
-  // 4. If driver is specified, prioritize models for that provider
   const providerModels = driverLower
     ? models.filter((m) => m.providerId.toLowerCase() === driverLower)
     : [];
+  const pools = providerModels.length > 0 ? [providerModels, models] : [models];
+
+  // 1-3. Exact ID, case-insensitive ID, or display name match (driver-scoped first)
+  if (raw) {
+    for (const pool of pools) {
+      const exact = pool.find((m) => m.id === raw || strip(m.id) === strip(raw));
+      if (exact) return exact;
+
+      const caseInsensitive = pool.find((m) => m.id.toLowerCase() === lower || strip(m.id) === strip(lower));
+      if (caseInsensitive) return caseInsensitive;
+
+      const nameMatch = pool.find((m) => m.name.toLowerCase() === lower);
+      if (nameMatch) return nameMatch;
+    }
+  }
 
   const candidatePool = providerModels.length > 0 ? providerModels : models;
 
@@ -105,7 +110,6 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const projectPickerRef = useRef<HTMLDivElement>(null);
   const projectButtonRef = useRef<HTMLButtonElement>(null);
-  const lastSyncedKeyRef = useRef<string | null>(null);
 
   // Close popups on outside click or Escape
   useEffect(() => {
@@ -144,15 +148,53 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   const selectedModelId = selectedModel?.id;
   const provider = selectedModel?.providerId ?? 'antigravity';
   const icon = providerIcon(provider, isLight);
+  const accountName = useOrchestratorStore((state) => {
+    const p = state.providers.find((item) => item.id === provider);
+    if (!p?.accounts || p.accounts.length < 2) return '';
+    const shown = state.shownAccount(p.id);
+    return p.accounts.find((account) => account.id === shown)?.name ?? '';
+  });
 
-  // Sync selected model to current chat's model when switching chats with an empty input
+  // Listen for chat context/snippet injections (e.g. from Terminal "Send to chat")
+  useEffect(() => {
+    const handleInject = (e: Event) => {
+      const custom = e as CustomEvent<{ text: string; threadId?: string }>;
+      if (!custom.detail?.text) return;
+      if (
+        custom.detail.threadId &&
+        activeChatKey &&
+        activeChatKey !== '__home__' &&
+        custom.detail.threadId !== activeChatKey
+      ) {
+        return;
+      }
+      setText((prev) => {
+        const trimmed = prev.trim();
+        return trimmed ? `${trimmed}\n\n${custom.detail.text}` : custom.detail.text;
+      });
+      setTimeout(() => {
+        textareaRef.current?.focus();
+        if (textareaRef.current) {
+          textareaRef.current.selectionStart = textareaRef.current.value.length;
+          textareaRef.current.selectionEnd = textareaRef.current.value.length;
+        }
+      }, 50);
+    };
+
+    window.addEventListener('orchestrator:inject-chat-text', handleInject);
+    return () => {
+      window.removeEventListener('orchestrator:inject-chat-text', handleInject);
+    };
+  }, [activeChatKey]);
+
+  // Sync selected model to current chat's model only when switching to a DIFFERENT chat
   useEffect(() => {
     if (!activeChatKey || activeChatKey === '__home__') {
-      lastSyncedKeyRef.current = activeChatKey ?? null;
+      lastSyncedChatKey = activeChatKey ?? null;
       return;
     }
 
-    if (lastSyncedKeyRef.current === activeChatKey && store.selectedModelId) return;
+    if (lastSyncedChatKey === activeChatKey && store.selectedModelId) return;
 
     if (text.trim().length > 0) return;
 
@@ -161,12 +203,12 @@ export const GlassInput: React.FC<GlassInputProps> = ({
 
     const target = resolveMatchingModel(models, activeChatModel, activeChatDriver);
     if (target) {
-      lastSyncedKeyRef.current = activeChatKey;
-      if (target.id !== store.selectedModelId) {
-        store.selectModelSilently(target.id);
+      lastSyncedChatKey = activeChatKey;
+      if (target.id !== store.selectedModelId || target.providerId !== store.selectedProviderId) {
+        store.selectModelSilently(target.id, target.providerId);
       }
     } else {
-      lastSyncedKeyRef.current = activeChatKey;
+      lastSyncedChatKey = activeChatKey;
     }
   }, [activeChatKey, activeChatModel, activeChatDriver, store.models, store.selectedModelId, text]);
 
@@ -258,8 +300,8 @@ export const GlassInput: React.FC<GlassInputProps> = ({
         >
           <ModelPicker
             selectedModelId={selectedModelId}
-            onSelectModel={(id) => {
-              store.selectModel(id);
+            onSelectModel={(id, providerId) => {
+              store.selectModel(id, providerId);
             }}
             isFloatingPopup
           />
@@ -463,6 +505,11 @@ export const GlassInput: React.FC<GlassInputProps> = ({
               <span className="text-[12px] font-medium tracking-tight">
                 {selectedModel?.name ?? 'Gemini Carbon'}
               </span>
+              {accountName && (
+                <span className="text-[11px] font-medium tracking-tight opacity-50 truncate max-w-[100px]">
+                  · {accountName}
+                </span>
+              )}
               <ChevronDown size={11} className="opacity-60 shrink-0 ml-0.5" />
             </button>
 

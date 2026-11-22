@@ -211,6 +211,12 @@ func (a *App) OrchestratorStopAgent(threadID string) error {
 	}
 	a.workspaces.SetState(threadID, domain.TaskClosed)
 	a.recorder.UpdateTaskState(threadID, domain.TaskClosed, "")
+	if a.terminals != nil {
+		a.terminals.CloseThread(threadID)
+	}
+	if a.browsers != nil {
+		a.browsers.CloseThread(threadID)
+	}
 	return nil
 }
 

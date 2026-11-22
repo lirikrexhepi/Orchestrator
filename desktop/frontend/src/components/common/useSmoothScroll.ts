@@ -82,7 +82,7 @@ export function useSmoothScroll<T extends HTMLElement = HTMLDivElement>(
         if (lenisRef.current === lenis) lenisRef.current = null;
       },
     };
-  });
+  }, [targetRef, targetRef.current, enabled, speed]);
 
   useEffect(
     () => () => {

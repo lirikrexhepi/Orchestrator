@@ -12,24 +12,38 @@ import { useDefaultModels } from '../sidebar/useDefaultModels';
 import { useTheme } from '../../themes';
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
 import { AgentWindow, AgentCardMode } from '../agent-session';
-import type { TodoToolBlockData } from '../agent-session/types';
 import { collectThreadChanges } from '../agent-session/threadChanges';
 import { useGit } from '../git';
 import { NavRail } from '../layout/NavRail';
 import { HomeStats } from '../layout/HomeStats';
 import { GlassInput } from '../layout/GlassInput';
 import { parseSwitchNotice } from '../agent-session/NoticeDivider';
-import { DynamicIsland, DynamicIslandNotification, renderChatIcon } from '../common/DynamicIsland';
+import { DynamicIsland, DynamicIslandNotification, extractChatHistoryItems, renderChatIcon } from '../common/DynamicIsland';
 import { TitleBar } from '../common/TitleBar';
 import { GlassSquircle } from '../../ui/glass/GlassSquircle';
 import { useWebBookmarks, type WebBookmark } from '../agent-session/useWebBookmarks';
 import { BookmarkModal } from '../agent-session/BookmarkModal';
-import { RespondToQuestion, GitWebURL } from '../../../wailsjs/go/main/App';
+import { GetUserPreference, GitWebURL, RespondToQuestion, SetUserPreference } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime/runtime';
 import { playTaskComplete } from '../../sound';
 import { domain } from '../../../wailsjs/go/models';
 
 const SettingsWindow = React.lazy(() => import('../sidebar/SettingsWindow'));
+
+function dataUrlToFile(dataUrl: string, filename: string): File {
+  const normalized = dataUrl.startsWith('data:') ? dataUrl : `data:image/png;base64,${dataUrl}`;
+  const commaIdx = normalized.indexOf(',');
+  const header = commaIdx >= 0 ? normalized.slice(0, commaIdx) : 'data:image/png;base64';
+  const base64 = commaIdx >= 0 ? normalized.slice(commaIdx + 1) : normalized;
+  const mimeMatch = header.match(/data:([^;]+)/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new File([bytes], filename, { type: mime });
+}
 
 const chatSlideVariants: Variants = {
   enter: (dir: number) => ({
@@ -78,12 +92,13 @@ export const Scene: React.FC<SceneProps> = () => {
 
   // Panels & Triggers
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isIslandUsageOpen, setIsIslandUsageOpen] = useState(false);
   const [projectsTrigger, setProjectsTrigger] = useState(0);
   const [historyTrigger, setHistoryTrigger] = useState(0);
 
   const defaultModels = useDefaultModels(isSettingsOpen);
   const history = useHistory(true);
-  const usage = useUsage(true);
+  const usage = useUsage(isIslandUsageOpen || isSettingsOpen);
   const runningServers = useServers(true);
   const git = useGit(true);
   const claudeImport = useClaudeImport();
@@ -94,6 +109,8 @@ export const Scene: React.FC<SceneProps> = () => {
   const [activeCardIndex, setActiveCardIndex] = useState(0);
   const [direction, setDirection] = useState(0);
   const [cardMode, setCardMode] = useState<AgentCardMode>('chat');
+  const [isBrowserSplit, setIsBrowserSplit] = useState(false);
+  const [browserSplitRatio, setBrowserSplitRatio] = useState(0.5);
   const [browserTarget, setBrowserTarget] = useState<{ url: string; nonce: number } | null>(null);
 
   // Dynamic Island Notifications
@@ -191,12 +208,21 @@ export const Scene: React.FC<SceneProps> = () => {
 
   // Mode availability for NavRail
   const streamBlocks = activeTask?.blocks ?? [];
-  const todoBlock = [...streamBlocks].reverse().find((b): b is TodoToolBlockData => b.type === 'tool_todo');
-  const hasTasks = (todoBlock?.todos?.length ?? 0) > 0;
   const currentTaskServers = getTaskServers(activeTask?.threadId);
   const hasServers = currentTaskServers.length > 0;
   const threadChanges = useMemo(() => collectThreadChanges(streamBlocks), [streamBlocks]);
   const hasChanges = threadChanges.length > 0;
+
+  const handleAttachImage = useCallback(
+    async (dataUrl: string, filename = `screenshot-${Date.now()}.png`) => {
+      if (!dataUrl) return;
+      const file = dataUrlToFile(dataUrl, filename);
+      await attachments.accept([file]);
+      setCardMode((prev) => (prev === 'browser' && !isBrowserSplit ? 'chat' : prev));
+      setActiveView('chat');
+    },
+    [attachments, isBrowserSplit],
+  );
 
   const activeTaskModel = useMemo(() => {
     if (!activeTask) return undefined;
@@ -270,11 +296,94 @@ export const Scene: React.FC<SceneProps> = () => {
     };
   }, []);
 
+  // Startup restore of open chat tabs (when "Reopen open chats on startup" is enabled)
+  const restoredOnBootRef = useRef(false);
+  const isRestoringBootRef = useRef(false);
+  const [bootRestoreDone, setBootRestoreDone] = useState(false);
+  const bootRestoreDoneRef = useRef(false);
+  bootRestoreDoneRef.current = bootRestoreDone;
+
+  useEffect(() => {
+    if (restoredOnBootRef.current || !history.hasLoaded) return;
+    restoredOnBootRef.current = true;
+    void (async () => {
+      isRestoringBootRef.current = true;
+      try {
+        const enabled = await GetUserPreference('restore_open_chats');
+        if (enabled !== 'true') return;
+        const raw = await GetUserPreference('open_chats_state');
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as {
+          version?: number;
+          activeView?: 'home' | 'chat';
+          activeThreadId?: string;
+          tabs?: Array<{ workspaceId: string; threadId: string }>;
+        };
+        if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.tabs) || parsed.tabs.length === 0) {
+          return;
+        }
+        const validItems = extractChatHistoryItems(history.entries, undefined, { archived: 'exclude' });
+        const validSet = new Set(validItems.map((item) => `${item.workspaceId}::${item.threadId}`));
+        const validTabs = parsed.tabs.filter(
+          (tab) => tab?.workspaceId && tab?.threadId && validSet.has(`${tab.workspaceId}::${tab.threadId}`),
+        );
+        if (validTabs.length === 0) return;
+
+        let targetIndex = -1;
+        for (const tab of validTabs) {
+          const idx = await spawner.openHistorySession(tab.workspaceId, tab.threadId);
+          if (idx >= 0 && tab.threadId === parsed.activeThreadId) {
+            targetIndex = idx;
+          }
+        }
+        setActiveCardIndex(targetIndex >= 0 ? targetIndex : 0);
+        setActiveView(parsed.activeView === 'chat' ? 'chat' : 'home');
+      } catch {
+        // Ignore malformed saved state
+      } finally {
+        isRestoringBootRef.current = false;
+        setBootRestoreDone(true);
+      }
+    })();
+  }, [history.hasLoaded, history.entries, spawner.openHistorySession]);
+
+  const openChatsStateJson = useMemo(
+    () =>
+      JSON.stringify({
+        version: 1,
+        activeView,
+        activeThreadId: activeTask?.threadId || '',
+        tabs: activeTasks
+          .filter((t) => !t.isDraft && t.workspaceId)
+          .map((t) => ({ workspaceId: t.workspaceId, threadId: t.threadId })),
+      }),
+    [activeView, activeTask?.threadId, activeTasks],
+  );
+  const latestOpenChatsJsonRef = useRef(openChatsStateJson);
+  latestOpenChatsJsonRef.current = openChatsStateJson;
+
+  useEffect(() => {
+    if (!bootRestoreDone) return;
+    const timer = window.setTimeout(() => {
+      void SetUserPreference('open_chats_state', latestOpenChatsJsonRef.current);
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [bootRestoreDone, openChatsStateJson]);
+
+  useEffect(() => {
+    const flush = () => {
+      if (!bootRestoreDoneRef.current) return;
+      void SetUserPreference('open_chats_state', latestOpenChatsJsonRef.current);
+    };
+    window.addEventListener('beforeunload', flush);
+    return () => window.removeEventListener('beforeunload', flush);
+  }, []);
+
   // When a new agent is spawned, automatically navigate to it in full-bleed chat
   const spawnedCount = activeTasks.length;
   const prevSpawnedCount = useRef(spawnedCount);
   useEffect(() => {
-    if (spawnedCount > prevSpawnedCount.current) {
+    if (!isRestoringBootRef.current && spawnedCount > prevSpawnedCount.current) {
       setActiveCardIndex(spawnedCount - 1);
       setActiveView('chat');
     }
@@ -497,10 +606,6 @@ export const Scene: React.FC<SceneProps> = () => {
           setDirection(-1);
           setActiveView('home');
         }}
-        onNewChatClick={() => {
-          setDirection(-1);
-          setActiveView('home');
-        }}
         onProjectsClick={() => setProjectsTrigger((p) => p + 1)}
         onSettingsClick={() => setIsSettingsOpen((prev) => !prev)}
         isSettingsOpen={isSettingsOpen}
@@ -514,7 +619,6 @@ export const Scene: React.FC<SceneProps> = () => {
         hasPreview={true}
         hasServers={hasServers}
         hasChanges={hasChanges}
-        hasTasks={hasTasks}
         bookmarks={visibleBookmarks}
         currentBrowserUrl={browserTarget?.url}
         onBookmarkClick={handleBookmarkClick}
@@ -570,20 +674,31 @@ export const Scene: React.FC<SceneProps> = () => {
             onMoveChat={(payload, proj) => {
               void spawner.moveChat(payload, proj).then(() => history.refresh());
             }}
+            onRenameChat={(threadId, title) =>
+              spawner.renameChat(threadId, title).then(() => history.refresh())
+            }
             onRefreshHistory={history.refresh}
+            onUsageOpenChange={setIsIslandUsageOpen}
             openProjectsTrigger={projectsTrigger}
             openHistoryTrigger={historyTrigger}
             claudeSessions={claudeImport.sessions}
             claudeLoading={claudeImport.isLoading}
-            onImportClaudeSession={(filePath) => {
-              void (async () => {
-                const targetIdx = await spawner.openHistorySession('', filePath);
-                if (targetIdx >= 0) {
-                  setDirection(targetIdx >= activeCardIndex ? 1 : -1);
-                  setActiveCardIndex(targetIdx);
-                  setActiveView('chat');
-                }
-              })();
+            claudeLoadingMore={claudeImport.isLoadingMore}
+            claudeExhausted={claudeImport.exhausted}
+            claudeImporting={claudeImport.importingPath}
+            claudeError={claudeImport.error}
+            onRefreshClaude={claudeImport.list}
+            onLoadMoreClaude={claudeImport.loadMore}
+            onImportClaudeSession={async (filePath) => {
+              const imported = await claudeImport.importOne(filePath);
+              if (!imported?.workspaceId) return;
+              const targetIdx = await spawner.openHistorySession(imported.workspaceId, imported.threadId);
+              if (targetIdx >= 0) {
+                setDirection(targetIdx >= activeCardIndex ? 1 : -1);
+                setActiveCardIndex(targetIdx);
+                setActiveView('chat');
+              }
+              void history.refresh();
             }}
           />
         </TitleBar>
@@ -630,14 +745,23 @@ export const Scene: React.FC<SceneProps> = () => {
                     contextUsage={activeTask.context}
                     cardMode={cardMode}
                     onCardModeChange={setCardMode}
+                    isBrowserSplit={isBrowserSplit}
+                    onBrowserSplitChange={setIsBrowserSplit}
+                    browserSplitRatio={browserSplitRatio}
+                    onBrowserSplitRatioChange={setBrowserSplitRatio}
                     detectedServers={currentTaskServers}
                     onStopServer={runningServers.stop}
                     git={git}
                     streamBlocks={activeTask.blocks}
+                    hasEarlier={Boolean(activeTask.hasEarlier)}
+                    loadingEarlier={Boolean(activeTask.loadingEarlier)}
+                    onLoadEarlier={() => spawner.loadEarlier(activeTask.threadId)}
                     onSendMessage={(msg: string, mId: string, files?: domain.FileRef[]) =>
                       spawner.sendWithModel(activeTask.threadId, msg, files, mId)
                     }
                     onInterrupt={() => spawner.interrupt(activeTask.threadId)}
+                    onRename={(title) => spawner.renameChat(activeTask.threadId, title)}
+                    onAttachImage={handleAttachImage}
                     onAnswerQuestion={async (blockId, answers) => {
                       const qId = blockId.replace(/^question-/, '');
                       await RespondToQuestion(activeTask.threadId, qId, answers);
@@ -664,7 +788,7 @@ export const Scene: React.FC<SceneProps> = () => {
         </div>
 
         {/* Bottom Left Navigation Indicator */}
-        {leftTarget && (
+        {leftTarget && cardMode !== 'browser' && cardMode !== 'terminal' && (
           <button
             type="button"
             onClick={leftTarget.onClick}
@@ -715,7 +839,7 @@ export const Scene: React.FC<SceneProps> = () => {
         )}
 
         {/* Bottom Right Navigation Indicator */}
-        {rightTarget && (
+        {rightTarget && cardMode !== 'browser' && cardMode !== 'terminal' && (
           <button
             type="button"
             onClick={rightTarget.onClick}
@@ -765,9 +889,19 @@ export const Scene: React.FC<SceneProps> = () => {
           </button>
         )}
 
-        {/* Floating Bottom Liquid Glass Input (Home and Chat - Hidden on Web View) */}
-        {cardMode !== 'browser' && (
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-[640px] px-4 z-40 pointer-events-auto">
+        {/* Floating Bottom Liquid Glass Input (Home and Chat, or Split Browser left pane) */}
+        {(cardMode !== 'browser' || (activeView === 'chat' && isBrowserSplit)) && cardMode !== 'terminal' && (
+          <div
+            className="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-[640px] px-4 z-40 pointer-events-auto"
+            style={
+              activeView === 'chat' && cardMode === 'browser' && isBrowserSplit
+                ? {
+                    left: `${browserSplitRatio * 50}%`,
+                    maxWidth: `min(640px, calc(${browserSplitRatio * 100}% - 24px))`,
+                  }
+                : undefined
+            }
+          >
             <GlassInput
               onSubmit={handleSubmitPrompt}
               onInterrupt={
@@ -775,10 +909,14 @@ export const Scene: React.FC<SceneProps> = () => {
                   ? () => spawner.interrupt(activeTask.threadId)
                   : undefined
               }
-              onNewChat={() => {
-                setDirection(-1);
-                setActiveView('home');
-              }}
+              onNewChat={
+                activeView === 'chat'
+                  ? () => {
+                      setDirection(-1);
+                      setActiveView('home');
+                    }
+                  : undefined
+              }
               isBusy={activeView === 'chat' && activeTaskWorking}
               attachments={attachments}
               isLight={isLight}

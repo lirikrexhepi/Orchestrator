@@ -10,7 +10,8 @@ import (
 
 const (
 	pageIndexTTL    = 30 * time.Second
-	pageTimeBudget  = 350 * time.Millisecond
+	pageTimeBudget  = 750 * time.Millisecond
+	pageEmptyBudget = 3 * time.Second
 	pageMaxLimit    = 50
 	pageDefaultSize = 5
 )
@@ -61,6 +62,9 @@ func walkTranscripts(root string, visit func(path string, modTime time.Time)) {
 	for _, entry := range entries {
 		full := root + string(os.PathSeparator) + entry.Name()
 		if entry.IsDir() {
+			if strings.EqualFold(entry.Name(), "subagents") {
+				continue
+			}
 			walkTranscripts(full, visit)
 			continue
 		}
@@ -85,8 +89,14 @@ func ListPage(offset, limit int) (Page, error) {
 	started := time.Now()
 	i := offset
 	for ; i < len(files) && len(out) < limit; i++ {
-		if i > offset && time.Since(started) > pageTimeBudget {
-			break
+		if i > offset {
+			elapsed := time.Since(started)
+			if len(out) > 0 && elapsed > pageTimeBudget {
+				break
+			}
+			if len(out) == 0 && elapsed > pageEmptyBudget {
+				break
+			}
 		}
 		session := describe(files[i].path)
 		if session == nil || session.AgentRun {

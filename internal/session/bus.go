@@ -21,56 +21,106 @@ type Bus struct {
 	seq atomic.Uint64
 
 	mu          sync.RWMutex
-	subscribers map[int]chan domain.RuntimeEvent
+	subscribers map[int]*subscriber
 	nextID      int
 }
 
-func NewBus() *Bus {
-	return &Bus{subscribers: make(map[int]chan domain.RuntimeEvent)}
+type subscriber struct {
+	mu       sync.RWMutex
+	ch       chan domain.RuntimeEvent
+	done     chan struct{}
+	doneOnce sync.Once
+	closed   bool
 }
 
-func (b *Bus) Publish(event domain.RuntimeEvent) domain.RuntimeEvent {
-	event.Seq = b.seq.Add(1)
+func (s *subscriber) send(event domain.RuntimeEvent) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return
+	}
+	select {
+	case s.ch <- event:
+		return
+	default:
+	}
+	if event.Delta {
+		return
+	}
+	timer := time.NewTimer(controlSendTimeout)
+	select {
+	case s.ch <- event:
+	case <-s.done:
+	case <-timer.C:
+	}
+	timer.Stop()
+}
+
+func (s *subscriber) close() {
+	s.doneOnce.Do(func() {
+		close(s.done)
+	})
+	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		close(s.ch)
+	}
+	s.mu.Unlock()
+}
+
+func NewBus() *Bus {
+	return &Bus{subscribers: make(map[int]*subscriber)}
+}
+
+// Prepare normalizes an event and assigns a monotonic Seq and timestamp if unset.
+func (b *Bus) Prepare(event domain.RuntimeEvent) domain.RuntimeEvent {
+	domain.NormalizeEvent(&event)
+	if event.Seq == 0 {
+		event.Seq = b.seq.Add(1)
+	}
 	if event.At == 0 {
 		event.At = time.Now().UnixMilli()
 	}
+	return event
+}
+
+func (b *Bus) Publish(event domain.RuntimeEvent) domain.RuntimeEvent {
+	event = b.Prepare(event)
 
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-	for _, ch := range b.subscribers {
-		select {
-		case ch <- event:
-			continue
-		default:
-		}
-		if event.Delta {
-			continue
-		}
-		timer := time.NewTimer(controlSendTimeout)
-		select {
-		case ch <- event:
-		case <-timer.C:
-		}
-		timer.Stop()
+	subs := make([]*subscriber, 0, len(b.subscribers))
+	for _, sub := range b.subscribers {
+		subs = append(subs, sub)
+	}
+	b.mu.RUnlock()
+
+	for _, sub := range subs {
+		sub.send(event)
 	}
 	return event
 }
 
 func (b *Bus) Subscribe() (<-chan domain.RuntimeEvent, func()) {
-	ch := make(chan domain.RuntimeEvent, subscriberBuffer)
+	sub := &subscriber{
+		ch:   make(chan domain.RuntimeEvent, subscriberBuffer),
+		done: make(chan struct{}),
+	}
 
 	b.mu.Lock()
 	id := b.nextID
 	b.nextID++
-	b.subscribers[id] = ch
+	b.subscribers[id] = sub
 	b.mu.Unlock()
 
-	return ch, func() {
+	return sub.ch, func() {
 		b.mu.Lock()
-		if existing, ok := b.subscribers[id]; ok {
+		existing, ok := b.subscribers[id]
+		if ok {
 			delete(b.subscribers, id)
-			close(existing)
 		}
 		b.mu.Unlock()
+		if ok {
+			existing.close()
+		}
 	}
 }

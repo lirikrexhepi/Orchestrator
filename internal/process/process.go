@@ -84,7 +84,7 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 		p.mu.Lock()
 		p.exitErr = err
 		p.mu.Unlock()
-		if spec.DieWithParent {
+		if spec.DieWithParent || spec.KillTree {
 			closeJob(p)
 		}
 		close(p.exited)
@@ -149,16 +149,18 @@ func (p *Process) Shutdown(grace time.Duration) error {
 	_ = p.stdin.Close()
 	select {
 	case <-p.exited:
+		closeJob(p)
 		return nil
 	case <-time.After(grace):
 	}
 
-	terminate(p.cmd)
+	terminate(p)
 	select {
 	case <-p.exited:
 		closeJob(p)
 		return nil
 	case <-time.After(2 * time.Second):
+		terminate(p)
 		_ = p.cmd.Process.Kill()
 		<-p.exited
 	}

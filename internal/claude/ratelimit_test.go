@@ -105,6 +105,29 @@ func TestRateLimitConvertsRemainingToUsed(t *testing.T) {
 	}
 }
 
+func TestRateLimitConvertsUtilizationToUsed(t *testing.T) {
+	const frame = `{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"five_hour","utilization":0.426}}`
+
+	var captured []domain.RuntimeEvent
+	adapter := &Adapter{emit: emitterFunc(func(event domain.RuntimeEvent) {
+		captured = append(captured, event)
+	})}
+
+	var envelope Envelope
+	if err := json.Unmarshal([]byte(frame), &envelope); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	adapter.handleRateLimit(&session{threadID: "t1"}, &envelope)
+
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(captured))
+	}
+	used := captured[0].RateLimits[0].UsedPercent
+	if used == nil || *used != 43 {
+		t.Errorf("usedPercent = %v, want 43 (math.Round(0.426*100))", used)
+	}
+}
+
 func TestRateLimitIgnoresFrameWithoutWindow(t *testing.T) {
 	const frame = `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}`
 

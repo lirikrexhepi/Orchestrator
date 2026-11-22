@@ -12,13 +12,13 @@ import (
 
 	"composer/internal/domain"
 	"composer/internal/git"
-	"composer/internal/logger"
 )
 
 // SpawnRequest is one task the orchestrator asked for. Driver and model are
 // optional per task; when empty the plan-wide choice in SpawnOptions applies.
 type SpawnRequest struct {
-	Title   string              `json:"title"`
+	ThreadID string              `json:"threadId,omitempty"`
+	Title    string              `json:"title"`
 	Prompt  string              `json:"prompt"`
 	Driver  domain.DriverKind   `json:"driver,omitempty"`
 	Account string              `json:"account,omitempty"`
@@ -29,23 +29,31 @@ type SpawnRequest struct {
 	Cwd string `json:"cwd,omitempty"`
 	// Preamble is context sent to the agent ahead of the prompt (project
 	// memory) but not recorded as part of the user's message.
-	Preamble string              `json:"preamble,omitempty"`
-	Skills   *domain.SkillPolicy `json:"skills,omitempty"`
-	Files    []domain.FileRef    `json:"files,omitempty"`
+	Preamble   string                `json:"preamble,omitempty"`
+	Skills     *domain.SkillPolicy   `json:"skills,omitempty"`
+	Files      []domain.FileRef      `json:"files,omitempty"`
+	Permission     domain.PermissionMode `json:"permissionMode,omitempty"`
+	IsSubagent     bool                  `json:"isSubagent,omitempty"`
+	Subagent       bool                  `json:"subagent,omitempty"`
+	ParentThreadID string                `json:"parentThreadId,omitempty"`
+	Hidden         bool                  `json:"hidden,omitempty"`
 }
 
 // SpawnOptions carries the choices the user makes once per plan.
 type SpawnOptions struct {
-	Driver      domain.DriverKind     `json:"driver"`
-	Account     string                `json:"account,omitempty"`
-	Model       string                `json:"model,omitempty"`
-	Options     domain.ModelOptions   `json:"options,omitempty"`
-	Cwd         string                `json:"cwd"`
-	UseWorktree bool                  `json:"useWorktree"`
-	WorkspaceID string                `json:"workspaceId,omitempty"`
-	Title       string                `json:"title,omitempty"`
-	Prompt      string                `json:"prompt,omitempty"`
-	Permission  domain.PermissionMode `json:"permissionMode,omitempty"`
+	Driver         domain.DriverKind     `json:"driver"`
+	Account        string                `json:"account,omitempty"`
+	Model          string                `json:"model,omitempty"`
+	Options        domain.ModelOptions   `json:"options,omitempty"`
+	Cwd            string                `json:"cwd"`
+	UseWorktree    bool                  `json:"useWorktree"`
+	WorkspaceID    string                `json:"workspaceId,omitempty"`
+	Title          string                `json:"title,omitempty"`
+	Prompt         string                `json:"prompt,omitempty"`
+	Permission     domain.PermissionMode `json:"permissionMode,omitempty"`
+	Subagent       bool                  `json:"subagent,omitempty"`
+	ParentThreadID string                `json:"parentThreadId,omitempty"`
+	Hidden         bool                  `json:"hidden,omitempty"`
 }
 
 // Spawner turns a plan into running agent sessions, each optionally isolated in
@@ -76,6 +84,12 @@ func NewSpawner(manager *Manager, workspaces *Workspaces) *Spawner {
 	return &Spawner{manager: manager, workspaces: workspaces}
 }
 
+// NextThreadID reserves a unique task thread ID before spawning so listeners
+// can subscribe to early events without racing Spawn.
+func (s *Spawner) NextThreadID() string {
+	return "task-" + strconv.FormatUint(s.seq.Add(1), 10) + "-" + strconv.FormatInt(time.Now().UnixMilli(), 36)
+}
+
 // SetTracker attaches history recording.
 func (s *Spawner) SetTracker(tracker SpawnTracker) {
 	s.mu.Lock()
@@ -99,11 +113,21 @@ func (s *Spawner) Spawn(ctx context.Context, requests []SpawnRequest, opts Spawn
 	}
 
 	cwd := opts.Cwd
-	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
+	if cwd == "" && opts.WorkspaceID != "" {
+		if existing := s.workspaces.Get(opts.WorkspaceID); existing != nil {
+			cwd = existing.Cwd
 		}
-		logger.Warnf("Session", "Spawn without a directory; falling back to process directory %q", cwd)
+	}
+	if cwd == "" {
+		for _, request := range requests {
+			if request.Cwd != "" {
+				cwd = request.Cwd
+				break
+			}
+		}
+	}
+	if cwd == "" {
+		return SpawnResult{}, fmt.Errorf("working directory is required")
 	}
 
 	s.mu.Lock()
@@ -115,6 +139,9 @@ func (s *Spawner) Spawn(ctx context.Context, requests []SpawnRequest, opts Spawn
 	}
 	if workspace == nil {
 		workspace = s.workspaces.Create(firstNonEmpty(opts.Title, requests[0].Title), opts.Prompt, cwd)
+		workspace.Subagent = opts.Subagent || requests[0].Subagent
+		workspace.ParentThreadID = firstNonEmpty(opts.ParentThreadID, requests[0].ParentThreadID)
+		workspace.Hidden = opts.Hidden || requests[0].Hidden
 		// Recorded before any agent starts: a crash mid-spawn should still leave a
 		// reopenable session containing the plan that caused it.
 		if s.tracker != nil {
@@ -170,7 +197,10 @@ func (s *Spawner) spawnOne(
 	cwd string,
 	repo *git.Repo,
 ) (*domain.Task, error) {
-	threadID := "task-" + strconv.FormatUint(s.seq.Add(1), 10) + "-" + strconv.FormatInt(time.Now().UnixMilli(), 36)
+	threadID := request.ThreadID
+	if threadID == "" {
+		threadID = s.NextThreadID()
+	}
 
 	// Each task may target its own agent; the plan-wide selection is the default.
 	driver := request.Driver
@@ -201,23 +231,33 @@ func (s *Spawner) spawnOne(
 		worktree, workdir = created, created.Path
 	}
 
-	permission := opts.Permission
+	permission := request.Permission
+	if permission == "" {
+		permission = opts.Permission
+	}
 	if permission == "" {
 		permission = domain.PermissionBypass
 	}
 
+	subagent := request.Subagent || opts.Subagent || request.IsSubagent
+	parentThreadID := firstNonEmpty(request.ParentThreadID, opts.ParentThreadID)
+	hidden := request.Hidden || opts.Hidden
+
 	task, ok := s.workspaces.AddTask(workspace.ID, domain.Task{
-		Permission: permission,
-		ThreadID: threadID,
-		Title:    request.Title,
-		Prompt:   request.Prompt,
-		Driver:   driver,
-		Account:  account,
-		Model:    model,
-		Options:  options,
-		State:    domain.TaskRunning,
-		Worktree: worktree,
-		Cwd:      workdir,
+		Permission:     permission,
+		ThreadID:       threadID,
+		Title:          request.Title,
+		Prompt:         request.Prompt,
+		Driver:         driver,
+		Account:        account,
+		Model:          model,
+		Options:        options,
+		State:          domain.TaskRunning,
+		Worktree:       worktree,
+		Cwd:            workdir,
+		Subagent:       subagent,
+		ParentThreadID: parentThreadID,
+		Hidden:         hidden,
 	})
 	if !ok {
 		return nil, fmt.Errorf("workspace %s is gone", workspace.ID)
@@ -238,6 +278,7 @@ func (s *Spawner) spawnOne(
 		Options:    options,
 		Permission: permission,
 		Skills:     request.Skills,
+		IsSubagent: request.IsSubagent,
 	}); err != nil {
 		s.workspaces.SetState(threadID, domain.TaskFailed)
 		return nil, err

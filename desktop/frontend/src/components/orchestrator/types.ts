@@ -33,6 +33,8 @@ export interface AIModel {
 export interface CLIAccount {
   id: string;
   name: string;
+  authMode?: string;
+  models?: AIModel[];
 }
 
 export interface CLIProvider {

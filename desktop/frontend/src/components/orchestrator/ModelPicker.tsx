@@ -7,8 +7,10 @@ import { ScrollArea } from '../common/ScrollArea';
 import { AIModel, CLIProvider } from './types';
 import { providerIcon } from './providerIcons';
 import { useTheme } from '../../themes';
-import { ActiveProject } from '../../../wailsjs/go/main/App';
+import { ActiveProject, GetProviderSettings, UpdateProviderSettings } from '../../../wailsjs/go/main/App';
+import { domain } from '../../../wailsjs/go/models';
 import { CLIAccount } from './types';
+import { toModelOptions } from './orchestratorData';
 
 interface AccountRowProps {
   accounts: CLIAccount[];
@@ -35,13 +37,18 @@ const AccountRow: React.FC<AccountRowProps> = ({ accounts, selectedId, onSelect,
               event.stopPropagation();
               onSelect(account.id);
             }}
-            className={`h-[26px] max-w-full px-2.5 rounded-[8px] border text-[12px] font-medium font-(family-name:--app-font) tracking-tight truncate transition-all duration-150 cursor-pointer active:scale-[0.97] ${
+            className={`h-[26px] max-w-full px-2.5 rounded-[8px] border text-[12px] font-medium font-(family-name:--app-font) tracking-tight truncate transition-all duration-150 cursor-pointer active:scale-[0.97] flex items-center gap-1.5 ${
               selected
                 ? 'bg-white/[0.12] border-white/[0.10] text-white'
                 : 'border-transparent text-white/60 hover:text-white hover:bg-white/[0.06]'
             }`}
           >
-            {account.name}
+            <span>{account.name}</span>
+            {account.authMode && (
+              <span className="text-[9px] font-normal px-1 py-0.2 rounded uppercase opacity-60">
+                {account.authMode === 'api_key' ? 'API' : 'Keyring'}
+              </span>
+            )}
           </button>
         );
       })}
@@ -93,16 +100,21 @@ const AccountSwitchConfirm: React.FC<AccountSwitchConfirmProps> = ({ current, ne
 export interface ModelPickerProps {
   selectedModelId?: string;
   selectedProviderId?: string;
-  onSelectModel?: (modelId: string) => void;
+  onSelectModel?: (modelId: string, providerId?: string) => void;
   onSelectProvider?: (providerId: string) => void;
   isFloatingPopup?: boolean;
+  choosesAccount?: boolean;
 }
 
 interface ModelRowsProps {
   models: AIModel[];
   providers: CLIProvider[];
   selectedModelId: string;
-  onSelect: (modelId: string) => void;
+  selectedProviderId: string;
+  defaultModelId?: string;
+  accountName?: string;
+  onSelect: (modelId: string, providerId: string) => void;
+  onToggleDefault?: (model: AIModel) => void;
   scrollable: boolean;
   isLight?: boolean;
   isEffortOpen?: boolean;
@@ -112,7 +124,11 @@ const ModelRows: React.FC<ModelRowsProps> = ({
   models,
   providers,
   selectedModelId,
+  selectedProviderId,
+  defaultModelId,
+  accountName,
   onSelect,
+  onToggleDefault,
   scrollable,
   isLight,
   isEffortOpen,
@@ -126,7 +142,8 @@ const ModelRows: React.FC<ModelRowsProps> = ({
   }
 
   const rows = models.map((model) => {
-    const isSelected = model.id === selectedModelId;
+    const isSelected = model.id === selectedModelId && model.providerId === selectedProviderId;
+    const isDefault = Boolean(defaultModelId && model.id === defaultModelId);
     const provider = providers.find((p) => p.id === model.providerId);
     const iconSrc = providerIcon(model.providerId, isLight) || model.icon || provider?.icon;
     const hasEfforts = Boolean(
@@ -134,14 +151,22 @@ const ModelRows: React.FC<ModelRowsProps> = ({
     );
 
     return (
-      <button
-        key={model.id}
-        type="button"
+      <div
+        key={`${model.providerId}:${model.id}`}
+        role="button"
+        tabIndex={0}
         onClick={(event) => {
           event.stopPropagation();
-          onSelect(model.id);
+          onSelect(model.id, model.providerId);
         }}
-        className={`relative w-full h-[36px] shrink-0 text-left px-2.5 rounded-[9px] flex items-center gap-2.5 border transition-all duration-150 cursor-pointer active:scale-[0.98] ${
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            event.stopPropagation();
+            onSelect(model.id, model.providerId);
+          }
+        }}
+        className={`group relative w-full h-[36px] shrink-0 text-left px-2.5 rounded-[9px] flex items-center gap-2.5 border transition-all duration-150 cursor-pointer active:scale-[0.98] ${
           isSelected
             ? 'bg-white/[0.12] border-white/[0.10] text-white font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]'
             : 'border-transparent text-white/75 hover:text-white hover:bg-white/[0.06]'
@@ -158,20 +183,43 @@ const ModelRows: React.FC<ModelRowsProps> = ({
         <span className="text-[13px] font-medium font-(family-name:--app-font) tracking-tight truncate flex-1">
           {model.name}
         </span>
-        {isSelected && (
-          <div className="flex items-center gap-1 shrink-0">
-            <Check size={14} strokeWidth={2.2} className="text-white shrink-0" />
-            {hasEfforts && (
-              <MaterialIcon
-                name="chevron_right"
-                className={`text-[15px] transition-transform duration-200 ${
-                  isEffortOpen ? 'rotate-90 text-white' : 'text-white/40 hover:text-white/80'
-                }`}
-              />
-            )}
-          </div>
-        )}
-      </button>
+        <div className="flex items-center gap-1 shrink-0">
+          {onToggleDefault && (
+            <button
+              type="button"
+              title={
+                isDefault
+                  ? `Default for ${accountName || 'this account'} (click to unset)`
+                  : `Set as default for ${accountName || 'this account'}`
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleDefault(model);
+              }}
+              className={`w-[20px] h-[20px] rounded-[6px] flex items-center justify-center transition-all cursor-pointer ${
+                isDefault
+                  ? 'text-amber-300/90 hover:text-amber-200 opacity-100'
+                  : 'text-white/35 hover:text-white/80 opacity-0 group-hover:opacity-100'
+              }`}
+            >
+              <MaterialIcon name={isDefault ? 'star' : 'star_border'} size={14} />
+            </button>
+          )}
+          {isSelected && (
+            <>
+              <Check size={14} strokeWidth={2.2} className="text-white shrink-0" />
+              {hasEfforts && (
+                <MaterialIcon
+                  name="chevron_right"
+                  className={`text-[15px] transition-transform duration-200 ${
+                    isEffortOpen ? 'rotate-90 text-white' : 'text-white/40 hover:text-white/80'
+                  }`}
+                />
+              )}
+            </>
+          )}
+        </div>
+      </div>
     );
   });
 
@@ -190,6 +238,7 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
   onSelectModel: propOnSelectModel,
   onSelectProvider: propOnSelectProvider,
   isFloatingPopup = false,
+  choosesAccount: propChoosesAccount,
 }) => {
   const store = useOrchestratorStore();
 
@@ -203,13 +252,23 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
   const selectedModelId = propModelId !== undefined ? propModelId : store.selectedModelId;
   const [localProviderId, setLocalProviderId] = useState<string | null>(null);
 
-  const selectedProviderId =
-    propProviderId !== undefined
-      ? (localProviderId || propProviderId)
-      : (store.selectedProviderId || store.providers[0]?.id || 'antigravity');
+  const modelProviderId = store.models.find((m) => m.id === selectedModelId)?.providerId;
 
-  const currentModels = store.getModelsForProvider(selectedProviderId);
-  const choosesAccount = propModelId === undefined && propProviderId === undefined;
+  // The explicitly chosen provider wins over the one inferred from the model:
+  // Antigravity also serves Claude-named models, so inferring from the model id
+  // kept the picker stuck on Antigravity when the Claude tab was clicked.
+  const selectedProviderId =
+    localProviderId ||
+    propProviderId ||
+    (!propOnSelectProvider ? store.selectedProviderId : '') ||
+    modelProviderId ||
+    store.selectedProviderId ||
+    store.providers[0]?.id ||
+    'antigravity';
+
+  const currentAccount = store.shownAccount(selectedProviderId);
+  const currentModels = store.getModelsForProvider(selectedProviderId, currentAccount);
+  const choosesAccount = propChoosesAccount !== undefined ? propChoosesAccount : true;
   const accounts = store.providers.find((p) => p.id === selectedProviderId)?.accounts ?? [];
   const setAccountProject = store.setAccountProject;
   const [confirmAccount, setConfirmAccount] = useState<string | null>(null);
@@ -217,6 +276,12 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
   const sessionAccount =
     focusedSession && focusedSession.providerId === selectedProviderId ? focusedSession.account || 'default' : null;
   const accountLabel = (id: string) => accounts.find((account) => account.id === id)?.name || id;
+
+  useEffect(() => {
+    if (selectedProviderId && currentAccount) {
+      void store.loadAccountModels(selectedProviderId, currentAccount);
+    }
+  }, [selectedProviderId, currentAccount]);
 
   const handleSelectAccount = (accountId: string) => {
     if (sessionAccount && accountId !== sessionAccount && accountId !== store.shownAccount(selectedProviderId)) {
@@ -242,11 +307,11 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
 
   const hasMoreThan5 = currentModels.length > 5;
 
-  const handleSelectModel = (modelId: string) => {
+  const handleSelectModel = (modelId: string, providerId: string) => {
     if (propOnSelectModel) {
-      propOnSelectModel(modelId);
+      propOnSelectModel(modelId, providerId);
     } else {
-      store.selectModel(modelId);
+      store.selectModel(modelId, providerId);
     }
   };
 
@@ -256,6 +321,44 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
       propOnSelectProvider(providerId);
     } else {
       store.selectProvider(providerId);
+    }
+  };
+
+  const currentDefaultModelId =
+    store.preferredAccountModels[`${selectedProviderId}:${currentAccount}`] ??
+    (currentAccount === 'default' ? store.preferredModels[selectedProviderId] : '');
+
+  const handleToggleDefault = async (model: AIModel) => {
+    const isAlreadyDefault = currentDefaultModelId === model.id;
+    const nextModelId = isAlreadyDefault ? '' : model.id;
+    const opts = nextModelId ? toModelOptions(model, store.getCurrentModelSettings(model.id)) : {};
+    const effortId = typeof opts.effort === 'string' ? opts.effort : '';
+
+    store.setPreferredAccountModel(selectedProviderId, currentAccount, nextModelId, effortId);
+    if (currentAccount === 'default') {
+      store.setPreferredModel(selectedProviderId, nextModelId);
+    }
+
+    try {
+      const current = await GetProviderSettings(selectedProviderId);
+      const nextAccountDefaults: Record<string, domain.AccountModelDefault> = {
+        ...(current.accountDefaults ?? {}),
+        [currentAccount]: domain.AccountModelDefault.createFrom({
+          model: nextModelId,
+          options: opts,
+        }),
+      };
+      const patch: Record<string, unknown> = {
+        ...current,
+        accountDefaults: nextAccountDefaults,
+      };
+      if (currentAccount === 'default') {
+        patch.model = nextModelId;
+        patch.options = opts;
+      }
+      await UpdateProviderSettings(selectedProviderId, domain.ProviderSettings.createFrom(patch));
+    } catch (err) {
+      console.warn('Failed to save default model for account:', err);
     }
   };
 
@@ -292,7 +395,11 @@ export const ModelPicker: React.FC<ModelPickerProps> = ({
         models={currentModels}
         providers={store.providers}
         selectedModelId={selectedModelId}
+        selectedProviderId={selectedProviderId}
+        defaultModelId={currentDefaultModelId}
+        accountName={accountLabel(currentAccount)}
         onSelect={handleSelectModel}
+        onToggleDefault={(model) => void handleToggleDefault(model)}
         scrollable={hasMoreThan5}
         isLight={isLight}
         isEffortOpen={store.isEffortPickerOpen}

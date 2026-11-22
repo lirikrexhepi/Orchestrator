@@ -18,12 +18,32 @@ export function AddAccount(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddAccount'](arg1, arg2, arg3);
 }
 
+export function AddAntigravityAccount(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AddAntigravityAccount'](arg1, arg2, arg3);
+}
+
 export function AddProject(arg1) {
   return window['go']['main']['App']['AddProject'](arg1);
 }
 
 export function AvailableEditors() {
   return window['go']['main']['App']['AvailableEditors']();
+}
+
+export function BrowserClose(arg1) {
+  return window['go']['main']['App']['BrowserClose'](arg1);
+}
+
+export function BrowserEndpoint() {
+  return window['go']['main']['App']['BrowserEndpoint']();
+}
+
+export function BrowserOpen(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['BrowserOpen'](arg1, arg2, arg3, arg4);
+}
+
+export function CaptureAntigravityProfile(arg1) {
+  return window['go']['main']['App']['CaptureAntigravityProfile'](arg1);
 }
 
 export function ChooseAttachments() {
@@ -84,6 +104,10 @@ export function DeleteTurn(arg1, arg2) {
 
 export function DiscardAttachment(arg1) {
   return window['go']['main']['App']['DiscardAttachment'](arg1);
+}
+
+export function GetAccountModels(arg1, arg2) {
+  return window['go']['main']['App']['GetAccountModels'](arg1, arg2);
 }
 
 export function GetAgentTasks(arg1) {
@@ -322,10 +346,6 @@ export function OrchestratorStopAgent(arg1) {
   return window['go']['main']['App']['OrchestratorStopAgent'](arg1);
 }
 
-export function ParseTasks(arg1) {
-  return window['go']['main']['App']['ParseTasks'](arg1);
-}
-
 export function PreviewAttachment(arg1) {
   return window['go']['main']['App']['PreviewAttachment'](arg1);
 }
@@ -386,12 +406,20 @@ export function RenameSession(arg1, arg2) {
   return window['go']['main']['App']['RenameSession'](arg1, arg2);
 }
 
+export function ResolveFileRepos(arg1) {
+  return window['go']['main']['App']['ResolveFileRepos'](arg1);
+}
+
 export function RespondToApproval(arg1, arg2, arg3) {
   return window['go']['main']['App']['RespondToApproval'](arg1, arg2, arg3);
 }
 
 export function RespondToQuestion(arg1, arg2, arg3) {
   return window['go']['main']['App']['RespondToQuestion'](arg1, arg2, arg3);
+}
+
+export function RestoreAntigravityDefault() {
+  return window['go']['main']['App']['RestoreAntigravityDefault']();
 }
 
 export function ResumeHistory(arg1) {
@@ -508,6 +536,26 @@ export function SwitchTaskProviderWithOptions(arg1, arg2, arg3, arg4, arg5, arg6
 
 export function TaskHandoff(arg1) {
   return window['go']['main']['App']['TaskHandoff'](arg1);
+}
+
+export function TerminalClose(arg1) {
+  return window['go']['main']['App']['TerminalClose'](arg1);
+}
+
+export function TerminalEndpoint() {
+  return window['go']['main']['App']['TerminalEndpoint']();
+}
+
+export function TerminalList(arg1) {
+  return window['go']['main']['App']['TerminalList'](arg1);
+}
+
+export function TerminalOpen(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['TerminalOpen'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function TerminalResize(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TerminalResize'](arg1, arg2, arg3);
 }
 
 export function ThreadHistory(arg1) {

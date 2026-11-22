@@ -198,11 +198,10 @@ func (s *Store) LoadMeta(workspaceID string) (Meta, error) {
 				metaModified = true
 				break
 			}
-		}
-		if meta.Workspace.Cwd == "" {
-			if wd, gErr := os.Getwd(); gErr == nil {
-				meta.Workspace.Cwd = wd
+			if t.Cwd != "" {
+				meta.Workspace.Cwd = t.Cwd
 				metaModified = true
+				break
 			}
 		}
 	}
@@ -245,10 +244,24 @@ func (s *Store) LoadMeta(workspaceID string) (Meta, error) {
 		}
 	}
 
-	// Enrich tasks with multi-model / multi-driver history if not already recorded
+	// Enrich tasks with multi-model / multi-driver history if not already recorded,
+	// and refresh UpdatedAt from transcript file mtime when newer.
+	const minRealEpochMs int64 = 1_000_000_000_000
 	dir := s.workspaceDir(workspaceID)
 	for i := range meta.Tasks {
 		t := &meta.Tasks[i]
+		tPath := filepath.Join(dir, safeName(t.ThreadID)+transcriptExt)
+		if info, sErr := os.Stat(tPath); sErr == nil && info.Size() > 0 {
+			mtime := info.ModTime().UnixMilli()
+			if (t.UpdatedAt == 0 || t.UpdatedAt >= minRealEpochMs) && mtime > t.UpdatedAt {
+				t.UpdatedAt = mtime
+				metaModified = true
+			}
+			if (meta.Workspace.UpdatedAt == 0 || meta.Workspace.UpdatedAt >= minRealEpochMs) && mtime > meta.Workspace.UpdatedAt {
+				meta.Workspace.UpdatedAt = mtime
+				metaModified = true
+			}
+		}
 		if len(t.Drivers) <= 1 {
 			existingD := t.Drivers
 			if len(existingD) == 0 && t.Driver != "" {
@@ -258,7 +271,6 @@ func (s *Store) LoadMeta(workspaceID string) (Meta, error) {
 			if len(existingM) == 0 && t.Model != "" {
 				existingM = []string{t.Model}
 			}
-			tPath := filepath.Join(dir, safeName(t.ThreadID)+transcriptExt)
 			d, m := scanTranscriptDriversAndModels(tPath, existingD, existingM)
 			if len(d) > len(t.Drivers) || len(m) > len(t.Models) {
 				t.Drivers = d
@@ -349,6 +361,24 @@ func (s *Store) Flush(workspaceID string) error {
 		}
 	}
 	return firstErr
+}
+
+func (s *Store) closeHandle(workspaceID, threadID string) {
+	if workspaceID == "" || threadID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := workspaceID + "/" + threadID
+	if h, ok := s.open[key]; ok {
+		_ = h.writer.Flush()
+		if h.file != nil {
+			_ = h.file.Sync()
+			_ = h.file.Close()
+		}
+		delete(s.open, key)
+		delete(s.counts, key)
+	}
 }
 
 // Close flushes and releases every open transcript.
@@ -530,12 +560,23 @@ func (s *Store) List() ([]Meta, error) {
 			// crash; skipping it keeps the rest of history usable.
 			continue
 		}
+		if meta.Workspace.Hidden || meta.Workspace.Subagent {
+			continue
+		}
 		MergeContinuations(&meta)
 		out = append(out, meta)
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].Workspace.UpdatedAt > out[j].Workspace.UpdatedAt
+		ti := out[i].Workspace.UpdatedAt
+		if ti == 0 {
+			ti = out[i].Workspace.CreatedAt
+		}
+		tj := out[j].Workspace.UpdatedAt
+		if tj == 0 {
+			tj = out[j].Workspace.CreatedAt
+		}
+		return ti > tj
 	})
 	return out, nil
 }
@@ -628,6 +669,9 @@ func (s *Store) load(workspaceID string, maxBytes int) (Session, error) {
 				loaded.Truncated[rootID] += dropped
 				delete(loaded.Truncated, contID)
 			}
+
+			s.closeHandle(workspaceID, contID)
+			s.closeHandle(workspaceID, rootID)
 
 			contPath := filepath.Join(dir, safeName(contID)+transcriptExt)
 			rootPath := filepath.Join(dir, safeName(rootID)+transcriptExt)
@@ -989,11 +1033,6 @@ func (s *Store) healMetaFromTranscripts(workspaceID string) (Meta, error) {
 					meta.Workspace.Cwd = repo
 					break
 				}
-			}
-		}
-		if meta.Workspace.Cwd == "" {
-			if wd, err := os.Getwd(); err == nil {
-				meta.Workspace.Cwd = wd
 			}
 		}
 	}

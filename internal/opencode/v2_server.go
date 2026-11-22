@@ -150,6 +150,7 @@ func startV2Server(
 		Args:          args,
 		Env:           env,
 		Cwd:           cwd,
+		KillTree:      true,
 		DieWithParent: true,
 		Stderr: func(line string) {
 			handleLogLine("err", line)

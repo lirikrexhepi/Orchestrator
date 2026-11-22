@@ -13,13 +13,13 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 
 // Signal the whole process group so agent CLIs that fork helpers tear down with
 // the parent instead of leaking.
-func terminate(cmd *exec.Cmd) {
-	if cmd.Process == nil {
+func terminate(p *Process) {
+	if p.cmd == nil || p.cmd.Process == nil {
 		return
 	}
-	if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil {
+	if pgid, err := syscall.Getpgid(p.cmd.Process.Pid); err == nil {
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		return
 	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
+	_ = p.cmd.Process.Signal(syscall.SIGTERM)
 }

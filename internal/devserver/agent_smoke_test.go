@@ -32,7 +32,7 @@ func TestAgentStartsDurableServerThroughLauncher(t *testing.T) {
 		t.Fatal(err)
 	}
 	binDir := t.TempDir()
-	build := exec.Command(goTool, "build", "-o", filepath.Join(binDir, shimFileName()), ".")
+	build := exec.Command(goTool, "build", "-o", filepath.Join(binDir, shimFileName()), "./desktop")
 	build.Dir = root
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build shim: %v\n%s", err, out)

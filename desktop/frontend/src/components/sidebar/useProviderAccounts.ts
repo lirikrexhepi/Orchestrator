@@ -3,9 +3,12 @@ import {
   AccountStatus,
   ActiveProject,
   AddAccount,
+  AddAntigravityAccount,
+  CaptureAntigravityProfile,
   ListProviders,
   RemoveAccount,
   RenameAccount,
+  RestoreAntigravityDefault,
   SetProjectAccount,
   SignInAccount,
 } from '../../../wailsjs/go/main/App';
@@ -19,7 +22,7 @@ export interface AccountStatusState {
   checking?: boolean;
 }
 
-export const COPYABLE = new Set(['claude']);
+export const COPYABLE = new Set(['claude', 'antigravity']);
 
 const SIGN_IN_POLL_MS = 3000;
 const SIGN_IN_POLL_LIMIT = 100;
@@ -43,6 +46,8 @@ export interface ProviderAccounts {
   statuses: Record<string, AccountStatusState>;
   adding: string | null;
   name: string;
+  authMode: 'keyring' | 'api_key';
+  apiKey: string;
   copySettings: boolean;
   renaming: string | null;
   renameText: string;
@@ -52,11 +57,14 @@ export interface ProviderAccounts {
   notice: string | null;
   setAdding: (driver: string | null) => void;
   setName: (name: string) => void;
+  setAuthMode: (mode: 'keyring' | 'api_key') => void;
+  setApiKey: (key: string) => void;
   setCopySettings: (copy: boolean) => void;
   setRenaming: (key: string | null) => void;
   setRenameText: (text: string) => void;
   setConfirmRemove: (key: string | null) => void;
   signIn: (driver: string, id: string) => void;
+  captureProfile: (id: string) => void;
   add: (driver: string) => void;
   rename: (driver: string, id: string) => void;
   remove: (driver: string, id: string) => void;
@@ -74,6 +82,8 @@ export function useProviderAccounts(): ProviderAccounts {
   const [statuses, setStatuses] = useState<Record<string, AccountStatusState>>({});
   const [adding, setAdding] = useState<string | null>(null);
   const [name, setName] = useState('');
+  const [authMode, setAuthMode] = useState<'keyring' | 'api_key'>('keyring');
+  const [apiKey, setApiKey] = useState('');
   const [copySettings, setCopySettings] = useState(true);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameText, setRenameText] = useState('');
@@ -149,7 +159,21 @@ export function useProviderAccounts(): ProviderAccounts {
       polls.current[key] = window.setInterval(async () => {
         tries += 1;
         const done = await check(driver, id);
-        if (done || tries >= SIGN_IN_POLL_LIMIT) {
+        if (done) {
+          if (driver === 'antigravity') {
+            try {
+              await CaptureAntigravityProfile(id);
+              await check(driver, id);
+            } catch {
+              // ignore
+            }
+          }
+          window.clearInterval(polls.current[key]);
+          delete polls.current[key];
+        } else if (tries >= SIGN_IN_POLL_LIMIT) {
+          if (driver === 'antigravity') {
+            void RestoreAntigravityDefault().catch(() => {});
+          }
           window.clearInterval(polls.current[key]);
           delete polls.current[key];
         }
@@ -165,14 +189,36 @@ export function useProviderAccounts(): ProviderAccounts {
       watchSignIn(driver, id);
     });
 
+  const captureProfile = (id: string) =>
+    run(async () => {
+      await CaptureAntigravityProfile(id);
+      setNotice('Saved active keyring credentials to profile.');
+      await refreshEverywhere();
+      await check('antigravity', id);
+    });
+
   const add = (driver: string) =>
     run(async () => {
-      const result = await AddAccount(driver, name, COPYABLE.has(driver) && copySettings);
+      let result;
+      if (driver === 'antigravity') {
+        result = await AddAntigravityAccount(name, authMode, apiKey);
+      } else {
+        result = await AddAccount(driver, name, COPYABLE.has(driver) && copySettings);
+      }
       const newId = result.account.id;
       setAdding(null);
       setName('');
+      setApiKey('');
+      setAuthMode('keyring');
       if (result.warning) setError(result.warning);
       await refreshEverywhere();
+
+      if (driver === 'antigravity' && authMode === 'api_key') {
+        setNotice(`Added ${result.account.name} (API Key).`);
+        await check(driver, newId);
+        return;
+      }
+
       try {
         await SignInAccount(driver, newId);
         setNotice(`Added ${result.account.name}. Sign-in window opened.`);
@@ -211,6 +257,8 @@ export function useProviderAccounts(): ProviderAccounts {
     statuses,
     adding,
     name,
+    authMode,
+    apiKey,
     copySettings,
     renaming,
     renameText,
@@ -220,11 +268,14 @@ export function useProviderAccounts(): ProviderAccounts {
     notice,
     setAdding,
     setName,
+    setAuthMode,
+    setApiKey,
     setCopySettings,
     setRenaming,
     setRenameText,
     setConfirmRemove,
     signIn,
+    captureProfile,
     add,
     rename,
     remove,

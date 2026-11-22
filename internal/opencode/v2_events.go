@@ -132,21 +132,23 @@ func (a *V2Adapter) onStepEnded(raw json.RawMessage) {
 	if t == nil || data.Tokens == nil {
 		return
 	}
-	t.mu.Lock()
-	ref := t.stepRef
-	t.mu.Unlock()
 
 	tokens := data.Tokens
+	t.mu.Lock()
+	ref := t.stepRef
+	t.turnUsage.InputTokens += tokens.Input
+	t.turnUsage.OutputTokens += tokens.Output
+	t.turnUsage.CacheReadTokens += tokens.Cache.Read
+	t.turnUsage.CacheWriteTokens += tokens.Cache.Write
+	t.turnUsage.CostUSD += data.Cost
+	usage := t.turnUsage
+	t.mu.Unlock()
+
+	usage.ContextTokens = tokens.Input + tokens.Output + tokens.Reasoning + tokens.Cache.Read + tokens.Cache.Write
+	usage.ContextWindow = a.contextLimit(ref)
+
 	event := a.base(t, domain.EventUsage)
-	event.Usage = &domain.Usage{
-		InputTokens:      tokens.Input,
-		OutputTokens:     tokens.Output,
-		CacheReadTokens:  tokens.Cache.Read,
-		CacheWriteTokens: tokens.Cache.Write,
-		CostUSD:          data.Cost,
-		ContextTokens:    tokens.Input + tokens.Output + tokens.Reasoning + tokens.Cache.Read + tokens.Cache.Write,
-		ContextWindow:    a.contextLimit(ref),
-	}
+	event.Usage = &usage
 	a.emit.Emit(event)
 }
 
@@ -247,6 +249,7 @@ func (a *V2Adapter) onExecutionEnded(raw json.RawMessage, reason domain.StopReas
 	t.mu.Lock()
 	turnID := t.turnID
 	t.turnID = ""
+	t.turnUsage = domain.Usage{}
 	t.toolName = make(map[string]string)
 	t.toolSeen = make(map[string]bool)
 	t.itemText = make(map[string]string)

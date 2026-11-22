@@ -17,7 +17,7 @@ export * from './NoticeDivider';
 export * from './AgentSessionFeed';
 export * from './AgentBrowserView';
 export * from './AgentGitView';
-export * from './AgentTasklistView';
+export * from './AgentTerminalView';
 export * from './AgentWindow';
 export * from './MessageTimestamp';
 export * from './McpAppCard';

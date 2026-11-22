@@ -48,17 +48,23 @@ const (
 	AvailabilityUnauthed    Availability = "unauthenticated"
 )
 
+type AccountModelDefault struct {
+	Model   string       `json:"model,omitempty"`
+	Options ModelOptions `json:"options,omitempty"`
+}
+
 type ProviderSettings struct {
-	BinaryPath   string            `json:"binaryPath,omitempty"`
-	LaunchArgs   string            `json:"launchArgs,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`
-	ServerURL    string            `json:"serverUrl,omitempty"`
-	APIEndpoint  string            `json:"apiEndpoint,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	Options      ModelOptions      `json:"options,omitempty"`
-	PrintTimeout string            `json:"printTimeout,omitempty"`
-	Enabled      bool              `json:"enabled"`
-	Unset        []string          `json:"-"`
+	BinaryPath      string                         `json:"binaryPath,omitempty"`
+	LaunchArgs      string                         `json:"launchArgs,omitempty"`
+	Env             map[string]string              `json:"env,omitempty"`
+	ServerURL       string                         `json:"serverUrl,omitempty"`
+	APIEndpoint     string                         `json:"apiEndpoint,omitempty"`
+	Model           string                         `json:"model,omitempty"`
+	Options         ModelOptions                   `json:"options,omitempty"`
+	AccountDefaults map[string]AccountModelDefault `json:"accountDefaults,omitempty"`
+	PrintTimeout    string                         `json:"printTimeout,omitempty"`
+	Enabled         bool                           `json:"enabled"`
+	Unset           []string                       `json:"-"`
 }
 
 type ProviderSnapshot struct {
@@ -93,9 +99,11 @@ type ProviderUpdate struct {
 const DefaultAccountID = "default"
 
 type Account struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	ConfigDir string `json:"configDir,omitempty"`
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	ConfigDir string  `json:"configDir,omitempty"`
+	AuthMode  string  `json:"authMode,omitempty"`
+	Models    []Model `json:"models,omitempty"`
 }
 
 func (a Account) IsDefault() bool {
@@ -156,6 +164,12 @@ const (
 	PermissionBypass      PermissionMode = "bypassPermissions"
 )
 
+type MCPConfig struct {
+	ServerName string `json:"-"`
+	Endpoint   string `json:"-"`
+	AuthHeader string `json:"-"`
+}
+
 type SessionStartInput struct {
 	ThreadID   string         `json:"threadId"`
 	InstanceID string         `json:"instanceId"`
@@ -168,8 +182,10 @@ type SessionStartInput struct {
 	Options    ModelOptions   `json:"options,omitempty"`
 	// PlanOnly denies the session every tool. The orchestrator delegates rather
 	// than works, and without this it explores the repo instead of answering.
-	PlanOnly bool `json:"planOnly,omitempty"`
-	Skills   *SkillPolicy `json:"skills,omitempty"`
+	PlanOnly   bool         `json:"planOnly,omitempty"`
+	Skills     *SkillPolicy `json:"skills,omitempty"`
+	MCP        *MCPConfig   `json:"-"`
+	IsSubagent bool         `json:"isSubagent,omitempty"`
 }
 
 type SkillMode string

@@ -1,26 +1,51 @@
 package session
 
 import (
+	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"composer/internal/domain"
 )
 
-const maxHandoffChars = 12000
-const maxToolOutputChars = 1200
+const maxHandoffChars = 24000
+const perMessageCap = 4000
+
+func truncateRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes])
+}
 
 func ExtractConversationText(events []domain.RuntimeEvent, maxChars int) string {
+	text, omitted := extractConversationWithMeta(events, maxChars)
+	if omitted {
+		return "[earlier context omitted: showing most recent context]\n" + text
+	}
+	return text
+}
+
+func ExtractConversationWithMeta(events []domain.RuntimeEvent, maxChars int) (string, bool) {
+	return extractConversationWithMeta(events, maxChars)
+}
+
+func extractConversationWithMeta(events []domain.RuntimeEvent, maxChars int) (string, bool) {
 	if maxChars <= 0 {
 		maxChars = maxHandoffChars
 	}
 	lines := make([]string, 0, len(events))
-	format := func(prefix, text string, cap int) {
+	format := func(prefix, text string, capRunes int) {
 		text = strings.TrimSpace(text)
 		if text == "" {
 			return
 		}
-		if len(text) > cap {
-			text = text[:cap] + "\n[truncated]"
+		if utf8.RuneCountInString(text) > capRunes {
+			text = truncateRunes(text, capRunes) + "\n[truncated]"
 		}
 		formatted := prefix + text
 		if len(lines) > 0 && lines[len(lines)-1] == formatted {
@@ -58,7 +83,7 @@ func ExtractConversationText(events []domain.RuntimeEvent, maxChars int) string 
 			return
 		}
 		delete(pendingByTurn, turnID)
-		format("Assistant: ", entry.text.String(), 2000)
+		format("Assistant: ", entry.text.String(), perMessageCap)
 		for i, p := range pending {
 			if p == entry {
 				pending = append(pending[:i], pending[i+1:]...)
@@ -70,17 +95,47 @@ func ExtractConversationText(events []domain.RuntimeEvent, maxChars int) string 
 		for _, entry := range pending {
 			if current, ok := pendingByTurn[entry.turnID]; ok && current == entry {
 				delete(pendingByTurn, entry.turnID)
-				format("Assistant: ", entry.text.String(), 2000)
+				format("Assistant: ", entry.text.String(), perMessageCap)
 			}
 		}
 		pending = pending[:0]
 		clear(pendingByTurn)
 	}
+
+	var modifiedFiles []string
+	seenModified := make(map[string]bool)
+
+	recordModifiedFile := func(target string) {
+		target = strings.TrimSpace(target)
+		if target == "" || seenModified[target] {
+			return
+		}
+		seenModified[target] = true
+		modifiedFiles = append(modifiedFiles, target)
+	}
+
+	flushModifiedFiles := func() {
+		if len(modifiedFiles) == 0 {
+			return
+		}
+		joined := strings.Join(modifiedFiles, ", ")
+		if utf8.RuneCountInString(joined) > 500 {
+			joined = truncateRunes(joined, 500) + "..."
+		}
+		line := "[Modified files: " + joined + "]"
+		if len(lines) == 0 || lines[len(lines)-1] != line {
+			lines = append(lines, line)
+		}
+		modifiedFiles = modifiedFiles[:0]
+		clear(seenModified)
+	}
+
 	for _, event := range events {
 		switch event.Kind {
 		case domain.EventUserMessage:
 			flushAll()
-			format("User: ", event.Text, 2000)
+			flushModifiedFiles()
+			format("User: ", event.Text, perMessageCap)
 		case domain.EventAgentMessage:
 			if event.Delta {
 				accumulate(event.TurnID, event.Text)
@@ -101,27 +156,36 @@ func ExtractConversationText(events []domain.RuntimeEvent, maxChars int) string 
 					flushTurn(event.TurnID)
 				}
 			}
-			format("Assistant: ", event.Text, 2000)
-		case domain.EventToolResult:
-			if event.Tool == nil {
-				continue
-			}
-			output := strings.TrimSpace(event.Tool.Output)
-			if output == "" {
-				continue
-			}
+			format("Assistant: ", event.Text, perMessageCap)
+		case domain.EventToolCall, domain.EventToolResult:
 			flushAll()
-			format("Tool "+event.Tool.Name+": ", output, maxToolOutputChars)
+			if event.Tool != nil {
+				if event.Tool.Category == domain.ToolCategoryEdit ||
+					event.Tool.Category == domain.ToolCategoryWrite ||
+					len(event.Tool.Diffs) > 0 {
+					target := event.Tool.Target
+					if target == "" && len(event.Tool.Diffs) > 0 {
+						target = event.Tool.Diffs[0].Path
+					}
+					if target != "" {
+						recordModifiedFile(target)
+					}
+				}
+			}
 		case domain.EventTurnFailed:
 			flushAll()
+			flushModifiedFiles()
 			if event.Error != "" {
 				format("System: previous turn failed: ", event.Error, 500)
 			}
 		case domain.EventTurnCompleted:
 			flushAll()
+			flushModifiedFiles()
 		}
 	}
 	flushAll()
+	flushModifiedFiles()
+
 	total := 0
 	kept := 0
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -138,17 +202,18 @@ func ExtractConversationText(events []domain.RuntimeEvent, maxChars int) string 
 		omitted = len(keptLines) > 0
 	}
 	var b strings.Builder
-	if omitted {
-		b.WriteString("[earlier context omitted: showing most recent context]\n")
-	}
 	for _, line := range keptLines {
 		b.WriteString(line + "\n")
 	}
-	return strings.TrimSpace(b.String())
+	return strings.TrimSpace(b.String()), omitted
 }
 
 func BuildHandoffPrompt(prevDriver domain.DriverKind, newDriver domain.DriverKind, events []domain.RuntimeEvent, cwd string) string {
-	conversation := ExtractConversationText(events, maxHandoffChars)
+	return BuildHandoffPromptForThread(prevDriver, newDriver, "", events, cwd)
+}
+
+func BuildHandoffPromptForThread(prevDriver domain.DriverKind, newDriver domain.DriverKind, threadID string, events []domain.RuntimeEvent, cwd string) string {
+	conversation, omitted := extractConversationWithMeta(events, maxHandoffChars)
 	var b strings.Builder
 	if prevDriver != "" && prevDriver == newDriver {
 		b.WriteString("This conversation was continued in a new session because the previous one could not be resumed. ")
@@ -161,11 +226,18 @@ func BuildHandoffPrompt(prevDriver domain.DriverKind, newDriver domain.DriverKin
 	if cwd != "" {
 		b.WriteString("Working directory is " + cwd + ". ")
 	}
-	b.WriteString("Pick up exactly where the previous agent left off. Do not restart the task.\n\n")
+	b.WriteString("This is a direct continuation of the same thread. Pick up exactly where the previous agent left off. Do not restart the task or re-spawn another thread unless asked.\n\n")
 	if conversation == "" {
 		b.WriteString("[No prior transcript was available. Treat the next user message as a fresh task in the same directory.]\n")
 	} else {
 		b.WriteString("--- Prior conversation ---\n")
+		if omitted {
+			if threadID != "" {
+				b.WriteString(fmt.Sprintf("[Earlier turns omitted. Call read_thread(threadId: %q) via the orchestrator MCP server if you need earlier details.]\n", threadID))
+			} else {
+				b.WriteString("[earlier context omitted: showing most recent context]\n")
+			}
+		}
 		b.WriteString(conversation)
 		b.WriteString("\n--- End prior conversation ---\n")
 	}

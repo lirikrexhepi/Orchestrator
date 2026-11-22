@@ -14,16 +14,22 @@ const FIRST_PAGE = 5;
 const NEXT_PAGE = 10;
 const MAX_EMPTY_PAGES = 12;
 
+export interface ImportedSessionRef {
+  workspaceId: string;
+  threadId?: string;
+}
+
 export interface ClaudeImportState {
   sessions: claudeimport.ExternalSession[];
   isLoading: boolean;
   isLoadingMore: boolean;
   exhausted: Record<ChatProvider, boolean>;
   isImporting: boolean;
+  importingPath: string | null;
   error: string | null;
   list: () => Promise<void>;
   loadMore: (providers?: ChatProvider[]) => Promise<void>;
-  importOne: (filePath: string) => Promise<string | null>;
+  importOne: (filePath: string) => Promise<ImportedSessionRef | null>;
   reset: () => void;
 }
 
@@ -45,7 +51,8 @@ export function useClaudeImport(): ClaudeImportState {
   const [isLoading, setLoading] = useState(false);
   const [isLoadingMore, setLoadingMore] = useState(false);
   const [exhausted, setExhausted] = useState<Record<ChatProvider, boolean>>(freshExhausted);
-  const [isImporting, setImporting] = useState(false);
+  const [importingPath, setImportingPath] = useState<string | null>(null);
+  const isImporting = importingPath !== null;
   const [error, setError] = useState<string | null>(null);
 
   const cursors = useRef(freshCursors());
@@ -75,16 +82,16 @@ export function useClaudeImport(): ClaudeImportState {
     if (busy.current.size > 0) return;
     const first = !loadedOnce.current;
     if (first) setLoading(true);
+    setError(null);
     CHAT_PROVIDERS.forEach((provider) => busy.current.add(provider));
     await Promise.all(
       CHAT_PROVIDERS.map(async (provider) => {
         try {
           const next = await fetchProvider(provider, 0, FIRST_PAGE, FIRST_PAGE);
-          if (first || next < 0) {
+          if (first || next < 0 || cursors.current[provider] <= 0) {
             cursors.current[provider] = next;
             setExhausted((current) => ({ ...current, [provider]: next < 0 }));
           }
-          setError(null);
         } catch (cause) {
           setError(cause instanceof Error ? cause.message : String(cause));
         } finally {
@@ -121,8 +128,8 @@ export function useClaudeImport(): ClaudeImportState {
     [fetchProvider],
   );
 
-  const importOne = useCallback(async (filePath: string): Promise<string | null> => {
-    setImporting(true);
+  const importOne = useCallback(async (filePath: string): Promise<ImportedSessionRef | null> => {
+    setImportingPath(filePath);
     try {
       if (filePath.startsWith('antigravity:')) {
         setError("Opening Antigravity chats isn't supported yet.");
@@ -132,12 +139,12 @@ export function useClaudeImport(): ClaudeImportState {
         ? await ImportOpenCodeSession(filePath.slice('opencode:'.length))
         : await ImportClaudeCodeSession(filePath);
       setError(null);
-      return workspaceId ?? null;
+      return workspaceId ? { workspaceId } : null;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       return null;
     } finally {
-      setImporting(false);
+      setImportingPath(null);
     }
   }, []);
 
@@ -149,5 +156,5 @@ export function useClaudeImport(): ClaudeImportState {
     loadedOnce.current = false;
   }, []);
 
-  return { sessions, isLoading, isLoadingMore, exhausted, isImporting, error, list, loadMore, importOne, reset };
+  return { sessions, isLoading, isLoadingMore, exhausted, isImporting, importingPath, error, list, loadMore, importOne, reset };
 }

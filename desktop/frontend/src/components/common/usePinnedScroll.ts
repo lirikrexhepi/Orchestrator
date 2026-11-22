@@ -38,6 +38,10 @@ export function requestPinToBottom() {
  * follow, which is what stranded feeds mid-stream. A resize observer covers
  * late growth (images, highlights) that lands with no new data.
  */
+function maxScrollTop(el: HTMLElement): number {
+  return Math.max(0, el.scrollHeight - el.clientHeight);
+}
+
 export function usePinnedScroll(
   targetRef: RefObject<HTMLElement | null>,
   followInputs: unknown[],
@@ -45,6 +49,7 @@ export function usePinnedScroll(
 ) {
   const { near = 48, element } = options;
   const pinned = useRef(true);
+  const lastTopRef = useRef(0);
   const scrollRef = useRef(options.scroll);
   scrollRef.current = options.scroll;
   const snapRef = useRef(options.snap);
@@ -52,17 +57,17 @@ export function usePinnedScroll(
   const unpinRef = useRef(options.onUnpin);
   unpinRef.current = options.onUnpin;
 
-  const glide = () => {
+  const followInstant = () => {
     const el = element ?? targetRef.current;
     if (!el || !pinned.current) return;
-    const top = el.scrollHeight;
-    const fn = scrollRef.current;
-    if (fn) fn(el, top);
+    const top = maxScrollTop(el);
+    if (snapRef.current) snapRef.current(el, top);
     else el.scrollTop = top;
+    lastTopRef.current = el.scrollTop;
   };
 
   useEffect(() => {
-    glide();
+    followInstant();
     // Follow inputs intentionally drive this, like the blocks array.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, followInputs);
@@ -72,14 +77,15 @@ export function usePinnedScroll(
     if (!el) return;
     const pin = () => {
       pinned.current = true;
-      const top = el.scrollHeight;
+      const top = maxScrollTop(el);
       const fn = snapRef.current ?? scrollRef.current;
       if (fn) fn(el, top);
       else el.scrollTop = top;
+      lastTopRef.current = el.scrollTop;
     };
     pinListeners.add(pin);
-    const distance = () => el.scrollHeight - el.scrollTop - el.clientHeight;
-    let lastTop = el.scrollTop;
+    const distance = () => Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
+    lastTopRef.current = el.scrollTop;
     let touchY: number | null = null;
     let intendsDown = true;
     const intent = (down: boolean) => {
@@ -102,8 +108,12 @@ export function usePinnedScroll(
       const y = event.touches[0]?.clientY;
       if (y === undefined || touchY === null) return;
       intent(y < touchY);
-      if (y > touchY + 2) release(true);
-      touchY = y;
+      if (y > touchY + 2) {
+        release(true);
+        touchY = y;
+      } else if (y < touchY) {
+        touchY = y;
+      }
     };
     const onKey = (event: KeyboardEvent) => {
       intent(event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End' || (event.key === ' ' && !event.shiftKey));
@@ -117,32 +127,32 @@ export function usePinnedScroll(
     };
     const onScroll = () => {
       const top = el.scrollTop;
-      const movedUp = top < lastTop - 1;
-      const movedDown = top > lastTop + 1;
-      lastTop = top;
+      const movedUp = top < lastTopRef.current - 1;
+      const movedDown = top > lastTopRef.current + 1;
+      lastTopRef.current = top;
       if (movedUp && distance() > near) release(true);
-      else if (movedDown && distance() < near && intendsDown) pinned.current = true;
+      else if (movedDown && distance() <= near && intendsDown) pinned.current = true;
     };
     const content = el.firstElementChild ?? el;
     const ro = new ResizeObserver(() => {
       if (!pinned.current) return;
-      const top = el.scrollHeight;
-      const fn = scrollRef.current;
-      if (fn) fn(el, top);
+      const top = maxScrollTop(el);
+      if (snapRef.current) snapRef.current(el, top);
       else el.scrollTop = top;
+      lastTopRef.current = el.scrollTop;
     });
-    el.addEventListener('wheel', onWheel, { passive: true });
-    el.addEventListener('touchstart', onTouchStart, { passive: true });
-    el.addEventListener('touchmove', onTouchMove, { passive: true });
+    el.addEventListener('wheel', onWheel, { passive: true, capture: true });
+    el.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: true, capture: true });
     el.addEventListener('mousedown', onPointerDown);
     el.addEventListener('keydown', onKey);
     el.addEventListener('scroll', onScroll, { passive: true });
     ro.observe(content);
     return () => {
       pinListeners.delete(pin);
-      el.removeEventListener('wheel', onWheel);
-      el.removeEventListener('touchstart', onTouchStart);
-      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('wheel', onWheel, { capture: true });
+      el.removeEventListener('touchstart', onTouchStart, { capture: true });
+      el.removeEventListener('touchmove', onTouchMove, { capture: true });
       el.removeEventListener('mousedown', onPointerDown);
       el.removeEventListener('keydown', onKey);
       el.removeEventListener('scroll', onScroll);

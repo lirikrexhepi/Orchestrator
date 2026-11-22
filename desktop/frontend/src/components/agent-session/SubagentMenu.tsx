@@ -11,6 +11,26 @@ import { renderChatIcon } from '../common/DynamicIsland';
 import { subagentTotals } from './threadChanges';
 import { GlassSquircle } from '../../ui/glass/GlassSquircle';
 
+export const KNOWN_DRIVERS = new Set(['claude', 'codex', 'antigravity', 'opencode']);
+
+export type SubagentWithDriver = SubagentBlockData & {
+  driver?: string;
+  model?: string;
+  cwd?: string;
+};
+
+/** Resolve the real CLI driver for a subagent so icon rendering falls back to the parent driver instead of unknown agent types. */
+export function resolveSubagentDriver(agent: SubagentBlockData, fallbackDriver: string): { driver: string; model?: string } {
+  const sub = agent as SubagentWithDriver;
+  const candidateDriver = sub.driver?.trim().toLowerCase();
+  const candidateType = agent.agentType?.trim().toLowerCase();
+  const resolved =
+    (candidateDriver && KNOWN_DRIVERS.has(candidateDriver) ? candidateDriver : undefined) ??
+    (candidateType && KNOWN_DRIVERS.has(candidateType) ? candidateType : undefined) ??
+    fallbackDriver;
+  return { driver: resolved, model: sub.model };
+}
+
 export interface SubagentMenuProps {
   agents: SubagentBlockData[];
   isLight: boolean;
@@ -18,21 +38,16 @@ export interface SubagentMenuProps {
   modelId?: string;
   dockable?: boolean;
   workspace?: React.ReactNode;
+  inspector?: React.ReactNode;
   onOpenAgent?: (id: string) => void;
 }
 
-const MAX_ROWS = 5;
-const DOCK_COLLAPSED_KEY = 'subagent_dock_collapsed';
 const LIST_WIDTH = 440;
 const COMPACT_WIDTH = 330;
-const FOLDED_DOCK_WIDTH = 250;
-const ROW_HEIGHT = 38;
-const FOLD_HEADER = 32;
-const STACK_HEIGHT = 51;
 const TRANSCRIPT_WIDTH = 560;
 const TRANSCRIPT_HEIGHT = 420;
 const EDGE = 12;
-const DOCK_WIDTH = 340;
+const DOCK_WIDTH = 330;
 const DOCK_MIN_WINDOW = 1100;
 const DOCK_TOP = 84;
 const DOCK_RIGHT = 24;
@@ -54,31 +69,10 @@ const TOOL_ICONS: Record<string, string> = {
 };
 
 const SPRING = { type: 'spring', stiffness: 420, damping: 34, mass: 0.8 } as const;
-const DOCK_EASE = { duration: 0.28, ease: [0.32, 0.72, 0, 1] } as const;
-const FOLD_EASE = { duration: 0.34, ease: [0.32, 0.72, 0, 1] } as const;
-
-const FOLD_GROUP = {
-  open: { height: 'auto', transition: FOLD_EASE },
-  closed: { height: STACK_HEIGHT, transition: { ...FOLD_EASE, delay: 0.04 } },
-};
-
-const FOLD_ROW = {
-  open: (index: number) => ({
-    y: 0,
-    scale: 1,
-    opacity: 1,
-    transition: { ...FOLD_EASE, delay: Math.min(index, 12) * 0.012 },
-  }),
-  closed: (index: number) => ({
-    y: -(FOLD_HEADER + index * ROW_HEIGHT) + 4,
-    scale: 1 - Math.min(index, 2) * 0.04,
-    opacity: index < 3 ? 1 : 0,
-    transition: FOLD_EASE,
-  }),
-};
+const REVEAL_EASE = { duration: 0.22, ease: [0.32, 0.72, 0, 1] } as const;
 
 function isStacked(agents: SubagentBlockData[]): boolean {
-  return agents.length > MAX_ROWS && agents.filter((agent) => agent.status !== 'running').length > 1;
+  return agents.filter((agent) => agent.status !== 'running').length > 1;
 }
 
 export const STATUS_WORD: Record<SubagentBlockData['status'], string> = {
@@ -358,73 +352,48 @@ const AgentRow: React.FC<{
   onSelect: () => void;
 }> = ({ agent, now, tone, driver, modelId, isLight, faded = false, onSelect }) => {
   const stats = subagentTotals(agent);
+  const resolved = resolveSubagentDriver(agent, driver);
   return (
-  <button
-    type="button"
-    onClick={onSelect}
-    title={[
-      [
-        (stats.additions > 0 || stats.deletions > 0) && `+${stats.additions} −${stats.deletions} lines`,
-        stats.files > 0 && `${stats.files} file${stats.files === 1 ? '' : 's'}`,
-        `${toolCount(agent)} tool calls`,
+    <button
+      type="button"
+      onClick={onSelect}
+      title={[
+        [
+          (stats.additions > 0 || stats.deletions > 0) && `+${stats.additions} −${stats.deletions} lines`,
+          stats.files > 0 && `${stats.files} file${stats.files === 1 ? '' : 's'}`,
+          `${toolCount(agent)} tool calls`,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        agent.prompt?.slice(0, 280),
       ]
         .filter(Boolean)
-        .join(' · '),
-      agent.prompt?.slice(0, 280),
-    ]
-      .filter(Boolean)
-      .join(' - ')}
-    className={`flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition-[background-color,opacity] cursor-pointer ${tone.hover} ${
-      faded ? 'opacity-55 hover:opacity-100' : ''
-    }`}
-  >
-    <span className="relative flex h-[22px] w-[22px] shrink-0 items-center justify-center">
-      {renderChatIcon(driver, modelId, isLight, 'w-[18px] h-[18px]')}
-      <span
-        className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full ring-2 ${tone.ring} ${DOT_TONE[agent.status]}`}
-      />
-    </span>
-    <span className={`min-w-0 flex-1 truncate text-[13.5px] font-medium tracking-tight font-(family-name:--app-font) ${tone.title}`}>
-      {agent.title}
-    </span>
-    <DiffStatBadge additions={stats.additions} deletions={stats.deletions} />
-    <span className={`shrink-0 text-[12px] tabular-nums font-(family-name:--app-font) ${tone.muted}`}>
-      {elapsedOf(agent, now)}
-    </span>
-    <span
-      className={`w-[54px] shrink-0 text-right text-[12px] font-(family-name:--app-font) ${
-        agent.status === 'error' ? tone.danger : tone.muted
+        .join(' - ')}
+      className={`flex h-8 w-full items-center gap-2.5 rounded-[9px] px-2 text-left transition-[background-color,opacity] cursor-pointer ${tone.hover} ${
+        faded ? 'opacity-70 hover:opacity-100' : ''
       }`}
     >
-      {STATUS_WORD[agent.status]}
-    </span>
-  </button>
-  );
-};
-
-const Summary: React.FC<{ agents: SubagentBlockData[]; tone: Tone; now: number }> = ({ agents, tone, now }) => {
-  const running = agents.filter((agent) => agent.status === 'running').length;
-  const failed = agents.filter((agent) => agent.status === 'error').length;
-  const done = agents.filter((agent) => agent.status === 'completed').length;
-  const parts: { text: string; danger?: boolean }[] = [];
-  if (running > 0) parts.push({ text: `${running} running` });
-  if (failed > 0) parts.push({ text: `${failed} failed`, danger: true });
-  if (parts.length === 0) parts.push({ text: `${done} done` });
-  const total = totalElapsedMs(agents, now);
-  if (total > 0) parts.push({ text: `${formatElapsed(total)} total` });
-  const label = parts.map((part) => part.text).join(' · ');
-  return (
-    <span
-      title={label}
-      className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] font-(family-name:--app-font) tabular-nums"
-    >
-      {parts.map((part, index) => (
-        <React.Fragment key={part.text}>
-          {index > 0 && <span className={tone.faint}>·</span>}
-          <span className={part.danger ? tone.danger : tone.muted}>{part.text}</span>
-        </React.Fragment>
-      ))}
-    </span>
+      <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+        {renderChatIcon(resolved.driver, resolved.model || modelId, isLight, 'w-4 h-4')}
+        <span
+          className={`absolute -bottom-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ring-[1.5px] ${tone.ring} ${DOT_TONE[agent.status]}`}
+        />
+      </span>
+      <span className={`min-w-0 flex-1 truncate text-[12px] font-medium tracking-tight font-(family-name:--app-font) ${tone.title}`}>
+        {agent.title}
+      </span>
+      <DiffStatBadge additions={stats.additions} deletions={stats.deletions} />
+      <span className={`shrink-0 text-[11px] tabular-nums font-(family-name:--app-font) ${tone.muted}`}>
+        {elapsedOf(agent, now)}
+      </span>
+      <span
+        className={`w-[44px] shrink-0 text-right text-[11px] font-(family-name:--app-font) ${
+          agent.status === 'error' ? tone.danger : tone.faint
+        }`}
+      >
+        {STATUS_WORD[agent.status]}
+      </span>
+    </button>
   );
 };
 
@@ -439,59 +408,64 @@ function settledParts(agents: SubagentBlockData[]): { text: string; danger?: boo
   return parts;
 }
 
-const STACK_STATUSES: SubagentBlockData['status'][] = ['completed', 'error', 'stopped'];
-
-const FinishedStack: React.FC<{
+const FinishedRow: React.FC<{
   agents: SubagentBlockData[];
+  now: number;
   tone: Tone;
   driver: string;
   modelId?: string;
   isLight: boolean;
-  onExpand: () => void;
-}> = ({ agents, tone, driver, modelId, isLight, onExpand }) => {
-  const statuses = STACK_STATUSES.filter((status) => agents.some((agent) => agent.status === status));
+  expanded: boolean;
+  onToggle: () => void;
+}> = ({ agents, now, tone, driver, modelId, isLight, expanded, onToggle }) => {
   const parts = settledParts(agents);
+  const resolved = agents.length > 0 ? resolveSubagentDriver(agents[0], driver) : { driver, model: undefined };
+  const topStatus: SubagentBlockData['status'] = agents.some((a) => a.status === 'error')
+    ? 'error'
+    : agents.some((a) => a.status === 'stopped')
+      ? 'stopped'
+      : 'completed';
+  const hasNonCompleted =
+    parts.some((p) => p.danger) ||
+    parts.length > 1 ||
+    agents.some((agent) => agent.status !== 'completed');
+  const totalMs = totalElapsedMs(agents, now);
+  const summaryParts =
+    hasNonCompleted || totalMs <= 0 ? parts : [{ text: formatElapsed(totalMs), danger: false }];
+
   return (
-    <motion.button
+    <button
       type="button"
-      onClick={onExpand}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1, transition: { duration: 0.16, delay: 0.2 } }}
-      exit={{ opacity: 0, transition: { duration: 0.1 } }}
-      title={`Show ${agents.length} finished subagents`}
-      className="group relative mt-1 block w-full pb-[11px] text-left cursor-pointer active:scale-[0.99]"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      title={`${expanded ? 'Collapse' : 'Show'} ${agents.length} finished subagents`}
+      className={`group flex h-8 w-full items-center gap-2.5 rounded-[10px] px-2 text-left transition-colors cursor-pointer select-none ${tone.hover}`}
     >
-      <span
-        className={`absolute left-5 right-5 top-2 bottom-[2px] rounded-xl border transition-transform duration-200 ease-out group-hover:translate-y-[2px] ${tone.stackBack}`}
-      />
-      <span
-        className={`absolute left-2.5 right-2.5 top-1 bottom-[6.5px] rounded-xl border transition-transform duration-200 ease-out group-hover:translate-y-[1px] ${tone.stackMid}`}
-      />
-      <span className={`relative flex items-center gap-3 rounded-xl border px-2 py-2 transition-colors ${tone.stackFront}`}>
-        <span className="relative flex h-[22px] w-[22px] shrink-0 items-center justify-center">
-          {renderChatIcon(driver, modelId, isLight, 'w-[18px] h-[18px]')}
-          <span className="absolute -bottom-0.5 -right-1 flex -space-x-[3px]">
-            {statuses.map((status) => (
-              <span key={status} className={`h-1.5 w-1.5 rounded-full ring-[1.5px] ${tone.stackRing} ${DOT_TONE[status]}`} />
-            ))}
-          </span>
-        </span>
-        <span className={`min-w-0 flex-1 truncate text-[13.5px] font-medium tracking-tight font-(family-name:--app-font) ${tone.title}`}>
-          {agents.length} finished
-        </span>
-        <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[12px] tabular-nums font-(family-name:--app-font)">
-          {parts.map((part, index) => (
-            <React.Fragment key={part.text}>
-              {index > 0 && <span className={tone.faint}>·</span>}
-              <span className={part.danger ? tone.danger : tone.muted}>{part.text}</span>
-            </React.Fragment>
-          ))}
-        </span>
-        <span className={`inline-flex shrink-0 transition-transform duration-200 group-hover:translate-y-[1px] ${tone.muted}`}>
-          <MaterialIcon name="expand_more" size={16} />
-        </span>
+      <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+        {renderChatIcon(resolved.driver, resolved.model || modelId, isLight, 'w-4 h-4')}
+        <span
+          className={`absolute -bottom-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ring-[1.5px] ${tone.ring} ${DOT_TONE[topStatus]}`}
+        />
       </span>
-    </motion.button>
+      <span className={`min-w-0 flex-1 truncate whitespace-nowrap text-[12.5px] font-medium tracking-tight font-(family-name:--app-font) ${tone.title}`}>
+        {agents.length} finished
+      </span>
+      <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] tabular-nums font-(family-name:--app-font)">
+        {summaryParts.map((part, index) => (
+          <React.Fragment key={part.text}>
+            {index > 0 && <span className={tone.faint}>·</span>}
+            <span className={part.danger ? tone.danger : tone.muted}>{part.text}</span>
+          </React.Fragment>
+        ))}
+      </span>
+      <span className={`-mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${tone.close}`}>
+        <MaterialIcon
+          name="expand_more"
+          size={15}
+          className={`transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+        />
+      </span>
+    </button>
   );
 };
 
@@ -524,7 +498,7 @@ const AgentList: React.FC<{
 
   if (!stacks) {
     return (
-      <div className="flex flex-col">
+      <div className="flex flex-col gap-0.5">
         {agents.map((agent) => (
           <React.Fragment key={agent.id}>{row(agent, agent.status !== 'running' && live.length > 0)}</React.Fragment>
         ))}
@@ -533,56 +507,34 @@ const AgentList: React.FC<{
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-0.5">
       {live.map((agent) => (
         <React.Fragment key={agent.id}>{row(agent, false)}</React.Fragment>
       ))}
-      <AnimatePresence initial={false} mode="popLayout">
-        {expanded ? (
+      <FinishedRow
+        agents={settled}
+        now={now}
+        tone={tone}
+        driver={driver}
+        modelId={modelId}
+        isLight={isLight}
+        expanded={expanded}
+        onToggle={() => onExpandedChange(!expanded)}
+      />
+      <AnimatePresence initial={false}>
+        {expanded && (
           <motion.div
-            key="settled"
-            variants={FOLD_GROUP}
-            initial="closed"
-            animate="open"
-            exit="closed"
-            className="flex flex-col overflow-hidden"
+            key="settled-list"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={REVEAL_EASE}
+            className="flex flex-col gap-0.5 overflow-hidden pl-[26px]"
           >
-            <motion.button
-              type="button"
-              onClick={() => onExpandedChange(false)}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1, transition: { duration: 0.18, delay: 0.08 } }}
-              exit={{ opacity: 0, transition: { duration: 0.1 } }}
-              className={`mt-1 flex h-[28px] w-full shrink-0 items-center gap-3 rounded-xl px-2 text-left text-[11.5px] font-medium transition-colors cursor-pointer font-(family-name:--app-font) ${tone.muted} ${tone.hover}`}
-            >
-              <span className="flex w-[22px] shrink-0 justify-center">
-                <MaterialIcon name="unfold_less" size={15} />
-              </span>
-              <span className="flex-1">Finished</span>
-              <span className="tabular-nums">Collapse {settled.length}</span>
-            </motion.button>
-            {settled.map((agent, index) => (
-              <motion.div
-                key={agent.id}
-                custom={index}
-                variants={FOLD_ROW}
-                className="relative will-change-transform"
-                style={{ zIndex: settled.length - index, transformOrigin: 'top center' }}
-              >
-                {row(agent, true)}
-              </motion.div>
+            {settled.map((agent) => (
+              <React.Fragment key={agent.id}>{row(agent, live.length > 0)}</React.Fragment>
             ))}
           </motion.div>
-        ) : (
-          <FinishedStack
-            key="stack"
-            agents={settled}
-            tone={tone}
-            driver={driver}
-            modelId={modelId}
-            isLight={isLight}
-            onExpand={() => onExpandedChange(true)}
-          />
         )}
       </AnimatePresence>
     </div>
@@ -592,16 +544,10 @@ const AgentList: React.FC<{
 const PILL_DARK = 'bg-[#2a2a2a] hover:bg-[#363636] text-white/90 border-white/15';
 const PILL_LIGHT = 'bg-white hover:bg-[#efeff2] text-[#111] border-black/10 shadow-[0_1px_2px_rgba(0,0,0,0.05)]';
 
-export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, driver = 'claude', modelId, dockable = false, workspace, onOpenAgent }) => {
+export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, driver = 'claude', modelId, dockable = false, workspace, inspector, onOpenAgent }) => {
   const [open, setOpen] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const [dockCollapsed, setDockCollapsed] = useState(() => localStorage.getItem(DOCK_COLLAPSED_KEY) === 'true');
-  const collapseDock = useCallback((collapsed: boolean) => {
-    localStorage.setItem(DOCK_COLLAPSED_KEY, collapsed ? 'true' : 'false');
-    setDockCollapsed(collapsed);
-    if (collapsed) setOpenId(null);
-  }, []);
   const [anchor, setAnchor] = useState({ top: 0, right: 0, side: false });
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -676,7 +622,7 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
     };
   }, [open, close, measure]);
 
-  if (agents.length === 0 && !(docked && workspace)) return null;
+  if (agents.length === 0 && !workspace && !inspector) return null;
 
   const width = Math.min(selected ? TRANSCRIPT_WIDTH : listWidth, window.innerWidth - EDGE * 2);
   const list = (
@@ -694,15 +640,12 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
   );
 
   if (docked) {
+    const hasInspector = Boolean(inspector);
     const dockWidth = selected
       ? TRANSCRIPT_WIDTH
       : agents.length === 0
-        ? 280
-        : dockCollapsed
-          ? FOLDED_DOCK_WIDTH
-          : compact
-            ? COMPACT_WIDTH
-            : DOCK_WIDTH;
+        ? (hasInspector ? 300 : 280)
+        : DOCK_WIDTH;
     return createPortal(
       <div
         onClick={(event) => event.stopPropagation()}
@@ -740,45 +683,17 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
           {selected ? (
             <Transcript agent={selected} now={now} tone={tone} onBack={() => setOpenId(null)} />
           ) : (
-            <div className="flex min-h-0 flex-col">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden custom-scrollbar">
               {workspace}
               {agents.length > 0 && (
-                <div className={`flex min-h-0 flex-col p-2 ${workspace ? `border-t ${tone.divider}` : ''}`}>
-                  <div className="flex items-center gap-3 px-2 pb-1.5 pt-1.5">
-                    <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>
-                      Lineage
-                    </span>
-                    <span className={`h-px flex-1 ${tone.divider} border-t`} />
-                    <Summary agents={agents} tone={tone} now={now} />
-                    <button
-                      type="button"
-                      onClick={() => collapseDock(!dockCollapsed)}
-                      title={`${dockCollapsed ? 'Expand subagents' : 'Collapse subagents'}${totalLabel ? ` · ${totalLabel}` : ''}`}
-                      aria-label={dockCollapsed ? 'Expand subagents' : 'Collapse subagents'}
-                      aria-expanded={!dockCollapsed}
-                      className={`-mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full cursor-pointer ${tone.close}`}
-                    >
-                      <MaterialIcon name={dockCollapsed ? 'unfold_more' : 'unfold_less'} size={15} />
-                    </button>
-                  </div>
-                  <AnimatePresence initial={false}>
-                    {!dockCollapsed && (
-                      <motion.div
-                        key="dock-list"
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={DOCK_EASE}
-                        className="flex min-h-0 flex-col overflow-hidden"
-                      >
-                        <ScrollArea maxHeight="calc(100vh - 220px)" className="flex flex-col pt-0.5">
-                          {list}
-                        </ScrollArea>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                <div className="flex min-h-0 flex-col px-1.5">
+                  {workspace && <div className={`mx-2 my-1 border-t ${tone.divider}`} />}
+                  <ScrollArea maxHeight="calc(100vh - 220px)" className="flex flex-col">
+                    {list}
+                  </ScrollArea>
                 </div>
               )}
+              {inspector}
             </div>
           )}
         </GlassSquircle>
@@ -797,18 +712,27 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
           if (open) close();
           else setOpen(true);
         }}
-        title={pillTitle}
-        aria-label="Subagents"
+        title={agents.length > 0 ? pillTitle : 'Session inspector'}
+        aria-label={agents.length > 0 ? 'Subagents' : 'Session inspector'}
         aria-expanded={open}
         className={`pointer-events-auto relative flex h-[28px] shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium tabular-nums font-(family-name:--app-font) transition-colors cursor-pointer active:scale-95 ${
           isLight ? PILL_LIGHT : PILL_DARK
         }`}
       >
-        <span>Subagents {agents.length}</span>
-        {runningCount > 0 && (
-          <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_6px_rgba(251,191,36,0.9)]" />
+        {agents.length > 0 ? (
+          <>
+            <span>Subagents {agents.length}</span>
+            {runningCount > 0 && (
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_6px_rgba(251,191,36,0.9)]" />
+            )}
+            {runningCount === 0 && failedCount > 0 && <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />}
+          </>
+        ) : (
+          <>
+            <MaterialIcon name="stacks" size={13} />
+            <span>Inspector</span>
+          </>
         )}
-        {runningCount === 0 && failedCount > 0 && <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />}
       </button>
       {createPortal(
         <AnimatePresence>
@@ -857,19 +781,16 @@ export const SubagentMenu: React.FC<SubagentMenuProps> = ({ agents, isLight, dri
                 {selected ? (
                   <Transcript agent={selected} now={now} tone={tone} onBack={() => setOpenId(null)} />
                 ) : (
-                  <div className="flex min-h-0 flex-col p-2">
-                    {workspace && <div className={`-mx-2 -mt-2 mb-1 border-b ${tone.divider}`}>{workspace}</div>}
-                    <div className="flex items-center gap-3 px-2 pb-2 pt-1.5">
-                      <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>
-                        Lineage
-                      </span>
-                      <span className={`h-px flex-1 ${tone.divider} border-t`} />
-                      <Summary agents={agents} tone={tone} now={now} />
-                    </div>
-                    <ScrollArea maxHeight={`calc(100vh - ${anchor.top + 80}px)`} className="flex flex-col">
-                      {list}
-                    </ScrollArea>
-                  </div>
+                  <ScrollArea maxHeight={`calc(100vh - ${anchor.top + EDGE * 2}px)`} className="flex min-h-0 flex-col">
+                    {workspace}
+                    {agents.length > 0 && (
+                      <div className="flex min-h-0 flex-col px-1.5">
+                        {workspace && <div className={`mx-2 my-1 border-t ${tone.divider}`} />}
+                        {list}
+                      </div>
+                    )}
+                    {inspector}
+                  </ScrollArea>
                 )}
               </GlassSquircle>
             </motion.div>

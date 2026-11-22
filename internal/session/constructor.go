@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"composer/internal/domain"
 )
@@ -59,7 +58,6 @@ type Constructor struct {
 	mu       sync.Mutex
 	auto     bool
 	lastCfg  Config
-	replies  map[string]*strings.Builder
 	executed map[string]bool
 	latest   *LatestPlan
 	onSpawn  func(SpawnResult)
@@ -89,7 +87,6 @@ func NewConstructor(manager *Manager, coordinator *Coordinator, spawner *Spawner
 		spawner:     spawner,
 		workspaces:  workspaces,
 		auto:        true,
-		replies:     make(map[string]*strings.Builder),
 		executed:    make(map[string]bool),
 	}
 }
@@ -143,179 +140,14 @@ func (c *Constructor) Latest() *LatestPlan {
 	return &cp
 }
 
-// Observe folds coordinator stream events into per-turn reply text and fires
-// the constructor when a turn completes with a plan. Cheap and lock-scoped per
-// event; the spawn itself runs detached so the event feed never stalls.
+// Observe tracks coordinator events. Legacy ParseTasks scraping and auto-execution
+// was disabled so quoting a code block in chat can never trigger accidental spawns.
 func (c *Constructor) Observe(event domain.RuntimeEvent) {
 	if event.ThreadID != CoordinatorThreadID {
 		return
 	}
 	c.mu.Lock()
-	switch event.Kind {
-	case domain.EventAgentMessage:
-		if event.TurnID == "" {
-			c.mu.Unlock()
-			return
-		}
-		builder, ok := c.replies[event.TurnID]
-		if !ok {
-			builder = &strings.Builder{}
-			c.replies[event.TurnID] = builder
-		}
-		if event.Delta {
-			builder.WriteString(event.Text)
-		} else if builder.Len() == 0 {
-			builder.WriteString(event.Text)
-		} else {
-			builder.WriteString("\n" + event.Text)
-		}
-		c.mu.Unlock()
-	case domain.EventTurnCompleted:
-		turnID := event.TurnID
-		var text string
-		if builder, ok := c.replies[turnID]; ok {
-			text = builder.String()
-			delete(c.replies, turnID)
-		}
-		auto := c.auto
-		lastCfg := c.lastCfg
-		if _, done := c.executed[turnID]; done {
-			c.mu.Unlock()
-			return
-		}
-		c.mu.Unlock()
-		if turnID == "" || text == "" || !auto {
-			return
-		}
-		tasks := ParseTasks(text)
-		if len(tasks) == 0 {
-			return
-		}
-		go c.execute(turnID, tasks, lastCfg)
-	case domain.EventTurnFailed:
-		if event.TurnID != "" {
-			delete(c.replies, event.TurnID)
-		}
-		c.mu.Unlock()
-	default:
-		c.mu.Unlock()
-	}
-}
-
-func (c *Constructor) execute(turnID string, tasks []TaskRequest, cfg Config) {
-	c.mu.Lock()
-	if c.executed[turnID] {
-		c.mu.Unlock()
-		return
-	}
-	c.executed[turnID] = true
-	c.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	var spawnTasks []TaskRequest
-	for _, task := range tasks {
-		if task.Action == "message" {
-			targetID := task.TargetThreadID
-			if targetID == "" {
-				// Try to match by title
-				for _, a := range c.ListAgents() {
-					if strings.EqualFold(a.Title, task.Title) || strings.Contains(strings.ToLower(task.Title), strings.ToLower(a.Title)) {
-						targetID = a.ThreadID
-						break
-					}
-				}
-			}
-
-			if targetID != "" {
-				if err := c.routeMessageToAgent(ctx, targetID, task.Prompt); err == nil {
-					continue
-				}
-			}
-			// Fallback to spawning if target agent routing could not complete
-		}
-		spawnTasks = append(spawnTasks, task)
-	}
-
-	var result SpawnResult
-	var err error
-	if len(spawnTasks) > 0 {
-		requests := make([]SpawnRequest, 0, len(spawnTasks))
-		// Isolation only when agents run in parallel on the same project: a
-		// single agent works in the project directly, like a normal CLI session.
-		useWorktree := len(spawnTasks) > 1
-		for _, task := range spawnTasks {
-			cwd := task.Cwd
-			if cwd == "" {
-				cwd = cfg.Cwd
-			}
-			requests = append(requests, SpawnRequest{
-				Title:  task.Title,
-				Prompt: task.Prompt,
-				Driver:  domain.DriverKind(cfg.Driver),
-				Account: cfg.Account,
-				Model:   cfg.Model,
-				Options: cfg.Options,
-				Cwd:     cwd,
-			})
-		}
-
-		result, err = c.spawner.Spawn(ctx, requests, SpawnOptions{
-			Driver:      domain.DriverKind(cfg.Driver),
-			Account:     cfg.Account,
-			Model:       cfg.Model,
-			Options:     cfg.Options,
-			Cwd:         cfg.Cwd,
-			UseWorktree: useWorktree,
-			Title:       spawnTasks[0].Title,
-			Prompt:      strings.Join(taskTitles(spawnTasks), ", "),
-			Permission:  cfg.Permission,
-		})
-	}
-
-	c.mu.Lock()
-	latest := &LatestPlan{TurnID: turnID, Tasks: tasks, At: time.Now().UnixMilli()}
-	if err == nil {
-		if len(spawnTasks) > 0 {
-			latest.WorkspaceID = result.Workspace.ID
-		}
-		latest.Executed = true
-	}
-	c.latest = latest
-	onSpawn := c.onSpawn
-	c.mu.Unlock()
-
-	if err == nil && onSpawn != nil && len(result.Tasks) > 0 {
-		onSpawn(result)
-	} else if err != nil && c.manager != nil && c.manager.Bus() != nil {
-		c.manager.Bus().Publish(domain.RuntimeEvent{
-			Kind:     domain.EventTurnFailed,
-			ThreadID: CoordinatorThreadID,
-			TurnID:   turnID,
-			Error:    "Failed to execute plan: " + err.Error(),
-			At:       time.Now().UnixMilli(),
-		})
-	}
-}
-
-func (c *Constructor) routeMessageToAgent(ctx context.Context, targetThreadID, text string) error {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return fmt.Errorf("empty prompt")
-	}
-	if err := c.EnsureLive(ctx, targetThreadID); err != nil {
-		return err
-	}
-
-	turnID := fmt.Sprintf("%s-turn-%d", targetThreadID, time.Now().UnixMilli())
-	c.manager.RecordUserMessage(targetThreadID, turnID, trimmed)
-	c.workspaces.SetState(targetThreadID, domain.TaskRunning)
-	return c.manager.Send(ctx, domain.SendTurnInput{
-		ThreadID: targetThreadID,
-		TurnID:   turnID,
-		Text:     trimmed,
-	})
+	defer c.mu.Unlock()
 }
 
 // EnsureLive starts a worker whose CLI is not running (after an app restart
@@ -352,14 +184,6 @@ func (c *Constructor) EnsureLive(ctx context.Context, threadID string) error {
 		Resume:     resume,
 	}, nil)
 	return err
-}
-
-func taskTitles(tasks []TaskRequest) []string {
-	out := make([]string, 0, len(tasks))
-	for _, task := range tasks {
-		out = append(out, task.Title)
-	}
-	return out
 }
 
 // ListAgents returns every worker The Orchestrator owns across all workspaces,

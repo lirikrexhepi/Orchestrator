@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
 
@@ -70,6 +71,26 @@ func (a *Adapter) handleStreamEvent(s *session, envelope *Envelope) {
 			s.currentMsgID = ev.Message.ID
 			s.mu.Unlock()
 		}
+	case "content_block_start":
+		if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" && ev.ContentBlock.ID != "" {
+			if ev.ContentBlock.Name == "AskUserQuestion" {
+				s.mu.Lock()
+				if s.hiddenTools == nil {
+					s.hiddenTools = make(map[string]bool)
+				}
+				s.hiddenTools[ev.ContentBlock.ID] = true
+				s.mu.Unlock()
+				return
+			}
+			event := a.event(s, domain.EventToolCall)
+			event.ItemID = ev.ContentBlock.ID
+			event.Tool = &domain.ToolCall{
+				ID:     ev.ContentBlock.ID,
+				Name:   ev.ContentBlock.Name,
+				Status: domain.ToolInProgress,
+			}
+			a.emit.Emit(event)
+		}
 	case "content_block_delta":
 		if ev.Delta == nil {
 			return
@@ -125,6 +146,10 @@ func (a *Adapter) handleRateLimit(s *session, envelope *Envelope) {
 		used := 100 - *info.RemainingPct
 		limit.UsedPercent = &used
 	}
+	if limit.UsedPercent == nil && info.Utilization != nil {
+		used := int(math.Round(*info.Utilization * 100))
+		limit.UsedPercent = &used
+	}
 
 	event := a.event(s, domain.EventRateLimit)
 	event.RateLimits = []domain.RateLimit{limit}
@@ -135,7 +160,7 @@ func (a *Adapter) event(s *session, kind domain.EventKind) domain.RuntimeEvent {
 	s.mu.Lock()
 	turnID := s.turnID
 	s.mu.Unlock()
-	return domain.RuntimeEvent{Kind: kind, ThreadID: s.threadID, TurnID: turnID, Driver: domain.DriverClaude}
+	return domain.RuntimeEvent{Kind: kind, ThreadID: s.threadID, TurnID: turnID, Driver: domain.DriverClaude, Account: s.account}
 }
 
 func (a *Adapter) handleAssistant(s *session, envelope *Envelope) {
@@ -171,6 +196,9 @@ func (a *Adapter) handleAssistant(s *session, envelope *Envelope) {
 			// interactive card; the raw tool row would duplicate it.
 			if block.Name == "AskUserQuestion" {
 				s.mu.Lock()
+				if s.hiddenTools == nil {
+					s.hiddenTools = make(map[string]bool)
+				}
 				s.hiddenTools[block.ID] = true
 				s.mu.Unlock()
 				continue
@@ -189,6 +217,7 @@ func (a *Adapter) handleAssistant(s *session, envelope *Envelope) {
 	if envelope.Message.Usage != nil {
 		event := a.event(s, domain.EventUsage)
 		event.Usage = convertUsage(envelope.Message.Usage, 0)
+		event.ItemID = envelope.Message.ID
 		u := envelope.Message.Usage
 		event.Usage.ContextTokens = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens + u.OutputTokens
 		event.Usage.ContextWindow = s.contextLimit()
@@ -329,12 +358,12 @@ func (a *Adapter) handleResult(s *session, envelope *Envelope) {
 		usage := convertUsage(envelope.Usage, envelope.TotalCost)
 		usage.ContextWindow = s.contextLimit()
 		a.emit.Emit(domain.RuntimeEvent{
-			Kind: domain.EventUsage, ThreadID: s.threadID, TurnID: turnID, Driver: domain.DriverClaude,
+			Kind: domain.EventUsage, ThreadID: s.threadID, TurnID: turnID, Driver: domain.DriverClaude, Account: s.account,
 			Usage: usage,
 		})
 	}
 
-	event := domain.RuntimeEvent{ThreadID: s.threadID, TurnID: turnID, Driver: domain.DriverClaude}
+	event := domain.RuntimeEvent{ThreadID: s.threadID, TurnID: turnID, Driver: domain.DriverClaude, Account: s.account}
 	if interrupted {
 		event.Kind = domain.EventTurnCompleted
 		event.StopReason = domain.StopCancelled

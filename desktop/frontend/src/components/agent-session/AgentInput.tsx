@@ -93,6 +93,30 @@ export const AgentInput: React.FC<AgentInputProps> = ({
     setTextareaHeight(targetHeight);
   }, [message]);
 
+  // Listen for chat context/snippet injections (e.g. from Terminal "Send to chat")
+  useEffect(() => {
+    const handleInject = (e: Event) => {
+      const custom = e as CustomEvent<{ text: string; threadId?: string }>;
+      if (!custom.detail?.text) return;
+      setMessage((prev) => {
+        const trimmed = prev.trim();
+        return trimmed ? `${trimmed}\n\n${custom.detail.text}` : custom.detail.text;
+      });
+      setTimeout(() => {
+        textareaRef.current?.focus();
+        if (textareaRef.current) {
+          textareaRef.current.selectionStart = textareaRef.current.value.length;
+          textareaRef.current.selectionEnd = textareaRef.current.value.length;
+        }
+      }, 50);
+    };
+
+    window.addEventListener('orchestrator:inject-chat-text', handleInject);
+    return () => {
+      window.removeEventListener('orchestrator:inject-chat-text', handleInject);
+    };
+  }, []);
+
   // Handle clicking outside to close pickers
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
@@ -194,9 +218,14 @@ export const AgentInput: React.FC<AgentInputProps> = ({
 
   const handleSelectProvider = (providerId: string) => {
     setLocalProviderId(providerId);
-    const providerModels = models.filter((m) => m.providerId === providerId);
-    if (providerModels.length > 0) {
-      setLocalModelId(providerModels[0].id);
+    const store = useOrchestratorStore.getState();
+    const account = store.shownAccount(providerId);
+    const providerModels = store.getModelsForProvider(providerId, account);
+    const preferredId =
+      store.preferredAccountModels[`${providerId}:${account}`] || store.preferredModels[providerId];
+    const pick = providerModels.find((m) => m.id === preferredId) ?? providerModels[0];
+    if (pick) {
+      setLocalModelId(pick.id);
     }
   };
 

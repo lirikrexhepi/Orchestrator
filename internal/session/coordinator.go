@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -43,7 +42,6 @@ type Coordinator struct {
 	cwd        string
 	permission domain.PermissionMode
 	started    bool
-	primed  bool
 	pendingHandoff string
 	// pending holds the turns of the current conversation that have not yet been
 	// attributed to a workspace. A spawn claims them, which is how the plan that
@@ -149,9 +147,6 @@ func (c *Coordinator) SendWithContext(
 
 	turnID := "turn-" + strconv.FormatUint(c.turnSeq.Add(1), 10)
 
-	// The planning instructions ride on the first message of a session: the
-	// CLIs differ in whether they accept a system prompt flag, and a restart
-	// (model switch) must re-establish the role.
 	c.mu.Lock()
 	body := text
 	if preamble != "" {
@@ -159,10 +154,6 @@ func (c *Coordinator) SendWithContext(
 	}
 	handoff := c.pendingHandoff
 	c.pendingHandoff = ""
-	if !c.primed {
-		body = SystemPrompt + "\n\n---\n\n" + body
-		c.primed = true
-	}
 	if handoff != "" {
 		body = handoff + "\n\n--- Current request ---\n\n" + body
 	}
@@ -188,9 +179,7 @@ func (c *Coordinator) ensureSession(ctx context.Context, cfg Config) error {
 	driver := domain.DriverKind(cfg.Driver)
 	cwd := cfg.Cwd
 	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
-		}
+		return fmt.Errorf("working directory is required")
 	}
 
 	account, err := c.manager.ResolveAccount(driver, cwd, cfg.Account)
@@ -227,13 +216,12 @@ func (c *Coordinator) ensureSession(ctx context.Context, cfg Config) error {
 		Model:      cfg.Model,
 		Options:    cfg.Options,
 		Permission: cfg.Permission,
-		PlanOnly:   true,
+		PlanOnly:   false,
 	}); err != nil {
 		return err
 	}
 
 	c.driver, c.account, c.model, c.options, c.permission, c.cwd, c.started = driver, account, cfg.Model, cfg.Options, cfg.Permission, cwd, true
-	c.primed = false
 	return nil
 }
 
@@ -276,7 +264,7 @@ func (c *Coordinator) Interrupt(ctx context.Context) error {
 
 func (c *Coordinator) Reset(ctx context.Context) error {
 	c.mu.Lock()
-	c.started, c.primed = false, false
+	c.started = false
 	// The unattributed transcript belongs to the conversation being discarded;
 	// carrying it forward would file it under whatever the next request spawns.
 	c.pending = nil

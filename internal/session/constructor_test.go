@@ -129,35 +129,3 @@ func TestConstructorFormatAgentManifestWorktrees(t *testing.T) {
 		t.Errorf("manifest incorrectly included agent from unrelated project:\n%s", manifest)
 	}
 }
-
-func TestConstructorRouteMessageFallback(t *testing.T) {
-	tasks := ParseTasks(`
-Here is the plan:
-` + "```composer:tasks" + `
-{
-  "tasks": [
-    {
-      "action": "message",
-      "targetThreadId": "task-1-frontend",
-      "title": "Refine UI",
-      "prompt": "Add dark mode toggle"
-    },
-    {
-      "action": "spawn",
-      "title": "Create Docs",
-      "prompt": "Document endpoints"
-    }
-  ]
-}
-` + "```")
-
-	if len(tasks) != 2 {
-		t.Fatalf("expected 2 parsed tasks, got %d", len(tasks))
-	}
-	if tasks[0].Action != "message" || tasks[0].TargetThreadID != "task-1-frontend" {
-		t.Errorf("task 0 unexpected: %+v", tasks[0])
-	}
-	if tasks[1].Action != "spawn" {
-		t.Errorf("task 1 unexpected: %+v", tasks[1])
-	}
-}

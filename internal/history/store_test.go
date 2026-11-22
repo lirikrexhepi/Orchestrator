@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"composer/internal/domain"
 )
@@ -511,5 +512,75 @@ func TestRemoveTurnDropsOnlyThatTurnAndKeepsAppending(t *testing.T) {
 	want := []string{"keep", "kept reply", "switched model", "keep too", "after removal"}
 	if strings.Join(texts, "|") != strings.Join(want, "|") {
 		t.Fatalf("transcript = %v, want %v", texts, want)
+	}
+}
+
+func TestLoadMetaRefreshesUpdatedAtFromTranscriptMtime(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	defer store.Close()
+
+	oldTs := int64(1700000000000)
+	meta := Meta{
+		Workspace: domain.Workspace{ID: "ws-mtime", Title: "Mtime Test", Cwd: root, CreatedAt: oldTs, UpdatedAt: oldTs},
+		Tasks: []domain.Task{
+			{ThreadID: "t-1", WorkspaceID: "ws-mtime", CreatedAt: oldTs, UpdatedAt: oldTs, State: domain.TaskComplete},
+		},
+	}
+	if err := store.SaveMeta(meta); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+	tPath := filepath.Join(root, "ws-mtime", "t-1.jsonl")
+	if err := os.WriteFile(tPath, []byte(`{"kind":"user.message","threadId":"t-1","text":"hi","at":1700000005000}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	newer := time.UnixMilli(oldTs + 60000)
+	if err := os.Chtimes(tPath, newer, newer); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	loaded, err := store.LoadMeta("ws-mtime")
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if loaded.Workspace.UpdatedAt != newer.UnixMilli() || loaded.Tasks[0].UpdatedAt != newer.UnixMilli() {
+		t.Fatalf("expected UpdatedAt=%d, got ws=%d task=%d", newer.UnixMilli(), loaded.Workspace.UpdatedAt, loaded.Tasks[0].UpdatedAt)
+	}
+}
+
+func TestLoadMergesAndRemovesOpenContinuationHandle(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	defer store.Close()
+
+	wsID := "ws-open-cont"
+	baseID := "import-abc"
+	contID := "import-abc-cont-1"
+	if err := store.SaveMeta(Meta{
+		Workspace: domain.Workspace{ID: wsID, Cwd: root, CreatedAt: 100, UpdatedAt: 100},
+		Tasks: []domain.Task{
+			{ThreadID: baseID, WorkspaceID: wsID, CreatedAt: 100, UpdatedAt: 100},
+			{ThreadID: contID, WorkspaceID: wsID, CreatedAt: 110, UpdatedAt: 110},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(wsID, baseID, event(baseID, "imported", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(wsID, contID, event(contID, "continued", 2)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load without closing handles first; on Windows open contID handle must be closed before os.Remove.
+	loaded, err := store.Load(wsID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Transcripts[baseID]) != 2 {
+		t.Fatalf("expected 2 merged events, got %d", len(loaded.Transcripts[baseID]))
+	}
+	if _, err := os.Stat(filepath.Join(root, wsID, contID+transcriptExt)); !os.IsNotExist(err) {
+		t.Fatalf("expected continuation file to be removed, stat err = %v", err)
 	}
 }

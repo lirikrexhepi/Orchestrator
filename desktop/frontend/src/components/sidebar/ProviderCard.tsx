@@ -28,7 +28,11 @@ interface AccountRow {
 
 function primaryLimit(entry?: session.DriverUsage) {
   return (
-    entry?.limits?.find((l) => l.window === 'five_hour' && typeof l.usedPercent === 'number') ??
+    entry?.limits?.find(
+      (l) =>
+        (l.window === 'five_hour' || l.window.toLowerCase().includes('5h')) &&
+        typeof l.usedPercent === 'number',
+    ) ??
     entry?.limits?.find((l) => typeof l.usedPercent === 'number') ??
     entry?.limits?.[0]
   );
@@ -43,9 +47,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
   claudeUpdate,
   isLight,
 }) => {
-  const { provider, models, modelId, enabled, effortId, effortChoices } = entry;
-  const showEffort = enabled && modelId !== '' && effortChoices.length > 0;
-  const options = [{ value: '', label: 'CLI default' }, ...models.map((m) => ({ value: m.id, label: m.name }))];
+  const { provider, enabled } = entry;
   const [open, setOpen] = React.useState<string | null>(null);
 
   const fg = isLight ? 'text-black/90' : 'text-white/90';
@@ -98,26 +100,6 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
         <Switch on={enabled} onChange={() => void defaultModels.toggle(provider.id, !enabled)} isLight={isLight} label={`Enable ${provider.name}`} />
       </div>
 
-      {enabled && (
-        <div className="flex items-center gap-2 px-3.5 pb-3">
-          <CleanDropdown
-            value={modelId}
-            options={options}
-            disabled={defaultModels.isSaving === provider.id || models.length === 0}
-            onChange={(val) => void defaultModels.select(provider.id, val)}
-            className="flex-1 min-w-0"
-          />
-          {showEffort && (
-            <CleanDropdown
-              value={effortId}
-              options={effortChoices}
-              disabled={defaultModels.isSaving === provider.id}
-              onChange={(val) => void defaultModels.selectEffort(provider.id, val)}
-              className="w-[118px] shrink-0"
-            />
-          )}
-        </div>
-      )}
       {update && (update.output || update.error) && (
         <span className={`px-3.5 pb-2.5 text-[11px] leading-snug ${update.error ? 'text-red-300/90' : sub}`}>
           {update.error ?? update.output}
@@ -128,6 +110,8 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
         <div className={`flex flex-col border-t ${isLight ? 'border-black/[0.06]' : 'border-white/[0.06]'}`}>
           {rows.map((row) => {
             const status = row.accountId ? accounts.statuses[statusKey(provider.id, row.accountId)] : undefined;
+            const accountObj = driverAccounts.find((a) => a.id === row.accountId);
+            const authMode = accountObj?.authMode;
             const email = emailFromDetail(status?.detail);
             const title = email || row.name;
             const label = email
@@ -170,9 +154,26 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
                   ) : (
                     <>
                       <span className="flex flex-col min-w-0 flex-1">
-                        <span className={`text-[12.5px] font-medium tracking-tight truncate ${fg}`} title={status?.detail}>
-                          {title}
-                        </span>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className={`text-[12.5px] font-medium tracking-tight truncate ${fg}`} title={status?.detail}>
+                            {title}
+                          </span>
+                          {authMode && (
+                            <span
+                              className={`text-[9.5px] font-medium px-1.5 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
+                                authMode === 'api_key'
+                                  ? isLight
+                                    ? 'bg-purple-100 text-purple-700'
+                                    : 'bg-purple-500/20 text-purple-300'
+                                  : isLight
+                                  ? 'bg-blue-100 text-blue-700'
+                                  : 'bg-blue-500/20 text-blue-300'
+                              }`}
+                            >
+                              {authMode === 'api_key' ? 'API Key' : 'Keyring'}
+                            </span>
+                          )}
+                        </div>
                         <span className={`text-[11px] tracking-tight truncate ${sub}`}>
                           {[label, limit?.resetsAt ? until(limit.resetsAt) : ''].filter(Boolean).join(' · ')}
                         </span>
@@ -213,9 +214,22 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
                           </>
                         ) : (
                           <>
-                            <button type="button" disabled={accounts.busy} onClick={() => void accounts.signIn(provider.id, row.accountId!)} className={link}>
-                              {status?.signedIn ? 'Sign in again' : 'Sign in'}
-                            </button>
+                            {!(provider.id === 'antigravity' && authMode === 'api_key') && (
+                              <button type="button" disabled={accounts.busy} onClick={() => void accounts.signIn(provider.id, row.accountId!)} className={link}>
+                                {status?.signedIn ? 'Sign in again' : 'Sign in'}
+                              </button>
+                            )}
+                            {provider.id === 'antigravity' && authMode === 'keyring' && row.accountId !== 'default' && (
+                              <button
+                                type="button"
+                                disabled={accounts.busy}
+                                onClick={() => void accounts.captureProfile(row.accountId!)}
+                                className={link}
+                                title="Capture active OS keyring credentials to this profile"
+                              >
+                                Capture login
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => {
@@ -254,14 +268,61 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
               }}
             >
               <div className="flex items-center gap-2">
-                <input autoFocus placeholder="Account name, e.g. Personal" value={accounts.name} onChange={(event) => accounts.setName(event.target.value)} className={input} />
-                <button type="submit" disabled={accounts.busy || !accounts.name.trim()} className={link}>
+                <input
+                  autoFocus
+                  placeholder="Account name, e.g. Personal"
+                  value={accounts.name}
+                  onChange={(event) => accounts.setName(event.target.value)}
+                  className={input}
+                />
+                <button
+                  type="submit"
+                  disabled={
+                    accounts.busy ||
+                    !accounts.name.trim() ||
+                    (provider.id === 'antigravity' && accounts.authMode === 'api_key' && !accounts.apiKey.trim())
+                  }
+                  className={link}
+                >
                   Add
                 </button>
                 <button type="button" onClick={() => accounts.setAdding(null)} className={link}>
                   Cancel
                 </button>
               </div>
+              {provider.id === 'antigravity' && (
+                <div className="flex flex-col gap-1.5 pt-0.5">
+                  <div className={`flex items-center gap-3 text-[11px] ${sub}`}>
+                    <label className="flex items-center gap-1 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="antigravityAuthMode"
+                        checked={accounts.authMode === 'keyring'}
+                        onChange={() => accounts.setAuthMode('keyring')}
+                      />
+                      <span>Keyring (Google Sub)</span>
+                    </label>
+                    <label className="flex items-center gap-1 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="antigravityAuthMode"
+                        checked={accounts.authMode === 'api_key'}
+                        onChange={() => accounts.setAuthMode('api_key')}
+                      />
+                      <span>API Key</span>
+                    </label>
+                  </div>
+                  {accounts.authMode === 'api_key' && (
+                    <input
+                      placeholder="GEMINI_API_KEY (AIza...)"
+                      type="password"
+                      value={accounts.apiKey}
+                      onChange={(event) => accounts.setApiKey(event.target.value)}
+                      className={input}
+                    />
+                  )}
+                </div>
+              )}
               {COPYABLE.has(provider.id) && (
                 <label className={`flex items-center gap-1.5 text-[11px] cursor-pointer ${sub}`}>
                   <input type="checkbox" checked={accounts.copySettings} onChange={(event) => accounts.setCopySettings(event.target.checked)} />

@@ -69,6 +69,20 @@ type RuntimeEvent struct {
 	Error      string           `json:"error,omitempty"`
 }
 
+type ToolCategory string
+
+const (
+	ToolCategoryRead     ToolCategory = "read"
+	ToolCategoryEdit     ToolCategory = "edit"
+	ToolCategoryWrite    ToolCategory = "write"
+	ToolCategoryCommand  ToolCategory = "command"
+	ToolCategorySearch   ToolCategory = "search"
+	ToolCategoryTodo     ToolCategory = "todo"
+	ToolCategorySubagent ToolCategory = "subagent"
+	ToolCategoryMCP      ToolCategory = "mcp"
+	ToolCategoryOther    ToolCategory = "other"
+)
+
 type ToolStatus string
 
 const (
@@ -79,13 +93,16 @@ const (
 )
 
 type ToolCall struct {
-	ID     string         `json:"id"`
-	Name   string         `json:"name"`
-	Kind   string         `json:"kind,omitempty"`
-	Status ToolStatus     `json:"status"`
-	Input  map[string]any `json:"input,omitempty"`
-	Output string         `json:"output,omitempty"`
-	Diffs  []FileDiff     `json:"diffs,omitempty"`
+	ID       string         `json:"id"`
+	Name     string         `json:"name"`
+	Kind     string         `json:"kind,omitempty"`
+	Category ToolCategory   `json:"category,omitempty"`
+	Target   string         `json:"target,omitempty"`
+	Summary  string         `json:"summary,omitempty"`
+	Status   ToolStatus     `json:"status"`
+	Input    map[string]any `json:"input,omitempty"`
+	Output   string         `json:"output,omitempty"`
+	Diffs    []FileDiff     `json:"diffs,omitempty"`
 
 	DurationMs int64 `json:"durationMs,omitempty"`
 	ToolCount  int   `json:"toolCount,omitempty"`

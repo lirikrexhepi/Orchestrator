@@ -10,15 +10,7 @@ export interface OrchestratorCardProps {
   blocks: AgentStreamBlock[];
   isBusy?: boolean;
   error?: string | null;
-  canUseWorktree?: boolean;
   isActive?: boolean;
-  launchedKeys?: string[];
-  onConfirmPlan?: (
-    tasks: { title: string; prompt: string; cwd?: string }[],
-    useWorktree: boolean,
-    modelIds: string[],
-  ) => void;
-  onDismissPlan?: () => void;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -32,11 +24,7 @@ export const OrchestratorCard: React.FC<OrchestratorCardProps> = ({
   blocks,
   isBusy = false,
   error,
-  canUseWorktree,
   isActive = true,
-  launchedKeys,
-  onConfirmPlan,
-  onDismissPlan,
   className = '',
   style,
 }) => {
@@ -159,11 +147,7 @@ export const OrchestratorCard: React.FC<OrchestratorCardProps> = ({
               <AgentSessionFeed
                 blocks={blocks}
                 isWorking={isBusy}
-                canUseWorktree={canUseWorktree}
                 isActive={isActive}
-                launchedKeys={launchedKeys}
-                onConfirmPlan={onConfirmPlan}
-                onDismissPlan={onDismissPlan}
               />
 
               {isBusy && !hasLiveIndicator && (

@@ -62,6 +62,17 @@ func attachJob(p *Process, ownProcessOnly bool) {
 	p.mu.Unlock()
 }
 
+func terminateJob(p *Process) bool {
+	p.mu.Lock()
+	job, _ := p.job.(*jobObject)
+	p.mu.Unlock()
+
+	if job == nil {
+		return false
+	}
+	return windows.TerminateJobObject(job.handle, 1) == nil
+}
+
 func closeJob(p *Process) bool {
 	p.mu.Lock()
 	job, _ := p.job.(*jobObject)

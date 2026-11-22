@@ -253,6 +253,7 @@ const MATERIAL: Record<string, IconSvgElement> = {
   history: Clock01Icon,
   home_storage: HardDriveIcon,
   hourglass_top: HourglassIcon,
+  hub: PlugSocketIcon,
   image: Image01Icon,
   language: Globe02Icon,
   linked_services: Link01Icon,
@@ -289,6 +290,70 @@ export function materialIcon(name: string): IconSvgElement {
 
 export const MaterialIcon: React.FC<IconProps & { name: string }> = ({ name, size = '1em', ...rest }) => (
   <HugeiconsIcon icon={materialIcon(name)} size={size} {...rest} />
+);
+
+export const CheckCircleFilled: React.FC<{ size?: number; className?: string }> = ({
+  size = 17,
+  className = '',
+}) => (
+  <svg width={size} height={size} viewBox="0 0 20 20" fill="none" aria-hidden="true" className={`shrink-0 ${className}`}>
+    <circle cx="10" cy="10" r="9" fill="currentColor" />
+    <path
+      d="M6.4 10.25L8.85 12.7L13.85 7.45"
+      stroke="#FFFFFF"
+      strokeWidth="2.1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+export const XCircleFilled: React.FC<{ size?: number; className?: string }> = ({
+  size = 17,
+  className = '',
+}) => (
+  <svg width={size} height={size} viewBox="0 0 20 20" fill="none" aria-hidden="true" className={`shrink-0 ${className}`}>
+    <circle cx="10" cy="10" r="9" fill="currentColor" />
+    <path
+      d="M7.25 7.25L12.75 12.75M12.75 7.25L7.25 12.75"
+      stroke="#FFFFFF"
+      strokeWidth="2.0"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+export const RunningCircleIcon: React.FC<{ size?: number; className?: string }> = ({
+  size = 17,
+  className = '',
+}) => (
+  <svg width={size} height={size} viewBox="0 0 20 20" fill="none" aria-hidden="true" className={`shrink-0 ${className}`}>
+    <circle cx="10" cy="10" r="9" fill="currentColor" />
+    <circle
+      cx="10"
+      cy="10"
+      r="4.8"
+      stroke="#18181B"
+      strokeOpacity="0.22"
+      strokeWidth="2.1"
+    />
+    <path
+      d="M10 5.2A4.8 4.8 0 0 1 14.8 10"
+      stroke="#18181B"
+      strokeOpacity="0.88"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+    >
+      <animateTransform
+        attributeName="transform"
+        type="rotate"
+        from="0 10 10"
+        to="360 10 10"
+        dur="0.9s"
+        repeatCount="indefinite"
+      />
+    </path>
+  </svg>
 );
 
 const kebab = (key: string) => key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);

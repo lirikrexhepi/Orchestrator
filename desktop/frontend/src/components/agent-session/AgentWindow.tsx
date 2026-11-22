@@ -10,26 +10,35 @@ import { AgentGitView } from './AgentGitView';
 import { AgentServersView } from './AgentServersView';
 import { domain, servers } from '../../../wailsjs/go/models';
 import { GitState, useGit } from '../git';
-import { X, Square, Folder, Minimize } from '../common/icons';
+import { X, Square, Folder } from '../common/icons';
 import { OrbitLoader } from './OrbitLoader';
 import { TextShimmer } from './TextShimmer';
-import { AgentStreamBlock, SubagentBlockData, TodoToolBlockData } from './types';
+import { AgentStreamBlock, SubagentBlockData } from './types';
 import { SubagentMenu } from './SubagentMenu';
 import { SubagentFullView, WorkspaceSection } from './WorkspacePanel';
-import { AgentTasklistView } from './AgentTasklistView';
-import { AgentViewSwitcher } from './AgentViewSwitcher';
+import { AgentTerminalView } from './AgentTerminalView';
 import { useSmoothScroll } from '../common/useSmoothScroll';
 import { usePinnedScroll } from '../common/usePinnedScroll';
 import { ChatTitle } from './ChatTitle';
 import { ContextRing } from './ContextRing';
 import type { ContextUsage } from './contextUsage';
-import { collectThreadChanges, ThreadFileChange } from './threadChanges';
+import { collectThreadChanges } from './threadChanges';
+import {
+  extractSessionChecks,
+  extractMcpUsage,
+  FileRepoScope,
+  groupChangesByRepo,
+  normalizeRepoPath,
+  RepoChangeGroup,
+} from './sessionInspector';
+import { SessionInspectorSections } from './SessionInspectorSections';
+import { ResolveFileRepos } from '../../../wailsjs/go/main/App';
 import { parseSwitchNotice } from './NoticeDivider';
 import { formatModelBadge, renderChatIcon } from '../common/DynamicIsland';
 
 export type AgentSessionStatus = 'working' | 'finished' | 'idle' | 'error';
 
-export type AgentCardMode = 'chat' | 'tasklist' | 'browser' | 'servers' | 'changes';
+export type AgentCardMode = 'chat' | 'browser' | 'terminal' | 'servers' | 'changes';
 
 export interface AgentWindowProps {
   id?: string;
@@ -66,7 +75,7 @@ export interface AgentWindowProps {
   onFocus?: () => void;
   onSendMessage?: (msg: string, modelId: string, files?: domain.FileRef[]) => void;
   onInterrupt?: () => void;
-  onRename?: (title: string) => void;
+  onRename?: (title: string) => void | Promise<void>;
   onApprovePlan?: (blockId: string) => void;
   onAnswerQuestion?: (blockId: string, answers: string[]) => void;
   onSkipQuestion?: (blockId: string) => void;
@@ -83,10 +92,16 @@ export interface AgentWindowProps {
   onExitFullscreen?: () => void;
   isBrowserImmersive?: boolean;
   onBrowserImmersiveChange?: (immersive: boolean) => void;
+  isBrowserSplit?: boolean;
+  onBrowserSplitChange?: (split: boolean) => void;
+  browserSplitRatio?: number;
+  onBrowserSplitRatioChange?: (ratio: number) => void;
   cardWidth?: number;
   cardHeight?: number;
   browserTargetUrl?: string;
   browserTargetNonce?: number;
+  onInjectChatText?: (text: string) => void;
+  onAttachImage?: (dataUrl: string, filename: string) => void | Promise<void>;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -163,10 +178,16 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   onExitFullscreen,
   isBrowserImmersive = false,
   onBrowserImmersiveChange,
+  isBrowserSplit,
+  onBrowserSplitChange,
+  browserSplitRatio,
+  onBrowserSplitRatioChange,
   cardWidth,
   cardHeight,
   browserTargetUrl,
   browserTargetNonce,
+  onInjectChatText,
+  onAttachImage,
   className = '',
   style,
 }) => {
@@ -179,9 +200,30 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   }, []);
   const [internalMode, setInternalMode] = useState<AgentCardMode>('chat');
   const activeMode = cardMode !== undefined ? cardMode : internalMode;
-  const [browserHost, setBrowserHost] = useState<HTMLElement | null>(null);
+  const [internalSplitBrowser, setInternalSplitBrowser] = useState(false);
+  const [internalSplitRatio, setInternalSplitRatio] = useState(0.5);
+  const splitBrowser = isBrowserSplit !== undefined ? isBrowserSplit : internalSplitBrowser;
+  const splitRatio = browserSplitRatio !== undefined ? browserSplitRatio : internalSplitRatio;
+  const setSplitBrowser = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) => {
+      const resolved = typeof next === 'function' ? next(splitBrowser) : next;
+      if (onBrowserSplitChange) onBrowserSplitChange(resolved);
+      else setInternalSplitBrowser(resolved);
+    },
+    [onBrowserSplitChange, splitBrowser],
+  );
+  const setSplitRatio = useCallback(
+    (next: number) => {
+      if (onBrowserSplitRatioChange) onBrowserSplitRatioChange(next);
+      else setInternalSplitRatio(next);
+    },
+    [onBrowserSplitRatioChange],
+  );
+  const bodyContainerRef = useRef<HTMLDivElement>(null);
   const browserHeader = activeMode === 'browser';
+  const hideChatChrome = activeMode === 'browser' || activeMode === 'terminal' || activeMode === 'changes';
   const immersive = isBrowserImmersive && isFullscreen && browserHeader;
+  const isSplitBrowser = splitBrowser && activeMode === 'browser' && mode !== 'grid';
 
   const driverProgression = useMemo(() => {
     const steps: Array<{ driver: string; model?: string }> = [];
@@ -373,15 +415,62 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
     else setInternalMode(m);
   };
 
+  const handleSendTerminalToChat = (snippet: string) => {
+    if (onInjectChatText) {
+      onInjectChatText(snippet);
+    } else {
+      window.dispatchEvent(
+        new CustomEvent('orchestrator:inject-chat-text', {
+          detail: { text: snippet, threadId: id },
+        })
+      );
+    }
+    setMode('chat');
+  };
+
+  const handleAttachBrowserImage = useCallback(
+    (dataUrl: string, filename: string) => {
+      if (onAttachImage) {
+        void onAttachImage(dataUrl, filename);
+      } else {
+        window.dispatchEvent(
+          new CustomEvent('orchestrator:attach-image', {
+            detail: { dataUrl, filename, threadId: id },
+          }),
+        );
+      }
+      if (!isSplitBrowser) {
+        setMode('chat');
+      }
+    },
+    [onAttachImage, id, isSplitBrowser],
+  );
+
+  const handleSplitDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const container = bodyContainerRef.current;
+    if (!container) return;
+    const onMove = (ev: PointerEvent) => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const ratio = Math.max(0.25, Math.min(0.75, (ev.clientX - rect.left) / rect.width));
+      setSplitRatio(ratio);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  };
+
   const smoothScroll = useSmoothScroll(feedScrollRef, {
     speed: 1.0,
-    enabled: activeMode === 'chat' && mode !== 'grid',
+    enabled: (activeMode === 'chat' || isSplitBrowser) && mode !== 'grid',
   });
-
-  const todoBlock = [...streamBlocks].reverse().find((b): b is TodoToolBlockData => b.type === 'tool_todo');
-  const todos = todoBlock?.todos ?? [];
-  const completedTasksCount = todos.filter((t) => t.status === 'completed').length;
-  const totalTasksCount = todos.length;
 
   const [openSubagentId, setOpenSubagentId] = useState<string | null>(null);
   const closeSubagent = useCallback(() => setOpenSubagentId(null), []);
@@ -390,12 +479,21 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
     [streamBlocks],
   );
 
-  const webServers = (detectedServers || []).filter((s) => !s.agent && s.port > 0);
-  const primaryServer = webServers[0];
+  const [activeGitPath, setActiveGitPath] = useState<string | undefined>(undefined);
+  const [focusedGitFile, setFocusedGitFile] = useState<{ path: string; nonce: number } | null>(null);
 
-  const threadGit = useGit(Boolean(projectPath) && ((isFullscreen && isFocused) || activeMode === 'changes'), projectPath);
-  const laneGit = projectPath ? threadGit : git;
-  const projectKey = projectPath ? lanePathKey(projectPath) : '';
+  useEffect(() => {
+    setActiveGitPath(undefined);
+    setFocusedGitFile(null);
+  }, [projectPath, id]);
+
+  const effectiveGitRoot = activeGitPath || projectPath;
+  const threadGit = useGit(
+    Boolean(effectiveGitRoot) && ((isFullscreen && isFocused) || activeMode === 'changes'),
+    effectiveGitRoot,
+  );
+  const laneGit = effectiveGitRoot ? threadGit : git;
+  const projectKey = effectiveGitRoot ? lanePathKey(effectiveGitRoot) : '';
   const matchingLane =
     laneGit?.lanes.find(
       (l) =>
@@ -406,8 +504,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
     (projectKey ? laneGit?.lanes.find((l) => lanePathKey(l.path) === projectKey) : undefined) ||
     laneGit?.lanes.find((l) => l.isMain);
 
-  const threadChanges = useMemo(() => collectThreadChanges(streamBlocks), [streamBlocks]);
-  const changesCount = Math.max(threadChanges.length, 0);
+  const threadChanges = useMemo(() => collectThreadChanges(streamBlocks, projectPath), [streamBlocks, projectPath]);
 
   const isWorking =
     status === 'working' ||
@@ -455,11 +552,76 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
     () => (openSubagentId ? subagents.find((agent) => agent.id === openSubagentId) ?? null : null),
     [openSubagentId, subagents],
   );
-  const openChanges = useCallback(() => {
-    setOpenSubagentId(null);
-    if (onCardModeChange) onCardModeChange('changes');
-    else setInternalMode('changes');
-  }, [onCardModeChange]);
+  const openChanges = useCallback(
+    (group?: RepoChangeGroup) => {
+      setOpenSubagentId(null);
+      if (group?.isGit && group.root) {
+        setActiveGitPath(group.root);
+      } else if (!group) {
+        setActiveGitPath(undefined);
+      }
+      if (onCardModeChange) onCardModeChange('changes');
+      else setInternalMode('changes');
+    },
+    [onCardModeChange],
+  );
+
+  const openFileInChanges = useCallback(
+    (filePath: string, group?: RepoChangeGroup) => {
+      setOpenSubagentId(null);
+      if (group?.isGit && group.root) {
+        setActiveGitPath(group.root);
+      }
+      setFocusedGitFile({ path: filePath, nonce: Date.now() });
+      if (onCardModeChange) onCardModeChange('changes');
+      else setInternalMode('changes');
+    },
+    [onCardModeChange],
+  );
+
+  const checks = useMemo(() => extractSessionChecks(streamBlocks), [streamBlocks]);
+  const mcps = useMemo(() => extractMcpUsage(streamBlocks), [streamBlocks]);
+
+  const [repoScopes, setRepoScopes] = useState<Record<string, FileRepoScope>>({});
+  const resolvedPathsRef = useRef<Record<string, FileRepoScope>>({});
+
+  const uniqueDirsKey = useMemo(() => {
+    const dirs = new Set<string>();
+    if (projectPath) dirs.add(projectPath.trim());
+    for (const change of threadChanges) {
+      if (change.path) {
+        dirs.add(change.path);
+        const lastSlash = Math.max(change.path.lastIndexOf('/'), change.path.lastIndexOf('\\'));
+        if (lastSlash > 0) {
+          dirs.add(change.path.slice(0, lastSlash));
+        }
+      }
+    }
+    return Array.from(dirs).sort().join('||');
+  }, [threadChanges, projectPath]);
+
+  useEffect(() => {
+    if (!uniqueDirsKey) return;
+    const paths = uniqueDirsKey.split('||').filter(Boolean);
+    const needed = paths.filter((p) => !resolvedPathsRef.current[p]);
+    if (needed.length === 0) {
+      setRepoScopes({ ...resolvedPathsRef.current });
+      return;
+    }
+    let cancelled = false;
+    ResolveFileRepos(needed)
+      .then((resolved) => {
+        if (cancelled || !resolved) return;
+        Object.assign(resolvedPathsRef.current, resolved);
+        setRepoScopes({ ...resolvedPathsRef.current });
+      })
+      .catch((err) => {
+        console.warn('ResolveFileRepos error:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [uniqueDirsKey]);
   const showOverview = isDraft && streamBlocks.length === 0;
   const reduceMotion = useReducedMotion();
   const chatCrossfade = reduceMotion
@@ -468,14 +630,14 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
 
   const MODE_INDEX: Record<AgentCardMode, number> = {
     chat: 0,
-    tasklist: 1,
-    browser: 2,
+    browser: 1,
+    terminal: 2,
     servers: 3,
     changes: 4,
   };
 
   const insetForDock = (base: React.CSSProperties): React.CSSProperties =>
-    immersive ? { ...base, bottom: 0, left: 0 } : isFullscreen ? { ...base, bottom: 0, left: 0 } : base;
+    immersive || hideChatChrome ? { ...base, top: 0, right: 0, bottom: 0, left: 0 } : isFullscreen ? { ...base, bottom: 0, left: 0 } : base;
 
   const getTabStyle = (modeKey: AgentCardMode): React.CSSProperties => {
     const diff = MODE_INDEX[modeKey] - MODE_INDEX[activeMode];
@@ -497,11 +659,17 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
 
   const feedVirtual = useMemo<VirtualFeedOptions>(
     () => ({
-      className: `absolute inset-0 overflow-y-auto overflow-x-hidden custom-scrollbar ${isFullscreen ? 'pt-4 pb-[180px] px-4' : 'py-2.5 pr-2'} ${
+      className: `absolute inset-0 overflow-y-auto overflow-x-hidden custom-scrollbar ${
+        isSplitBrowser
+          ? 'pt-[58px] pb-[150px] px-4'
+          : isFullscreen
+            ? 'pt-4 pb-[180px] px-4'
+            : 'py-2.5 pr-2'
+      } ${
         isGrid ? 'pointer-events-none select-none' : ''
       }`,
       style: { ...FEED_SCROLL_STYLE },
-      itemClassName: `w-full min-w-0 flex flex-col ${isFullscreen ? 'max-w-[880px] mx-auto' : ''}`,
+      itemClassName: `w-full min-w-0 flex flex-col ${isFullscreen && !isSplitBrowser ? 'max-w-[880px] mx-auto' : ''}`,
       onScrollElement: attachFeedScroll,
       footer:
         isWorking && !hasLiveIndicator ? (
@@ -516,8 +684,18 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
           </div>
         ) : undefined,
     }),
-    [isFullscreen, isGrid, isWorking, hasLiveIndicator, attachFeedScroll],
+    [isSplitBrowser, isFullscreen, isGrid, isWorking, hasLiveIndicator, attachFeedScroll],
   );
+
+  const repoGroups = useMemo(
+    () => groupChangesByRepo(threadChanges, repoScopes, projectPath),
+    [threadChanges, repoScopes, projectPath],
+  );
+  const normProjPath = projectPath ? normalizeRepoPath(projectPath).toLowerCase() : '';
+  const hasMultiRepoChanges =
+    repoGroups.length > 1 ||
+    (Boolean(normProjPath) &&
+      repoGroups.some((g) => g.isGit && normalizeRepoPath(g.root).toLowerCase() !== normProjPath));
 
   const { currentTheme } = useTheme();
   const isLight = currentTheme.id === 'light' || currentTheme.id === 'white';
@@ -528,11 +706,29 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
         projectName={projectName}
         path={projectPath}
         lane={matchingLane ?? null}
-        onOpenChanges={openChanges}
+        hideBranchHeader={hasMultiRepoChanges}
+        onOpenChanges={() => openChanges()}
         onClose={onClose}
       />
     ),
-    [isLight, projectName, projectPath, matchingLane, openChanges, onClose],
+    [isLight, projectName, projectPath, matchingLane, hasMultiRepoChanges, openChanges, onClose],
+  );
+
+  const inspectorSection = useMemo(
+    () => (
+      <SessionInspectorSections
+        isLight={isLight}
+        changes={threadChanges}
+        repoScopes={repoScopes}
+        checks={checks}
+        contextUsage={contextUsage}
+        mcps={mcps}
+        workspaceCwd={projectPath}
+        onOpenChanges={openChanges}
+        onOpenFile={openFileInChanges}
+      />
+    ),
+    [isLight, threadChanges, repoScopes, checks, contextUsage, mcps, projectPath, openChanges, openFileInChanges],
   );
 
   const projectMeta = (
@@ -590,7 +786,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
             ? (isFullscreen ? 'none' : '1px solid var(--theme-panel-border, rgba(0, 0, 0, 0.08))')
             : (isFullscreen ? 'none' : '1px solid var(--theme-panel-border, rgba(255, 255, 255, 0.12))')
         }
-        className={`w-full h-full ${immersive || browserHeader ? 'p-0 pt-[48px]' : isFullscreen ? 'p-4 pt-[60px]' : 'p-4'} ${isLight ? 'text-[#030303]' : 'text-white'} shadow-2xl relative box-border transition-all duration-200 ease-out ${
+        className={`w-full h-full ${immersive || hideChatChrome ? 'p-0' : isFullscreen ? 'p-4 pt-[60px]' : 'p-4'} ${isLight ? 'text-[#030303]' : 'text-white'} shadow-2xl relative box-border transition-all duration-200 ease-out ${
           isGrid
             ? (isLight
                 ? 'group-hover/card:border-black/25 group-hover/card:shadow-[0_20px_48px_-12px_rgba(0,0,0,0.2),0_0_0_1px_rgba(0,0,0,0.1)]'
@@ -633,7 +829,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
           </div>
 
           {/* Card Header (Reinvented: seamless, borderless, organic glass) */}
-          <div className={`items-center justify-between shrink-0 pt-0.5 pb-2 px-1 ${immersive || browserHeader ? 'hidden' : 'flex'}`}>
+          <div className={`items-center justify-between shrink-0 pt-0.5 pb-2 px-1 ${immersive || hideChatChrome ? 'hidden' : 'flex'}`}>
             <div className={browserHeader ? 'flex items-center gap-2 min-w-0 pr-2 flex-1' : isFullscreen ? 'flex flex-col items-start gap-1.5 min-w-0 pr-2 flex-1' : 'flex items-center gap-2 min-w-0 pr-2'}>
               <div className="flex items-center gap-3 min-w-0">
                 <div
@@ -669,7 +865,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                     <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 ring-1 ring-black/40 shadow-[0_0_6px_rgba(52,211,153,0.9)] animate-pulse" />
                   )}
                 </div>
-                {isFullscreen && !browserHeader && (
+                {isFullscreen && !hideChatChrome && (
                   <>
                     {projectMeta}
                     <ContextRing usage={contextUsage} isLight={isLight} large />
@@ -677,7 +873,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 )}
               </div>
 
-              {!browserHeader && (
+              {!hideChatChrome && (
                 <div className="flex items-center gap-2 min-w-0 max-w-full">
                   <ChatTitle
                     title={title}
@@ -688,9 +884,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 </div>
               )}
 
-              {!browserHeader && !isFullscreen && <ContextRing usage={contextUsage} isLight={isLight} />}
-
-              <div ref={setBrowserHost} className={browserHeader ? 'flex flex-1 min-w-0 items-center' : 'hidden'} />
+              {!hideChatChrome && !isFullscreen && <ContextRing usage={contextUsage} isLight={isLight} />}
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
@@ -709,10 +903,21 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                 </div>
               )}
 
-              {!isGrid && !browserHeader && (subagents.length > 0 || (isFullscreen && isFocused)) && <SubagentMenu agents={subagents} isLight={isLight} driver={activeDriver} modelId={activeModel} dockable={isFullscreen && isFocused} workspace={workspaceSection} onOpenAgent={setOpenSubagentId} />}
+              {!isGrid && !hideChatChrome && (subagents.length > 0 || isFocused || isFullscreen) && (
+                <SubagentMenu
+                  agents={subagents}
+                  isLight={isLight}
+                  driver={activeDriver}
+                  modelId={activeModel}
+                  dockable={isFullscreen && isFocused}
+                  workspace={workspaceSection}
+                  inspector={inspectorSection}
+                  onOpenAgent={setOpenSubagentId}
+                />
+              )}
 
               {/* Minimalist Close Button for Fullscreen: Fixed directly above the docked workspace card */}
-              {onClose && isFullscreen && !browserHeader && createPortal(
+              {onClose && isFullscreen && !hideChatChrome && createPortal(
                 <button
                   type="button"
                   onClick={(e) => {
@@ -754,14 +959,27 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
             </div>
           </div>
 
-          {/* Card Body: Chat Feed, Embedded Browser, and Embedded Git View with Liquid Directional Crossfade */}
-          <div className="flex-1 min-h-0 h-0 relative overflow-hidden">
+          {/* Card Body: Chat Feed, Embedded Browser (with optional Split), Terminal, Servers, and Git View */}
+          <div ref={bodyContainerRef} className="flex-1 min-h-0 h-0 relative overflow-hidden">
             <div
               className={`absolute inset-0 flex flex-col pt-1 ${
                 isGrid ? 'pointer-events-none select-none' : ''
               }`}
               style={{
-                ...insetForDock(getTabStyle('chat')),
+                ...(isSplitBrowser
+                  ? {
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      right: 'auto',
+                      width: `${splitRatio * 100}%`,
+                      transform: 'none',
+                      opacity: 1,
+                      visibility: 'visible' as const,
+                      pointerEvents: 'auto' as const,
+                      zIndex: 10,
+                    }
+                  : insetForDock(getTabStyle('chat'))),
                 ...(isFullscreen
                   ? {
                       maskImage:
@@ -832,38 +1050,55 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
               </div>
             </div>
 
-            {/* 2. Embedded Tasklist View */}
-            <div
-              className={`absolute inset-0 flex flex-col pt-1 ${
-                isGrid ? 'pointer-events-none select-none' : ''
-              }`}
-              style={insetForDock(getTabStyle('tasklist'))}
-            >
-              {visited.has('tasklist') && (
-                <AgentTasklistView
-                  threadId={id}
-                  todos={todos}
-                  isWorking={isWorking}
-                />
-              )}
-            </div>
+            {isSplitBrowser && (
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                onPointerDown={handleSplitDividerPointerDown}
+                style={{ left: `${splitRatio * 100}%` }}
+                className="absolute top-0 bottom-0 -translate-x-1/2 w-2 z-20 cursor-col-resize flex items-center justify-center group"
+              >
+                <div className="w-px h-full bg-white/10 group-hover:bg-white/30 transition-colors" />
+              </div>
+            )}
 
-            {/* 3. Embedded Browser / Web Preview View */}
+            {/* Embedded Browser / Web Preview View */}
             <div
               className={`absolute inset-0 flex flex-col pt-1 ${
                 isGrid ? 'pointer-events-none select-none' : ''
               }`}
-              style={insetForDock(getTabStyle('browser'))}
+              style={
+                isSplitBrowser
+                  ? {
+                      top: 0,
+                      bottom: 0,
+                      right: 0,
+                      left: 'auto',
+                      width: `calc(${(1 - splitRatio) * 100}% - 1px)`,
+                      transform: 'none',
+                      opacity: 1,
+                      visibility: 'visible' as const,
+                      pointerEvents: 'auto' as const,
+                      zIndex: 10,
+                    }
+                  : insetForDock(getTabStyle('browser'))
+              }
             >
               {visited.has('browser') && (
                 <AgentBrowserView
                   threadId={id}
                   detectedServers={detectedServers}
-                  isFocused={isFocused && activeMode === 'browser' && !isGrid}
+                  isFocused={isFocused && (activeMode === 'browser' || isSplitBrowser) && !isGrid}
                   isAnimating={isAnimating}
                   onFocusCard={onFocus}
-                  toolbarHost={browserHost}
                   immersive={immersive}
+                  isSplit={isSplitBrowser}
+                  onToggleSplit={() => setSplitBrowser((v) => !v)}
+                  onCloseBrowser={() => {
+                    setSplitBrowser(false);
+                    setMode('chat');
+                  }}
+                  onAttachImage={handleAttachBrowserImage}
                   targetUrl={browserTargetUrl}
                   targetUrlNonce={browserTargetNonce}
                   projectName={projectName}
@@ -877,7 +1112,25 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
               )}
             </div>
 
-            {/* 4. Embedded Servers View */}
+            {/* Embedded Terminal View */}
+            <div
+              className={`absolute inset-0 flex flex-col pt-1 ${
+                isGrid ? 'pointer-events-none select-none' : ''
+              }`}
+              style={insetForDock(getTabStyle('terminal'))}
+            >
+              {visited.has('terminal') && (
+                <AgentTerminalView
+                  threadId={id ?? ''}
+                  projectPath={projectPath}
+                  isFocused={isFocused && activeMode === 'terminal' && !isGrid}
+                  isLight={isLight}
+                  onSendToChat={handleSendTerminalToChat}
+                />
+              )}
+            </div>
+
+            {/* Embedded Servers View */}
             <div
               className={`absolute inset-0 flex flex-col pt-1 ${
                 isGrid ? 'pointer-events-none select-none' : ''
@@ -894,7 +1147,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
               )}
             </div>
 
-            {/* 5. Embedded Git Changes View */}
+            {/* Embedded Git Changes View */}
             <div
               className={`absolute inset-0 flex flex-col pt-1 ${
                 isGrid ? 'pointer-events-none select-none' : ''
@@ -907,24 +1160,11 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
                   branch={subtitle}
                   git={laneGit}
                   threadChanges={threadChanges}
+                  targetRepoPath={activeGitPath}
+                  targetFile={focusedGitFile}
                 />
               )}
             </div>
-
-            {immersive && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onBrowserImmersiveChange?.(false);
-                }}
-                title="Exit full screen (Esc)"
-                aria-label="Exit full screen"
-                className="absolute top-3 left-3 z-50 w-[30px] h-[30px] rounded-full flex items-center justify-center bg-black/55 hover:bg-black/75 text-white/80 hover:text-white backdrop-blur-md border border-white/15 shadow-lg active:scale-90 transition-all duration-150 cursor-pointer pointer-events-auto"
-              >
-                <Minimize size={14} strokeWidth={2} />
-              </button>
-            )}
 
             {/* In Grid / Exposé mode, full shield prevents iframe/feed stealing click so card zooms smoothly */}
             {isGrid && <div className="absolute inset-0 z-30 cursor-pointer" />}

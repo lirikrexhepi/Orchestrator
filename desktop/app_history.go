@@ -128,8 +128,28 @@ func (a *App) ResumeHistoryThread(workspaceID, threadID string) (session.ResumeR
 			continue
 		}
 		cwd := resolveResumeCwd(task, loaded.Meta.Workspace.Cwd)
+		fellBack := cwd != task.Dir(loaded.Meta.Workspace.Cwd)
+		if !isLiveDir(cwd) {
+			if fallback := a.resolveCwd(""); isLiveDir(fallback) {
+				cwd = fallback
+				fellBack = true
+				task.Cwd = cwd
+				if loaded.Meta.Workspace.Cwd == "" {
+					loaded.Meta.Workspace.Cwd = cwd
+					if a.workspaces != nil {
+						a.workspaces.Restore(loaded.Meta.Workspace)
+					}
+					if a.recorder != nil {
+						a.recorder.Restore(loaded.Meta)
+					}
+				}
+				if a.recorder != nil {
+					a.recorder.TrackTask(task)
+				}
+			}
+		}
 		resumeID := loaded.Meta.Resume[task.ThreadID]
-		logger.Infof("App", "ResumeHistoryThread: thread=%s cwd=%q fellBack=%v hasResumeID=%v", task.ThreadID, cwd, cwd != task.Dir(loaded.Meta.Workspace.Cwd), resumeID != "")
+		logger.Infof("App", "ResumeHistoryThread: thread=%s cwd=%q fellBack=%v hasResumeID=%v", task.ThreadID, cwd, fellBack, resumeID != "")
 		fork := false
 		if loaded.Meta.Workspace.ImportedFrom == "claude-code" {
 			original := importedClaudeSession(loaded.Meta.Workspace, task.ThreadID)
@@ -164,10 +184,6 @@ func (a *App) ResumeHistoryThread(workspaceID, threadID string) (session.ResumeR
 		}
 		for _, task := range loaded.Meta.Tasks {
 			if task.ThreadID == outcome.ThreadID {
-				if live, ok := a.manager.ThreadSession(task.ThreadID); ok && live.Cwd != "" && task.Worktree == nil {
-					task.Cwd = live.Cwd
-					a.workspaces.SetTaskCwd(task.ThreadID, live.Cwd)
-				}
 				a.recorder.TrackTask(task)
 				break
 			}

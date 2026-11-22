@@ -29,6 +29,19 @@ type ModelRef struct {
 	ModelID    string `json:"modelID"`
 }
 
+type McpRemoteConfig struct {
+	Type    string            `json:"type"`
+	URL     string            `json:"url"`
+	Enabled bool              `json:"enabled"`
+	Headers map[string]string `json:"headers,omitempty"`
+	OAuth   bool              `json:"oauth"`
+}
+
+type AddMcpRequest struct {
+	Name   string          `json:"name"`
+	Config McpRemoteConfig `json:"config"`
+}
+
 type PromptRequest struct {
 	MessageID string    `json:"messageID,omitempty"`
 	Model     *ModelRef `json:"model,omitempty"`

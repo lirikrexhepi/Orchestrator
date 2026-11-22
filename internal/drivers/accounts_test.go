@@ -93,18 +93,75 @@ func TestOpenCodeAccountUsesItsOwnDataDir(t *testing.T) {
 	}
 }
 
-func TestCodexAndAntigravityStaySingleAccount(t *testing.T) {
+func TestCodexStaysSingleAccount(t *testing.T) {
 	registry := claudeRegistry(t)
-	for _, kind := range []domain.DriverKind{domain.DriverCodex, domain.DriverAntigravity} {
-		if registry.SupportsAccounts(kind) {
-			t.Fatalf("%s should not offer accounts", kind)
-		}
-		if _, err := registry.AccountStore().Add(kind, "Personal"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := registry.LaunchSettings(kind, "personal"); err == nil {
-			t.Fatalf("%s must refuse a non-default account", kind)
-		}
+	if registry.SupportsAccounts(domain.DriverCodex) {
+		t.Fatalf("Codex should not offer accounts")
+	}
+	if _, err := registry.AccountStore().Add(domain.DriverCodex, "Personal"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.LaunchSettings(domain.DriverCodex, "personal"); err == nil {
+		t.Fatalf("Codex must refuse a non-default account")
+	}
+}
+
+func TestAntigravitySupportsAccounts(t *testing.T) {
+	registry := claudeRegistry(t)
+	if !registry.SupportsAccounts(domain.DriverAntigravity) {
+		t.Fatalf("Antigravity should offer accounts")
+	}
+	accounts := registry.Accounts(domain.DriverAntigravity)
+	if len(accounts) != 1 || accounts[0].ID != domain.DefaultAccountID {
+		t.Fatalf("initial accounts = %+v, want [default]", accounts)
+	}
+	if accounts[0].AuthMode != "keyring" {
+		t.Fatalf("default authMode = %q, want keyring", accounts[0].AuthMode)
+	}
+
+	personal, err := registry.AccountStore().Add(domain.DriverAntigravity, "Personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := registry.LaunchSettings(domain.DriverAntigravity, personal.ID)
+	if err != nil {
+		t.Fatalf("LaunchSettings failed: %v", err)
+	}
+	_ = settings
+
+	// Test API Key account
+	apiKeyAcc, err := registry.AccountStore().AddWithMode(domain.DriverAntigravity, "API Key Account", "api_key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.WriteAccountMeta(apiKeyAcc.ConfigDir, provider.AccountMeta{
+		ID:       apiKeyAcc.ID,
+		Name:     apiKeyAcc.Name,
+		AuthMode: "api_key",
+		APIKey:   "secret-test-key",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	apiSettings, err := registry.LaunchSettings(domain.DriverAntigravity, apiKeyAcc.ID)
+	if err != nil {
+		t.Fatalf("LaunchSettings for api key failed: %v", err)
+	}
+	if apiSettings.Env["GEMINI_API_KEY"] != "secret-test-key" {
+		t.Fatalf("expected GEMINI_API_KEY in env, got %+v", apiSettings.Env)
+	}
+
+	// Verify ambient key is scrubbed
+	shell.SetAmbient(map[string]string{
+		"GEMINI_API_KEY": "ambient-key",
+	})
+	t.Cleanup(func() { shell.SetAmbient(nil) })
+
+	cleanSettings, err := registry.LaunchSettings(domain.DriverAntigravity, personal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanSettings.Env["GEMINI_API_KEY"] != "" {
+		t.Fatalf("ambient GEMINI_API_KEY should be scrubbed for keyring account, got %q", cleanSettings.Env["GEMINI_API_KEY"])
 	}
 }
 

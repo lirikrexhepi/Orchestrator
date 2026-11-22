@@ -3,8 +3,8 @@ package opencode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,6 +22,9 @@ type serverEntry struct {
 	// threads counts sessions using this server; the server is stopped when
 	// the last one ends, so worktrees do not leave resident servers behind.
 	threads int
+
+	mcpEndpoint string
+	mcpAuth     string
 }
 
 // Adapter talks to managed (or external) OpenCode HTTP servers. Servers are
@@ -40,9 +43,10 @@ type Adapter struct {
 	pending          map[string]string
 	pendingQuestions map[string]string
 
-	limitsMu sync.Mutex
-	limits   map[string]map[string]int64
-	limitsAt map[string]time.Time
+	limitsMu       sync.Mutex
+	limits         map[string]map[string]int64
+	limitsAt       map[string]time.Time
+	limitsFetching map[string]chan struct{}
 }
 
 type thread struct {
@@ -59,7 +63,7 @@ type thread struct {
 	turnID       string
 	tools        map[string]string
 	messageRoles map[string]string
-	lastUserText string
+	stepUsage    map[string]domain.Usage
 	// partText is the text already emitted per part, used to turn
 	// cumulative part updates into deltas; partTypes maps part id to type.
 	partText  map[string]string
@@ -86,13 +90,7 @@ func (a *Adapter) Capabilities() provider.Capabilities {
 }
 
 func serverKey(cwd string) string {
-	clean := filepath.Clean(cwd)
-	if clean == "" || clean == "." {
-		if wd, err := os.Getwd(); err == nil {
-			clean = filepath.Clean(wd)
-		}
-	}
-	return clean
+	return filepath.Clean(cwd)
 }
 
 // liveServer returns the cached server for key unless its process died.
@@ -149,6 +147,52 @@ func (a *Adapter) ensureServer(ctx context.Context, cwd string) (*httpClient, er
 	return api, nil
 }
 
+func (a *Adapter) ensureMCP(ctx context.Context, api *httpClient, key string, mcpCfg *domain.MCPConfig) error {
+	if mcpCfg == nil || mcpCfg.Endpoint == "" {
+		return nil
+	}
+
+	a.mu.Lock()
+	entry := a.servers[key]
+	if entry != nil && entry.mcpEndpoint == mcpCfg.Endpoint && entry.mcpAuth == mcpCfg.AuthHeader {
+		a.mu.Unlock()
+		return nil
+	}
+	a.mu.Unlock()
+
+	var headers map[string]string
+	if mcpCfg.AuthHeader != "" {
+		headers = map[string]string{
+			"Authorization": mcpCfg.AuthHeader,
+		}
+	}
+
+	req := AddMcpRequest{
+		Name: "orchestrator",
+		Config: McpRemoteConfig{
+			Type:    "remote",
+			URL:     mcpCfg.Endpoint,
+			Enabled: true,
+			Headers: headers,
+			OAuth:   false,
+		},
+	}
+
+	if err := api.do(ctx, http.MethodPost, "/mcp", req, nil); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	if e := a.servers[key]; e != nil {
+		e.mcpEndpoint = mcpCfg.Endpoint
+		e.mcpAuth = mcpCfg.AuthHeader
+	}
+	a.mu.Unlock()
+
+	logger.Infof("OpenCode", "Configured loopback MCP server at %s", mcpCfg.Endpoint)
+	return nil
+}
+
 func (a *Adapter) onServerError(sessionID, errMsg string) {
 	var targets []*thread
 	a.mu.RLock()
@@ -167,10 +211,10 @@ func (a *Adapter) onServerError(sessionID, errMsg string) {
 		t.mu.Lock()
 		turnID := t.turnID
 		t.turnID = ""
-		t.lastUserText = ""
 		t.tools = make(map[string]string)
 		t.partText = make(map[string]string)
 		t.partTypes = make(map[string]string)
+		t.stepUsage = make(map[string]domain.Usage)
 		t.mu.Unlock()
 
 		if turnID != "" {
@@ -185,23 +229,44 @@ func (a *Adapter) onServerError(sessionID, errMsg string) {
 
 func (a *Adapter) onServerExit(serverKey, tail string) {
 	a.mu.Lock()
+	entry := a.servers[serverKey]
 	delete(a.servers, serverKey)
 	var affected []*thread
-	for _, t := range a.threads {
+	sessionIDs := make(map[string]bool)
+	for id, t := range a.threads {
 		if t.serverKey == serverKey {
 			affected = append(affected, t)
+			delete(a.threads, id)
+			if t.sessionID != "" {
+				delete(a.bySession, t.sessionID)
+				sessionIDs[t.sessionID] = true
+			}
+		}
+	}
+	for reqID, sessID := range a.pending {
+		if sessionIDs[sessID] {
+			delete(a.pending, reqID)
+		}
+	}
+	for reqID, sessID := range a.pendingQuestions {
+		if sessionIDs[sessID] {
+			delete(a.pendingQuestions, reqID)
 		}
 	}
 	a.mu.Unlock()
+
+	if entry != nil && entry.streamed != nil {
+		entry.streamed()
+	}
 
 	for _, t := range affected {
 		t.mu.Lock()
 		turnID := t.turnID
 		t.turnID = ""
-		t.lastUserText = ""
 		t.tools = make(map[string]string)
 		t.partText = make(map[string]string)
 		t.partTypes = make(map[string]string)
+		t.stepUsage = make(map[string]domain.Usage)
 		t.mu.Unlock()
 
 		if turnID != "" {
@@ -215,6 +280,27 @@ func (a *Adapter) onServerExit(serverKey, tail string) {
 				Driver: domain.DriverOpenCode, Error: errMsg,
 			})
 		}
+		a.emit.Emit(domain.RuntimeEvent{
+			Kind: domain.EventSessionStopped, ThreadID: t.threadID, Driver: domain.DriverOpenCode,
+		})
+	}
+}
+
+func (a *Adapter) releaseUnusedServer(key string) {
+	a.mu.Lock()
+	entry, ok := a.servers[key]
+	if !ok || entry.threads > 0 {
+		a.mu.Unlock()
+		return
+	}
+	delete(a.servers, key)
+	a.mu.Unlock()
+
+	if entry.streamed != nil {
+		entry.streamed()
+	}
+	if entry.server != nil {
+		entry.server.stop()
 	}
 }
 
@@ -262,10 +348,10 @@ func (a *Adapter) reconcileServerThreads(baseURL string) {
 			t.mu.Lock()
 			turnID := t.turnID
 			t.turnID = ""
-			t.lastUserText = ""
 			t.tools = make(map[string]string)
 			t.partText = make(map[string]string)
 			t.partTypes = make(map[string]string)
+			t.stepUsage = make(map[string]domain.Usage)
 			t.mu.Unlock()
 
 			if turnID == "" {
@@ -312,17 +398,24 @@ func (a *Adapter) streamEvents(ctx context.Context, baseURL string) {
 }
 
 func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput) (domain.Session, error) {
-	cwd := in.Cwd
+	cwd := strings.TrimSpace(in.Cwd)
 	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
-		}
+		return domain.Session{}, errors.New("working directory is required")
 	}
 	in.Cwd = cwd
+	key := serverKey(cwd)
 	api, err := a.ensureServer(ctx, cwd)
 	if err != nil {
 		return domain.Session{}, err
 	}
+
+	if in.MCP != nil && in.MCP.Endpoint != "" && !in.PlanOnly {
+		if err := a.ensureMCP(ctx, api, key, in.MCP); err != nil {
+			a.releaseUnusedServer(key)
+			return domain.Session{}, fmt.Errorf("configure opencode mcp: %w", err)
+		}
+	}
+	go a.ensureLimits(key, api)
 
 	model := in.Model
 	if model == "" {
@@ -336,22 +429,29 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		permission:   in.Permission,
 		skills:       in.Skills,
 		api:          api,
-		serverKey:    serverKey(cwd),
+		serverKey:    key,
 		tools:        make(map[string]string),
 		messageRoles: make(map[string]string),
+		stepUsage:    make(map[string]domain.Usage),
 		partText:     make(map[string]string),
 		partTypes:    make(map[string]string),
 	}
 
 	if in.Resume != "" {
 		var existing Session
-		if err := api.do(ctx, http.MethodGet, "/session/"+in.Resume, nil, &existing); err == nil && existing.ID != "" {
-			t.sessionID = existing.ID
+		if err := api.do(ctx, http.MethodGet, "/session/"+in.Resume, nil, &existing); err != nil {
+			a.releaseUnusedServer(key)
+			return domain.Session{}, fmt.Errorf("resume opencode session %s: %w", in.Resume, err)
 		}
-	}
-	if t.sessionID == "" {
+		if existing.ID == "" {
+			a.releaseUnusedServer(key)
+			return domain.Session{}, fmt.Errorf("resume opencode session %s: session not found", in.Resume)
+		}
+		t.sessionID = existing.ID
+	} else {
 		var created Session
 		if err := api.do(ctx, http.MethodPost, "/session", CreateSessionRequest{Title: in.ThreadID}, &created); err != nil {
+			a.releaseUnusedServer(key)
 			return domain.Session{}, err
 		}
 		t.sessionID = created.ID
@@ -397,7 +497,7 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 		parts = append(parts, TextPart{Type: "text", Text: in.Text})
 	}
 	for _, file := range in.Files {
-		parts = append(parts, FilePart{Type: "file", MIME: file.MIME, URL: "file://" + file.Path})
+		parts = append(parts, FilePart{Type: "file", MIME: file.MIME, URL: fileURI(file.Path)})
 	}
 
 	preview := in.Text
@@ -408,7 +508,7 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 
 	t.mu.Lock()
 	t.turnID = in.TurnID
-	t.lastUserText = in.Text
+	t.stepUsage = make(map[string]domain.Usage)
 	t.mu.Unlock()
 
 	a.emit.Emit(domain.RuntimeEvent{
@@ -424,6 +524,7 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 	if err := api.do(ctx, http.MethodPost, "/session/"+t.sessionID+"/prompt_async", request, nil); err != nil {
 		t.mu.Lock()
 		t.turnID = ""
+		t.stepUsage = make(map[string]domain.Usage)
 		t.mu.Unlock()
 		logger.Errorf("OpenCode", "prompt_async failed: %v", err)
 		a.emit.Emit(domain.RuntimeEvent{
@@ -449,10 +550,10 @@ func (a *Adapter) InterruptTurn(ctx context.Context, threadID string) error {
 	t.mu.Lock()
 	turnID := t.turnID
 	t.turnID = ""
-	t.lastUserText = ""
 	t.tools = make(map[string]string)
 	t.partText = make(map[string]string)
 	t.partTypes = make(map[string]string)
+	t.stepUsage = make(map[string]domain.Usage)
 	t.mu.Unlock()
 
 	if turnID != "" {
@@ -541,6 +642,7 @@ func (a *Adapter) RespondToQuestion(ctx context.Context, threadID, requestID str
 		ThreadID: threadID,
 		Driver:   domain.DriverOpenCode,
 		Text:     strings.Join(answers, " / "),
+		Question: &domain.QuestionRequest{RequestID: requestID},
 	})
 	return nil
 }

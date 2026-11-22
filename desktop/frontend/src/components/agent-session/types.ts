@@ -123,6 +123,7 @@ export interface PlanToolBlockData {
 export interface QuestionItemData {
   question: string;
   options: QuestionOption[];
+  isMultiSelect?: boolean;
 }
 
 export interface QuestionToolBlockData {
@@ -163,6 +164,7 @@ export type SubagentEntry =
       target: string;
       status: 'running' | 'completed' | 'error';
       output?: string;
+      summary?: string;
       at?: number;
       filePath?: string;
       additions?: number;
@@ -176,6 +178,9 @@ export interface SubagentBlockData {
   toolId: string;
   title: string;
   agentType?: string;
+  driver?: string;
+  model?: string;
+  cwd?: string;
   prompt?: string;
   status: 'running' | 'completed' | 'error' | 'stopped';
   startedAt?: number;
@@ -185,6 +190,8 @@ export interface SubagentBlockData {
   result?: string;
   entries: SubagentEntry[];
   previousToolIds?: string[];
+  isAsync?: boolean;
+  childThreadId?: string;
 }
 
 export interface McpAppBlockData {

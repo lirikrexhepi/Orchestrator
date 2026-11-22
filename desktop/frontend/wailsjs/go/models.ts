@@ -158,6 +158,39 @@ export namespace attachments {
 
 }
 
+export namespace browser {
+	
+	export class SessionInfo {
+	    id: string;
+	    threadId: string;
+	    url: string;
+	    title: string;
+	    loading: boolean;
+	    canGoBack: boolean;
+	    canGoForward: boolean;
+	    width: number;
+	    height: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.threadId = source["threadId"];
+	        this.url = source["url"];
+	        this.title = source["title"];
+	        this.loading = source["loading"];
+	        this.canGoBack = source["canGoBack"];
+	        this.canGoForward = source["canGoForward"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	    }
+	}
+
+}
+
 export namespace claudeimport {
 	
 	export class ExternalSession {
@@ -292,10 +325,102 @@ export namespace devserver {
 
 export namespace domain {
 	
+	export class OptionChoice {
+	    id: string;
+	    label: string;
+	    default?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new OptionChoice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.label = source["label"];
+	        this.default = source["default"];
+	    }
+	}
+	export class OptionDescriptor {
+	    id: string;
+	    label: string;
+	    type: string;
+	    choices?: OptionChoice[];
+	    default?: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new OptionDescriptor(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.label = source["label"];
+	        this.type = source["type"];
+	        this.choices = this.convertValues(source["choices"], OptionChoice);
+	        this.default = source["default"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Model {
+	    id: string;
+	    displayName: string;
+	    default?: boolean;
+	    options?: OptionDescriptor[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Model(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.displayName = source["displayName"];
+	        this.default = source["default"];
+	        this.options = this.convertValues(source["options"], OptionDescriptor);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Account {
 	    id: string;
 	    name: string;
 	    configDir?: string;
+	    authMode?: string;
+	    models?: Model[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Account(source);
@@ -306,6 +431,40 @@ export namespace domain {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.configDir = source["configDir"];
+	        this.authMode = source["authMode"];
+	        this.models = this.convertValues(source["models"], Model);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class AccountModelDefault {
+	    model?: string;
+	    options?: Record<string, any>;
+	
+	    static createFrom(source: any = {}) {
+	        return new AccountModelDefault(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.model = source["model"];
+	        this.options = source["options"];
 	    }
 	}
 	export class ApprovalOption {
@@ -344,6 +503,9 @@ export namespace domain {
 	    id: string;
 	    name: string;
 	    kind?: string;
+	    category?: string;
+	    target?: string;
+	    summary?: string;
 	    status: string;
 	    input?: Record<string, any>;
 	    output?: string;
@@ -362,6 +524,9 @@ export namespace domain {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.kind = source["kind"];
+	        this.category = source["category"];
+	        this.target = source["target"];
+	        this.summary = source["summary"];
 	        this.status = source["status"];
 	        this.input = source["input"];
 	        this.output = source["output"];
@@ -617,96 +782,19 @@ export namespace domain {
 	        this.binary = source["binary"];
 	    }
 	}
-	export class OptionChoice {
-	    id: string;
-	    label: string;
-	    default?: boolean;
+	export class MCPConfig {
+	
 	
 	    static createFrom(source: any = {}) {
-	        return new OptionChoice(source);
+	        return new MCPConfig(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.label = source["label"];
-	        this.default = source["default"];
+	
 	    }
 	}
-	export class OptionDescriptor {
-	    id: string;
-	    label: string;
-	    type: string;
-	    choices?: OptionChoice[];
-	    default?: any;
 	
-	    static createFrom(source: any = {}) {
-	        return new OptionDescriptor(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.label = source["label"];
-	        this.type = source["type"];
-	        this.choices = this.convertValues(source["choices"], OptionChoice);
-	        this.default = source["default"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class Model {
-	    id: string;
-	    displayName: string;
-	    default?: boolean;
-	    options?: OptionDescriptor[];
-	
-	    static createFrom(source: any = {}) {
-	        return new Model(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.displayName = source["displayName"];
-	        this.default = source["default"];
-	        this.options = this.convertValues(source["options"], OptionDescriptor);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
 	
 	
 	export class PlanEntry {
@@ -733,6 +821,7 @@ export namespace domain {
 	    apiEndpoint?: string;
 	    model?: string;
 	    options?: Record<string, any>;
+	    accountDefaults?: Record<string, AccountModelDefault>;
 	    printTimeout?: string;
 	    enabled: boolean;
 	
@@ -749,9 +838,28 @@ export namespace domain {
 	        this.apiEndpoint = source["apiEndpoint"];
 	        this.model = source["model"];
 	        this.options = source["options"];
+	        this.accountDefaults = this.convertValues(source["accountDefaults"], AccountModelDefault, true);
 	        this.printTimeout = source["printTimeout"];
 	        this.enabled = source["enabled"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class ProviderUpdate {
 	    installed: string;
@@ -1164,6 +1272,7 @@ export namespace domain {
 	    options?: Record<string, any>;
 	    planOnly?: boolean;
 	    skills?: SkillPolicy;
+	    isSubagent?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionStartInput(source);
@@ -1182,6 +1291,7 @@ export namespace domain {
 	        this.options = source["options"];
 	        this.planOnly = source["planOnly"];
 	        this.skills = this.convertValues(source["skills"], SkillPolicy);
+	        this.isSubagent = source["isSubagent"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1245,6 +1355,9 @@ export namespace domain {
 	    summary?: string;
 	    createdAt: number;
 	    updatedAt: number;
+	    subagent?: boolean;
+	    parentThreadId?: string;
+	    hidden?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Task(source);
@@ -1274,6 +1387,9 @@ export namespace domain {
 	        this.summary = source["summary"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
+	        this.subagent = source["subagent"];
+	        this.parentThreadId = source["parentThreadId"];
+	        this.hidden = source["hidden"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1388,6 +1504,9 @@ export namespace domain {
 	    archived?: boolean;
 	    importedFrom?: string;
 	    importedSession?: string;
+	    subagent?: boolean;
+	    parentThreadId?: string;
+	    hidden?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Workspace(source);
@@ -1404,6 +1523,9 @@ export namespace domain {
 	        this.archived = source["archived"];
 	        this.importedFrom = source["importedFrom"];
 	        this.importedSession = source["importedSession"];
+	        this.subagent = source["subagent"];
+	        this.parentThreadId = source["parentThreadId"];
+	        this.hidden = source["hidden"];
 	    }
 	}
 	
@@ -1741,6 +1863,34 @@ export namespace main {
 	        this.keepRunningOnClose = source["keepRunningOnClose"];
 	        this.supported = source["supported"];
 	        this.exePath = source["exePath"];
+	    }
+	}
+	export class BrowserEndpointInfo {
+	    wsUrl: string;
+	    token: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BrowserEndpointInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.wsUrl = source["wsUrl"];
+	        this.token = source["token"];
+	    }
+	}
+	export class TerminalEndpointInfo {
+	    wsUrl: string;
+	    token: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TerminalEndpointInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.wsUrl = source["wsUrl"];
+	        this.token = source["token"];
 	    }
 	}
 
@@ -2153,6 +2303,9 @@ export namespace session {
 	    title?: string;
 	    prompt?: string;
 	    permissionMode?: string;
+	    subagent?: boolean;
+	    parentThreadId?: string;
+	    hidden?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SpawnOptions(source);
@@ -2170,9 +2323,13 @@ export namespace session {
 	        this.title = source["title"];
 	        this.prompt = source["prompt"];
 	        this.permissionMode = source["permissionMode"];
+	        this.subagent = source["subagent"];
+	        this.parentThreadId = source["parentThreadId"];
+	        this.hidden = source["hidden"];
 	    }
 	}
 	export class SpawnRequest {
+	    threadId?: string;
 	    title: string;
 	    prompt: string;
 	    driver?: string;
@@ -2183,6 +2340,11 @@ export namespace session {
 	    preamble?: string;
 	    skills?: domain.SkillPolicy;
 	    files?: domain.FileRef[];
+	    permissionMode?: string;
+	    isSubagent?: boolean;
+	    subagent?: boolean;
+	    parentThreadId?: string;
+	    hidden?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SpawnRequest(source);
@@ -2190,6 +2352,7 @@ export namespace session {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.threadId = source["threadId"];
 	        this.title = source["title"];
 	        this.prompt = source["prompt"];
 	        this.driver = source["driver"];
@@ -2200,6 +2363,11 @@ export namespace session {
 	        this.preamble = source["preamble"];
 	        this.skills = this.convertValues(source["skills"], domain.SkillPolicy);
 	        this.files = this.convertValues(source["files"], domain.FileRef);
+	        this.permissionMode = source["permissionMode"];
+	        this.isSubagent = source["isSubagent"];
+	        this.subagent = source["subagent"];
+	        this.parentThreadId = source["parentThreadId"];
+	        this.hidden = source["hidden"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2312,6 +2480,41 @@ export namespace slashcmd {
 	        this.source = source["source"];
 	        this.kind = source["kind"];
 	        this.prompt = source["prompt"];
+	    }
+	}
+
+}
+
+export namespace terminal {
+	
+	export class SessionInfo {
+	    id: string;
+	    threadId: string;
+	    title: string;
+	    cwd: string;
+	    shell: string;
+	    cols: number;
+	    rows: number;
+	    running: boolean;
+	    exitCode?: number;
+	    createdAt: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.threadId = source["threadId"];
+	        this.title = source["title"];
+	        this.cwd = source["cwd"];
+	        this.shell = source["shell"];
+	        this.cols = source["cols"];
+	        this.rows = source["rows"];
+	        this.running = source["running"];
+	        this.exitCode = source["exitCode"];
+	        this.createdAt = source["createdAt"];
 	    }
 	}
 

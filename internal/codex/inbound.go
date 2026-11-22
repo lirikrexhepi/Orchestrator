@@ -29,7 +29,7 @@ func (a *Adapter) handleInbound(ctx context.Context, method string, params json.
 	case "item/commandExecution/requestApproval",
 		"item/fileChange/requestApproval",
 		"item/permissions/requestApproval":
-		return a.onApprovalRequest(ctx, params)
+		return a.onApprovalRequest(ctx, method, params)
 	}
 	return nil, nil
 }
@@ -50,6 +50,28 @@ func (a *Adapter) emitFor(codexThreadID, turnID string, kind domain.EventKind) (
 	}, t
 }
 
+func (t *thread) markStreamed(itemID string) {
+	if itemID == "" {
+		return
+	}
+	t.mu.Lock()
+	if t.streamedItems == nil {
+		t.streamedItems = make(map[string]bool)
+	}
+	t.streamedItems[itemID] = true
+	t.mu.Unlock()
+}
+
+func (t *thread) isStreamed(itemID string) bool {
+	if itemID == "" {
+		return false
+	}
+	t.mu.Lock()
+	seen := t.streamedItems[itemID]
+	t.mu.Unlock()
+	return seen
+}
+
 func (a *Adapter) onAgentDelta(params json.RawMessage) {
 	notification, ok := decode[AgentMessageDelta](params)
 	if !ok || notification.Delta == "" {
@@ -59,6 +81,8 @@ func (a *Adapter) onAgentDelta(params json.RawMessage) {
 	if t == nil {
 		return
 	}
+	t.markStreamed(notification.ItemID)
+	event.ItemID = notification.ItemID
 	event.Text = notification.Delta
 	event.Delta = true
 	a.emit.Emit(event)
@@ -73,6 +97,8 @@ func (a *Adapter) onReasoningDelta(params json.RawMessage) {
 	if t == nil {
 		return
 	}
+	t.markStreamed(notification.ItemID)
+	event.ItemID = notification.ItemID
 	event.Text = notification.Delta
 	event.Delta = true
 	a.emit.Emit(event)
@@ -115,9 +141,10 @@ func (a *Adapter) onItem(params json.RawMessage, completed bool) {
 			return
 		}
 		event, t := a.emitFor(notification.ThreadID, notification.TurnID, domain.EventAgentMessage)
-		if t == nil {
+		if t == nil || t.isStreamed(item.ID) {
 			return
 		}
+		event.ItemID = item.ID
 		event.Text = item.Text
 		a.emit.Emit(event)
 
@@ -130,9 +157,10 @@ func (a *Adapter) onItem(params json.RawMessage, completed bool) {
 			return
 		}
 		event, t := a.emitFor(notification.ThreadID, notification.TurnID, domain.EventAgentThought)
-		if t == nil {
+		if t == nil || t.isStreamed(item.ID) {
 			return
 		}
+		event.ItemID = item.ID
 		event.Text = text
 		a.emit.Emit(event)
 
@@ -223,15 +251,39 @@ func (a *Adapter) onUsage(params json.RawMessage) {
 	if !ok {
 		return
 	}
-	event, t := a.emitFor(notification.ThreadID, "", domain.EventUsage)
+	event, t := a.emitFor(notification.ThreadID, notification.TurnID, domain.EventUsage)
 	if t == nil {
 		return
 	}
+
+	var breakdown *TokenBreakdown
+	var ctxWindow int64
+	if notification.TokenUsage != nil {
+		breakdown = notification.TokenUsage.Last
+		if breakdown == nil {
+			breakdown = notification.TokenUsage.Total
+		}
+		ctxWindow = notification.TokenUsage.ModelContextWindow
+		if ctxWindow == 0 && breakdown != nil {
+			ctxWindow = breakdown.ContextWindow
+		}
+	}
+	if breakdown == nil {
+		breakdown = &notification.Usage
+		ctxWindow = notification.Usage.ContextWindow
+	}
+
+	contextTokens := breakdown.TotalTokens
+	if contextTokens == 0 {
+		contextTokens = breakdown.InputTokens + breakdown.OutputTokens
+	}
+
 	event.Usage = &domain.Usage{
-		InputTokens:     notification.Usage.InputTokens,
-		OutputTokens:    notification.Usage.OutputTokens,
-		CacheReadTokens: notification.Usage.CachedInputTokens,
-		ContextWindow:   notification.Usage.ContextWindow,
+		InputTokens:     breakdown.InputTokens,
+		OutputTokens:    breakdown.OutputTokens,
+		CacheReadTokens: breakdown.CachedInputTokens,
+		ContextTokens:   contextTokens,
+		ContextWindow:   ctxWindow,
 	}
 	a.emit.Emit(event)
 }
@@ -249,6 +301,7 @@ func (a *Adapter) onTurnCompleted(params json.RawMessage) {
 	t.mu.Lock()
 	turnID := t.turnID
 	t.turnID = ""
+	t.streamedItems = make(map[string]bool)
 	t.mu.Unlock()
 
 	a.mu.Lock()
@@ -272,16 +325,37 @@ func (a *Adapter) onTurnCompleted(params json.RawMessage) {
 	a.emit.Emit(event)
 }
 
+func approvalReply(method string, request ApprovalRequest, decision string) any {
+	if method == "item/permissions/requestApproval" {
+		switch decision {
+		case DecisionApproved:
+			return PermissionsApprovalResponse{Permissions: nonNilMap(request.Permissions), Scope: "turn"}
+		case DecisionApprovedForSession:
+			return PermissionsApprovalResponse{Permissions: nonNilMap(request.Permissions), Scope: "session"}
+		default:
+			return PermissionsApprovalResponse{Permissions: map[string]any{}, Scope: "turn"}
+		}
+	}
+	return ApprovalResponse{Decision: decision}
+}
+
+func nonNilMap(m map[string]any) map[string]any {
+	if m == nil {
+		return map[string]any{}
+	}
+	return m
+}
+
 // onApprovalRequest blocks the app-server until the UI answers, mirroring the
 // ACP permission flow.
-func (a *Adapter) onApprovalRequest(ctx context.Context, params json.RawMessage) (any, error) {
+func (a *Adapter) onApprovalRequest(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	request, ok := decode[ApprovalRequest](params)
 	if !ok {
-		return ApprovalResponse{Decision: DecisionDenied}, nil
+		return approvalReply(method, ApprovalRequest{}, DecisionDenied), nil
 	}
 	t := a.lookupByCodexID(request.ThreadID)
 	if t == nil {
-		return ApprovalResponse{Decision: DecisionDenied}, nil
+		return approvalReply(method, request, DecisionDenied), nil
 	}
 
 	requestID := firstNonEmpty(request.CallID, request.ItemID, request.TurnID)
@@ -305,13 +379,21 @@ func (a *Adapter) onApprovalRequest(ctx context.Context, params json.RawMessage)
 		tool.Kind = "commandExecution"
 	} else if len(request.Changes) > 0 {
 		tool.Kind = "fileChange"
+	} else if method == "item/permissions/requestApproval" {
+		tool.Kind = "permissions"
+		tool.Input = request.Permissions
+	}
+
+	fallbackTitle := "Approve file changes"
+	if method == "item/permissions/requestApproval" {
+		fallbackTitle = "Approve permissions"
 	}
 
 	a.emit.Emit(domain.RuntimeEvent{
 		Kind: domain.EventApprovalRequest, ThreadID: t.threadID, TurnID: turnID, Driver: domain.DriverCodex,
 		Approval: &domain.ApprovalRequest{
 			RequestID: requestID,
-			Title:     firstNonEmpty(request.Command, "Approve file changes"),
+			Title:     firstNonEmpty(request.Command, fallbackTitle),
 			Detail:    request.Reason,
 			Tool:      tool,
 			Options: []domain.ApprovalOption{
@@ -327,13 +409,13 @@ func (a *Adapter) onApprovalRequest(ctx context.Context, params json.RawMessage)
 		a.mu.Lock()
 		delete(a.pending, requestID)
 		a.mu.Unlock()
-		return ApprovalResponse{Decision: DecisionAbort}, nil
+		return approvalReply(method, request, DecisionAbort), nil
 	case decision := <-reply:
 		a.emit.Emit(domain.RuntimeEvent{
 			Kind: domain.EventApprovalResolved, ThreadID: t.threadID, TurnID: turnID,
 			Driver: domain.DriverCodex, Text: decision,
 			Approval: &domain.ApprovalRequest{RequestID: requestID},
 		})
-		return ApprovalResponse{Decision: decision}, nil
+		return approvalReply(method, request, decision), nil
 	}
 }

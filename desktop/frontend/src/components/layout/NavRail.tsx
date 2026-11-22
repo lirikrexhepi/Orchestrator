@@ -3,7 +3,6 @@ import {
   House,
   Folder,
   Settings,
-  MessageSquarePlus,
   Globe,
   Terminal,
   GitBranch,
@@ -16,7 +15,6 @@ import { getFaviconUrl, type WebBookmark } from '../agent-session/useWebBookmark
 export interface NavRailProps {
   activeView: 'home' | 'chat';
   onHomeClick: () => void;
-  onNewChatClick: () => void;
   onProjectsClick: () => void;
   onSettingsClick: () => void;
   isSettingsOpen?: boolean;
@@ -28,7 +26,6 @@ export interface NavRailProps {
   hasPreview?: boolean;
   hasServers?: boolean;
   hasChanges?: boolean;
-  hasTasks?: boolean;
   // Bookmarks on sidepanel
   bookmarks?: WebBookmark[];
   currentBrowserUrl?: string;
@@ -40,7 +37,6 @@ export interface NavRailProps {
 export const NavRail: React.FC<NavRailProps> = ({
   activeView,
   onHomeClick,
-  onNewChatClick,
   onProjectsClick,
   onSettingsClick,
   isSettingsOpen = false,
@@ -51,7 +47,6 @@ export const NavRail: React.FC<NavRailProps> = ({
   hasPreview = false,
   hasServers = false,
   hasChanges = false,
-  hasTasks = false,
   bookmarks = [],
   currentBrowserUrl,
   onBookmarkClick,
@@ -93,26 +88,15 @@ export const NavRail: React.FC<NavRailProps> = ({
     >
       {/* Top action icons */}
       <div className="flex flex-col items-center gap-1.5">
-        {/* Home icon */}
+        {/* Home / New Chat icon */}
         <button
           type="button"
           onClick={onHomeClick}
           className={getIconClass(activeView === 'home')}
-          title="Home"
-          aria-label="Home"
+          title="Home / New Chat (Ctrl+N)"
+          aria-label="Home / New Chat"
         >
           <House size={16} strokeWidth={1.8} />
-        </button>
-
-        {/* New chat icon */}
-        <button
-          type="button"
-          onClick={onNewChatClick}
-          className={getIconClass(false)}
-          title="New Chat (Ctrl+N)"
-          aria-label="New Chat"
-        >
-          <MessageSquarePlus size={16} strokeWidth={1.8} />
         </button>
 
         {/* Workspaces / Folder icon -> triggers Dynamic Island projects view */}
@@ -154,6 +138,17 @@ export const NavRail: React.FC<NavRailProps> = ({
               <Globe size={15} strokeWidth={1.8} />
             </button>
 
+            {/* Terminal view icon - Dedicated and always accessible */}
+            <button
+              type="button"
+              onClick={() => onModeSelect?.('terminal')}
+              className={getIconClass(cardMode === 'terminal')}
+              title="Terminal"
+              aria-label="Terminal"
+            >
+              <Terminal size={15} strokeWidth={1.8} />
+            </button>
+
             {/* Servers view icon */}
             <button
               type="button"
@@ -163,7 +158,7 @@ export const NavRail: React.FC<NavRailProps> = ({
               title={hasServers ? 'Servers' : 'Servers (none running)'}
               aria-label="Servers"
             >
-              <Terminal size={15} strokeWidth={1.8} />
+              <MaterialIcon name="dns" size="15px" />
             </button>
 
             {/* Changes / Git icon - Accessible, opens Git remote repo in built-in browser */}
@@ -181,18 +176,6 @@ export const NavRail: React.FC<NavRailProps> = ({
               aria-label="Git Repository"
             >
               <GitBranch size={15} strokeWidth={1.8} />
-            </button>
-
-            {/* Tasks view icon */}
-            <button
-              type="button"
-              disabled={!hasTasks}
-              onClick={() => onModeSelect?.('tasklist')}
-              className={getModeIconClass(cardMode === 'tasklist', hasTasks)}
-              title={hasTasks ? 'Tasks' : 'Tasks (none in progress)'}
-              aria-label="Tasks"
-            >
-              <MaterialIcon name="checklist" size="15px" />
             </button>
           </>
         )}

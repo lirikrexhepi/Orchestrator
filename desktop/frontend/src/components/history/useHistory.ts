@@ -12,6 +12,7 @@ import {
 import { history, session } from '../../../wailsjs/go/models';
 import { AgentStreamBlock } from '../agent-session';
 import { reduceEvent, RuntimeEvent, userBlock } from '../agent-session/eventReducer';
+import { normalizeSessionTasks } from '../orchestrator/useSpawner';
 
 /** One agent's restored transcript, ready to render in a window. */
 export interface RestoredTask {
@@ -46,6 +47,7 @@ export interface RestoredSession {
 
 export interface HistoryState {
   entries: history.Meta[];
+  hasLoaded: boolean;
   isLoading: boolean;
   error: string | null;
   restored: RestoredSession | null;
@@ -71,7 +73,11 @@ function replay(events: RuntimeEvent[] | undefined): AgentStreamBlock[] {
 
 function toRestored(loaded: history.Session): RestoredSession {
   const meta = loaded.meta;
-  const transcripts = (loaded.transcripts ?? {}) as Record<string, RuntimeEvent[]>;
+  const rawTranscripts = (loaded.transcripts ?? {}) as Record<string, RuntimeEvent[]>;
+  const { tasks: normalizedTasks, transcripts } = normalizeSessionTasks(
+    meta.tasks ? [...meta.tasks] : [],
+    rawTranscripts,
+  );
 
   const coordinatorBlocks = (() => {
     const rawEvents = meta.coordinatorThreadId ? transcripts[meta.coordinatorThreadId] : undefined;
@@ -98,7 +104,7 @@ function toRestored(loaded: history.Session): RestoredSession {
     cwd: meta.workspace?.cwd ?? '',
     createdAt: meta.workspace?.createdAt ?? 0,
     coordinatorBlocks,
-    tasks: (meta.tasks ?? []).map((task) => {
+    tasks: normalizedTasks.map((task) => {
       const replayed = replay(transcripts[task.threadId]);
       const firstNonNotice = replayed.find((b) => b.type !== 'notice');
       const prompt = task.prompt || meta.workspace?.prompt;
@@ -141,6 +147,7 @@ function toRestored(loaded: history.Session): RestoredSession {
  */
 export function useHistory(isOpen: boolean, onCleared?: () => void): HistoryState {
   const [entries, setEntries] = useState<history.Meta[]>([]);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [isLoading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [restored, setRestored] = useState<RestoredSession | null>(null);
@@ -174,6 +181,8 @@ export function useHistory(isOpen: boolean, onCleared?: () => void): HistoryStat
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setHasLoaded(true);
     }
   }, []);
 
@@ -306,6 +315,7 @@ export function useHistory(isOpen: boolean, onCleared?: () => void): HistoryStat
 
   return {
     entries,
+    hasLoaded,
     isLoading,
     error,
     restored,

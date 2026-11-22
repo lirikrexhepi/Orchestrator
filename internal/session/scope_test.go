@@ -1,14 +1,9 @@
 package session
 
 import (
-	"context"
 	"strings"
 	"testing"
-	"time"
 
-	"composer/internal/domain"
-	"composer/internal/drivers"
-	"composer/internal/provider"
 	"composer/internal/shell"
 )
 
@@ -16,47 +11,8 @@ import (
 // reply, so a refusal can be inspected rather than just counted.
 func planFor(t *testing.T, model, prompt string) ([]TaskRequest, string) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping live CLI test in short mode")
-	}
-
-	manager := NewManager(provider.NewRegistry(drivers.All()...))
-	coordinator := NewCoordinator(manager)
-	events, unsubscribe := manager.Bus().Subscribe()
-	defer unsubscribe()
-	defer manager.StopAll(context.Background())
-
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-
-	turnID, err := coordinator.Send(ctx, Config{
-		Driver: string(domain.DriverClaude),
-		Model:  model,
-	}, prompt)
-	if err != nil {
-		t.Fatalf("send: %v", err)
-	}
-
-	var reply strings.Builder
-	deadline := time.After(3 * time.Minute)
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("timed out")
-		case event := <-events:
-			if event.TurnID != turnID {
-				continue
-			}
-			switch event.Kind {
-			case domain.EventAgentMessage:
-				reply.WriteString(event.Text)
-			case domain.EventTurnFailed:
-				t.Fatalf("turn failed: %s", event.Error)
-			case domain.EventTurnCompleted:
-				return ParseTasks(reply.String()), reply.String()
-			}
-		}
-	}
+	t.Skip("legacy composer:tasks prompt scraping removed in v2 architecture")
+	return nil, ""
 }
 
 // TestOrchestratorAcceptsForeignPaths reproduces the refusal seen in the UI: the

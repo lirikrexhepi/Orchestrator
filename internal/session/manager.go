@@ -36,6 +36,18 @@ type Manager struct {
 
 	accountFor AccountResolver
 	expandRefs RefExpander
+	mcp        MCPProvider
+}
+
+type MCPProvider interface {
+	Issue(threadID string, driver domain.DriverKind, cwd string, perm domain.PermissionMode, isSubagent bool) (*domain.MCPConfig, error)
+	RevokeThread(threadID string)
+}
+
+func (m *Manager) SetMCPProvider(p MCPProvider) {
+	m.mu.Lock()
+	m.mcp = p
+	m.mu.Unlock()
 }
 
 type AccountResolver func(kind domain.DriverKind, cwd string) string
@@ -120,6 +132,11 @@ func NewManager(registry *provider.Registry) *Manager {
 
 func (m *Manager) Bus() *Bus { return m.bus }
 
+// RecordBridgedEvent records and publishes a bridged event (such as a subagent event forwarded to a parent thread).
+func (m *Manager) RecordBridgedEvent(event domain.RuntimeEvent) {
+	m.record(event)
+}
+
 // SessionPID reports the CLI process for a thread when its adapter tracks one.
 func (m *Manager) SessionPID(threadID string) (int, bool) {
 	m.mu.RLock()
@@ -160,11 +177,13 @@ func (m *Manager) adapterFor(kind domain.DriverKind, account string) (provider.A
 
 // record stamps the event, appends it to the thread transcript, and publishes.
 func (m *Manager) record(event domain.RuntimeEvent) {
+	// Assigning Seq and appending to m.history under the same lock guarantees
+	// HistorySnapshot's lastSeq never jumps ahead of an unappended event.
+	m.mu.Lock()
 	// Adapters report their own events and do not all know their driver kind, so
 	// the manager fills it in from the thread's session. Consumers that group by
 	// CLI (usage totals, diagnostics) depend on this being present.
 	if (event.Driver == "" || event.Account == "" || event.Model == "") && event.ThreadID != "" {
-		m.mu.RLock()
 		if entry, ok := m.threads[event.ThreadID]; ok {
 			if event.Driver == "" {
 				event.Driver = entry.session.Driver
@@ -176,43 +195,46 @@ func (m *Manager) record(event domain.RuntimeEvent) {
 				event.Account = entry.session.Account
 			}
 		}
-		m.mu.RUnlock()
 	}
 
-	if event.Kind == domain.EventAgentMessage || event.Kind == domain.EventAgentThought {
-		logger.Debugf("Manager", "Stream chunk: thread=%s kind=%s len=%d", event.ThreadID, event.Kind, len(event.Text))
+	published := m.bus.Prepare(event)
+
+	if published.ThreadID != "" {
+		if entry, ok := m.threads[published.ThreadID]; ok {
+			entry.lastAt = published.At
+		}
+		transcript := m.history[published.ThreadID]
+		// Consecutive deltas of the same item are stored as one event, so the
+		// bounded transcript covers whole turns instead of a few hundred tokens.
+		if n := len(transcript); n > 0 && published.Delta && sameStream(transcript[n-1], published) {
+			merged := transcript[n-1]
+			merged.Text += published.Text
+			// The merged event carries the newest seq, so a snapshot's highest
+			// seq marks exactly what it already contains.
+			merged.Seq = published.Seq
+			transcript[n-1] = merged
+		} else {
+			transcript = append(transcript, published)
+		}
+		if len(transcript) > historyLimit {
+			transcript = transcript[len(transcript)-historyLimit:]
+		}
+		m.history[published.ThreadID] = transcript
+	}
+	recorder := m.recorder
+	m.mu.Unlock()
+
+	if published.Kind == domain.EventAgentMessage || published.Kind == domain.EventAgentThought {
+		logger.Debugf("Manager", "Stream chunk: thread=%s kind=%s len=%d", published.ThreadID, published.Kind, len(published.Text))
 	} else {
-		logger.Infof("Manager", "Event: thread=%s driver=%s kind=%s seq=%d", event.ThreadID, event.Driver, event.Kind, event.Seq)
+		logger.Infof("Manager", "Event: thread=%s driver=%s kind=%s seq=%d", published.ThreadID, published.Driver, published.Kind, published.Seq)
 	}
 
-	published := m.bus.Publish(event)
+	m.bus.Publish(published)
 
 	if published.ThreadID == "" {
 		return
 	}
-	m.mu.Lock()
-	if entry, ok := m.threads[published.ThreadID]; ok {
-		entry.lastAt = published.At
-	}
-	transcript := m.history[published.ThreadID]
-	// Consecutive deltas of the same item are stored as one event, so the
-	// bounded transcript covers whole turns instead of a few hundred tokens.
-	if n := len(transcript); n > 0 && published.Delta && sameStream(transcript[n-1], published) {
-		merged := transcript[n-1]
-		merged.Text += published.Text
-		// The merged event carries the newest seq, so a snapshot's highest
-		// seq marks exactly what it already contains.
-		merged.Seq = published.Seq
-		transcript[n-1] = merged
-	} else {
-		transcript = append(transcript, published)
-	}
-	if len(transcript) > historyLimit {
-		transcript = transcript[len(transcript)-historyLimit:]
-	}
-	m.history[published.ThreadID] = transcript
-	recorder := m.recorder
-	m.mu.Unlock()
 
 	// Outside the lock: persistence must never widen the critical section that
 	// every streamed token passes through.
@@ -282,6 +304,21 @@ func (m *Manager) Start(ctx context.Context, kind domain.DriverKind, in domain.S
 		return domain.Session{}, err
 	}
 
+	m.mu.RLock()
+	mcpProv := m.mcp
+	m.mu.RUnlock()
+	if mcpProv != nil && !in.PlanOnly && in.MCP == nil {
+		effectivePerm := in.Permission
+		if effectivePerm == "" {
+			effectivePerm = domain.PermissionDefault
+		}
+		mcpCfg, err := mcpProv.Issue(in.ThreadID, kind, in.Cwd, effectivePerm, in.IsSubagent)
+		if err != nil {
+			return domain.Session{}, fmt.Errorf("issue mcp credential: %w", err)
+		}
+		in.MCP = mcpCfg
+	}
+
 	// Registered before the adapter starts: StartSession emits session.started
 	// synchronously on some drivers, and record() stamps the driver from this
 	// map. Registering afterwards would leave those first events unattributed.
@@ -295,6 +332,9 @@ func (m *Manager) Start(ctx context.Context, kind domain.DriverKind, in domain.S
 
 	session, err := adapter.StartSession(ctx, in)
 	if err != nil {
+		if mcpProv != nil {
+			mcpProv.RevokeThread(in.ThreadID)
+		}
 		m.mu.Lock()
 		delete(m.threads, in.ThreadID)
 		m.mu.Unlock()
@@ -306,6 +346,9 @@ func (m *Manager) Start(ctx context.Context, kind domain.DriverKind, in domain.S
 	}
 	if session.Model == "" {
 		session.Model = in.Model
+	}
+	if session.Cwd == "" {
+		session.Cwd = in.Cwd
 	}
 	session.Account = account
 
@@ -395,6 +438,7 @@ func (m *Manager) Send(ctx context.Context, in domain.SendTurnInput) error {
 func (m *Manager) revive(ctx context.Context, threadID string, entry *record) error {
 	in := entry.input
 	in.ThreadID = threadID
+	in.MCP = nil
 	if resume := entry.session.ProviderSessionID; resume != "" {
 		in.Resume = resume
 	}
@@ -643,7 +687,11 @@ func (m *Manager) Stop(ctx context.Context, threadID string) error {
 	m.mu.Lock()
 	entry, ok := m.threads[threadID]
 	delete(m.threads, threadID)
+	mcpProv := m.mcp
 	m.mu.Unlock()
+	if mcpProv != nil {
+		mcpProv.RevokeThread(threadID)
+	}
 	if !ok {
 		logger.Infof("Manager", "Stop: thread=%s found=false", threadID)
 		return nil
@@ -663,8 +711,16 @@ func (m *Manager) StopAll(ctx context.Context) {
 	adapters = append(adapters, m.retired...)
 	m.retired = nil
 	m.adapters = make(map[adapterKey]provider.Adapter)
+	threads := m.threads
 	m.threads = make(map[string]*record)
+	mcpProv := m.mcp
 	m.mu.Unlock()
+
+	if mcpProv != nil {
+		for threadID := range threads {
+			mcpProv.RevokeThread(threadID)
+		}
+	}
 
 	var wg sync.WaitGroup
 	for _, adapter := range adapters {

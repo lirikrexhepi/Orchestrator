@@ -131,11 +131,11 @@ func startServer(
 
 	procCtx, cancel := context.WithCancel(context.Background())
 	proc, err := process.Start(procCtx, process.Spec{
-		Command: binary(settings),
-		Args:    args,
-		Env:     env,
-		Cwd:     procCwd,
-
+		Command:       binary(settings),
+		Args:          args,
+		Env:           env,
+		Cwd:           procCwd,
+		KillTree:      true,
 		DieWithParent: true,
 		Stderr: func(line string) {
 			handleLogLine("err", line)

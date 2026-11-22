@@ -435,8 +435,10 @@ export function ProjectsView({
                   chatCount={chatCounts[project.id] ?? 0}
                   canRemove={list.length > 1}
                   onSelect={() => {
-                    void projects?.select(project.id);
-                    onPicked();
+                    void (async () => {
+                      await projects?.select(project.id);
+                      onPicked();
+                    })();
                   }}
                   onOpenChats={() => onOpenProjectChats(project)}
                   onRemove={() => void projects?.remove(project.id)}
@@ -548,6 +550,7 @@ export function ProjectChatsView({
   onClose,
   onNewChat,
   onOpen,
+  onRename,
   onSetArchived,
 }: {
   tone: IslandTone;
@@ -561,18 +564,31 @@ export function ProjectChatsView({
   onClose: () => void;
   onNewChat: () => void;
   onOpen: (chat: ChatHistoryItem) => void;
+  onRename?: (chat: ChatHistoryItem, title: string) => void | Promise<void>;
   onSetArchived: (chat: ChatHistoryItem, archived: boolean) => void;
 }) {
   const [showArchived, setShowArchived] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
   const empty = groups.length === 0;
+
+  const commitRename = (chat: ChatHistoryItem) => {
+    const clean = renameDraft.replace(/\s+/g, ' ').trim();
+    setRenamingId(null);
+    if (clean && clean !== chat.title) {
+      void onRename?.(chat, clean);
+    }
+  };
 
   const row = (chat: ChatHistoryItem, isArchived: boolean) => {
     const running = runningThreadIds.has(chat.threadId);
+    const isRenaming = renamingId === chat.id;
     return (
       <motion.div
         key={chat.id}
-        draggable
-        onDragStartCapture={(event: React.DragEvent) =>
+        draggable={!isRenaming}
+        onDragStartCapture={(event: React.DragEvent) => {
+          if (isRenaming) return;
           beginChatDrag(event, {
             workspaceId: chat.workspaceId,
             threadId: chat.threadId,
@@ -581,41 +597,103 @@ export function ProjectChatsView({
             driver: chat.driver,
             model: chat.model,
             projectPath: project.path,
-          })
-        }
+          });
+        }}
         title="Drag into a message to give an agent this chat, or onto another project to move it"
         layout="position"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0, height: 0 }}
         transition={{ duration: 0.16 }}
-        onClick={() => onOpen(chat)}
+        onClick={() => {
+          if (!isRenaming) onOpen(chat);
+        }}
         className={`group flex items-center gap-2.5 h-[42px] px-2 rounded-[12px] cursor-pointer transition-colors duration-150 ${tone.hover}`}
       >
         <span className={`shrink-0 ${isArchived ? 'opacity-50' : ''}`}>{renderIcon(chat)}</span>
-        <span className="flex flex-col min-w-0 flex-1 gap-[1px]">
-          <span className={`text-[12.5px] font-medium tracking-tight truncate leading-[15px] ${isArchived ? tone.sub : tone.fg}`}>
-            {chat.title}
-          </span>
-          <span className={`flex items-center gap-1.5 text-[10.5px] leading-[13px] min-w-0 ${tone.sub}`}>
-            {running && (
-              <span className="flex items-center gap-1 text-emerald-400 font-medium shrink-0">
-                <span className="w-[5px] h-[5px] rounded-full bg-emerald-400 animate-pulse" />
-                Running
-              </span>
-            )}
-            <span className="truncate">{subtitle(chat)}</span>
-          </span>
-        </span>
-        <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-          <IconButton
-            tone={tone}
-            title={isArchived ? 'Restore' : 'Archive'}
-            onClick={() => onSetArchived(chat, !isArchived)}
+        {isRenaming ? (
+          <form
+            className="flex items-center gap-1 flex-1 min-w-0"
+            onClick={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault();
+              commitRename(chat);
+            }}
           >
-            {isArchived ? <ArchiveRestore size={14} strokeWidth={1.9} /> : <Archive size={14} strokeWidth={1.9} />}
-          </IconButton>
-        </span>
+            <input
+              autoFocus
+              value={renameDraft}
+              onChange={(event) => setRenameDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.stopPropagation();
+                  setRenamingId(null);
+                }
+              }}
+              onBlur={() => commitRename(chat)}
+              className={`flex-1 min-w-0 h-[26px] px-2 rounded-[8px] text-[12px] font-medium tracking-tight outline-none border ${
+                tone.isLight
+                  ? 'bg-white/90 border-black/15 text-black'
+                  : 'bg-white/[0.08] border-white/15 text-white'
+              }`}
+            />
+            <button
+              type="submit"
+              title="Save"
+              onMouseDown={(event) => event.preventDefault()}
+              className={`w-[24px] h-[24px] rounded-full flex items-center justify-center ${tone.sub} ${tone.hover} shrink-0 cursor-pointer`}
+            >
+              <MaterialIcon name="check" size={13} />
+            </button>
+            <button
+              type="button"
+              title="Cancel"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => setRenamingId(null)}
+              className={`w-[24px] h-[24px] rounded-full flex items-center justify-center ${tone.sub} ${tone.hover} shrink-0 cursor-pointer`}
+            >
+              <X size={13} strokeWidth={2} />
+            </button>
+          </form>
+        ) : (
+          <>
+            <span className="flex flex-col min-w-0 flex-1 gap-[1px]">
+              <span className={`text-[12.5px] font-medium tracking-tight truncate leading-[15px] ${isArchived ? tone.sub : tone.fg}`}>
+                {chat.title}
+              </span>
+              <span className={`flex items-center gap-1.5 text-[10.5px] leading-[13px] min-w-0 ${tone.sub}`}>
+                {running && (
+                  <span className="flex items-center gap-1 text-emerald-400 font-medium shrink-0">
+                    <span className="w-[5px] h-[5px] rounded-full bg-emerald-400 animate-pulse" />
+                    Running
+                  </span>
+                )}
+                <span className="truncate">{subtitle(chat)}</span>
+              </span>
+            </span>
+            <span className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 shrink-0">
+              {onRename && !isArchived && (
+                <IconButton
+                  tone={tone}
+                  title="Rename"
+                  onClick={() => {
+                    setRenamingId(chat.id);
+                    setRenameDraft(chat.title);
+                  }}
+                >
+                  <MaterialIcon name="edit" size={13} />
+                </IconButton>
+              )}
+              <IconButton
+                tone={tone}
+                title={isArchived ? 'Restore' : 'Archive'}
+                onClick={() => onSetArchived(chat, !isArchived)}
+              >
+                {isArchived ? <ArchiveRestore size={14} strokeWidth={1.9} /> : <Archive size={14} strokeWidth={1.9} />}
+              </IconButton>
+            </span>
+          </>
+        )}
       </motion.div>
     );
   };
@@ -736,7 +814,7 @@ export function ClaudeChatsView({
   loadingMore?: boolean;
   exhausted?: Record<ChatSourceId, boolean>;
   onLoadMore?: (providers: ChatSourceId[]) => void;
-  importing?: boolean;
+  importing?: boolean | string | null;
   error?: string | null;
   relativeTime: (at: number) => string;
   onBack: () => void;
@@ -833,7 +911,7 @@ export function ClaudeChatsView({
       </div>
       {error ? <div className="mx-1 mb-1.5 px-3 py-2 rounded-[10px] bg-rose-500/10 text-[11.5px] text-rose-300">{error}</div> : null}
       <ScrollArea maxHeight={300} className="-mr-1 pr-1">
-        {loading && sessions.length === 0 ? (
+        {loading && rows.length === 0 ? (
           <EmptyState tone={tone}>Reading chats…</EmptyState>
         ) : rows.length === 0 && !hasMore ? (
           <EmptyState tone={tone}>{query ? 'No matching chats' : 'No chats yet'}</EmptyState>
@@ -843,11 +921,12 @@ export function ClaudeChatsView({
               const folder = (s.cwd || '').replace(/\\/g, '/').split('/').filter(Boolean).pop();
               const provider = (s.provider || 'claude') as ChatSourceId;
               const sourceLabel = ENTRYPOINT_LABEL[s.entrypoint || ''];
+              const isRowImporting = typeof importing === 'string' && importing === s.filePath;
               return (
                 <button
                   key={s.filePath}
                   type="button"
-                  disabled={importing}
+                  disabled={Boolean(importing)}
                   title={provider === 'antigravity' ? "Opening Antigravity chats isn't supported yet" : undefined}
                   onClick={() => onOpen(s)}
                   className={`w-full flex items-center gap-2.5 h-[42px] px-2 rounded-[12px] text-left transition-colors duration-150 cursor-pointer disabled:opacity-60 disabled:cursor-default ${tone.hover}`}
@@ -866,7 +945,11 @@ export function ClaudeChatsView({
                       {[relativeTime(s.updatedAt), folder, sourceLabel].filter(Boolean).join(' · ')}
                     </span>
                   </span>
-                  <ChevronRight size={14} strokeWidth={2} className={`${tone.faint} shrink-0`} />
+                  {isRowImporting ? (
+                    <span className={`text-[10.5px] font-medium shrink-0 ${tone.sub}`}>Opening…</span>
+                  ) : (
+                    <ChevronRight size={14} strokeWidth={2} className={`${tone.faint} shrink-0`} />
+                  )}
                 </button>
               );
             })}
@@ -874,7 +957,7 @@ export function ClaudeChatsView({
         )}
         {hasMore && !loading ? (
           <>
-            <LoadMoreSentinel busy={Boolean(loadingMore)} onVisible={revealMore} />
+            <LoadMoreSentinel key={targets.join(',')} busy={Boolean(loadingMore)} onVisible={revealMore} />
             {loadingMore ? <EmptyState tone={tone}>Loading more…</EmptyState> : null}
           </>
         ) : null}

@@ -72,8 +72,12 @@ func (w *Workspaces) AddTask(workspaceID string, task domain.Task) (*domain.Task
 	now := time.Now().UnixMilli()
 	task.ID = w.nextID("task")
 	task.WorkspaceID = workspaceID
-	task.CreatedAt = now
-	task.UpdatedAt = now
+	if task.CreatedAt == 0 {
+		task.CreatedAt = now
+	}
+	if task.UpdatedAt == 0 {
+		task.UpdatedAt = now
+	}
 	if task.State == "" {
 		task.State = domain.TaskPending
 	}
@@ -81,7 +85,9 @@ func (w *Workspaces) AddTask(workspaceID string, task domain.Task) (*domain.Task
 	stored := &task
 	w.tasks[task.ID] = stored
 	w.byThread[task.ThreadID] = task.ID
-	workspace.UpdatedAt = now
+	if task.UpdatedAt > workspace.UpdatedAt {
+		workspace.UpdatedAt = task.UpdatedAt
+	}
 	return stored, true
 }
 
@@ -230,6 +236,17 @@ func (w *Workspaces) RestoreTask(task domain.Task) (*domain.Task, bool) {
 	return &stored, true
 }
 
+func (w *Workspaces) AllTasks() []domain.Task {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	out := make([]domain.Task, 0, len(w.tasks))
+	for _, task := range w.tasks {
+		out = append(out, *task)
+	}
+	return out
+}
+
 func (w *Workspaces) List() []domain.Workspace {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -238,7 +255,17 @@ func (w *Workspaces) List() []domain.Workspace {
 	for _, workspace := range w.workspaces {
 		out = append(out, *workspace)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	sort.Slice(out, func(i, j int) bool {
+		ti := out[i].UpdatedAt
+		if ti == 0 {
+			ti = out[i].CreatedAt
+		}
+		tj := out[j].UpdatedAt
+		if tj == 0 {
+			tj = out[j].CreatedAt
+		}
+		return ti > tj
+	})
 	return out
 }
 

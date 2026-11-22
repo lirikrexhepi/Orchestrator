@@ -17,6 +17,7 @@ import (
 var (
 	_ provider.AccountDriver = (*claudeDriver)(nil)
 	_ provider.AccountDriver = (*openCodeDriver)(nil)
+	_ provider.AccountDriver = (*antigravityDriver)(nil)
 )
 
 func (d *claudeDriver) Binary(settings domain.ProviderSettings) string {
@@ -25,6 +26,82 @@ func (d *claudeDriver) Binary(settings domain.ProviderSettings) string {
 
 func (d *openCodeDriver) Binary(settings domain.ProviderSettings) string {
 	return binaryFor(settings, "opencode")
+}
+
+func (d *antigravityDriver) Binary(settings domain.ProviderSettings) string {
+	return binaryFor(settings, "agy")
+}
+
+func (d *antigravityDriver) AccountEnv(dir string) map[string]string {
+	meta, err := provider.ReadAccountMeta(dir)
+	if err == nil {
+		env := make(map[string]string)
+		if meta.AuthMode == "api_key" && meta.APIKey != "" {
+			env["GEMINI_API_KEY"] = meta.APIKey
+		}
+		for k, v := range meta.Env {
+			env[k] = v
+		}
+		if len(env) > 0 {
+			return env
+		}
+	}
+	return nil
+}
+
+func (d *antigravityDriver) AccountUnset() []string {
+	return []string{
+		"GEMINI_API_KEY",
+		"GOOGLE_API_KEY",
+		"GOOGLE_GENERATIVE_AI_API_KEY",
+		"ANTIGRAVITY_API_KEY",
+	}
+}
+
+func (d *antigravityDriver) DefaultConfigDir(env map[string]string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".gemini", "antigravity-cli")
+}
+
+func (d *antigravityDriver) SharedSettings() []string {
+	return []string{"settings.json", "skills", "agents"}
+}
+
+func (d *antigravityDriver) SignInArgs() []string {
+	return []string{"--login"}
+}
+
+func (d *antigravityDriver) StatusArgs() []string {
+	return []string{"models"}
+}
+
+func (d *antigravityDriver) ParseStatus(result provider.CommandResult) provider.AccountStatus {
+	text := result.Stdout + "\n" + result.Stderr
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "please sign in") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "not signed in") {
+		return provider.AccountStatus{Known: true, Detail: "Not signed in"}
+	}
+	if result.Err != nil && strings.Contains(lower, "error") {
+		detail := strings.TrimSpace(firstLine(text))
+		if detail == "" {
+			detail = "Not signed in"
+		}
+		return provider.AccountStatus{Known: true, Detail: detail}
+	}
+	if strings.Contains(text, "gemini") || strings.Contains(text, "claude") || strings.Contains(text, "gemini-") {
+		return provider.AccountStatus{SignedIn: true, Known: true, Detail: "Active"}
+	}
+	if result.Err != nil {
+		detail := strings.TrimSpace(firstLine(text))
+		if detail == "" {
+			detail = "Not signed in"
+		}
+		return provider.AccountStatus{Known: true, Detail: detail}
+	}
+	return provider.AccountStatus{SignedIn: true, Known: true, Detail: "Active"}
 }
 
 func (d *claudeDriver) AccountEnv(dir string) map[string]string {
