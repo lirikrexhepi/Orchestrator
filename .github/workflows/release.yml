@@ -87,18 +87,18 @@ jobs:
           $json = ($cfg | ConvertTo-Json -Depth 10) + "`n"
           [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
 
-      - name: Run unit tests
-        shell: pwsh
-        run: |
-          go vet ./...
-          go test ./internal/updater ./internal/domain ./internal/provider ./internal/antigravity ./internal/history
-
       - name: Build Windows NSIS installer
         shell: pwsh
         working-directory: desktop
         run: |
           $ver = "${{ steps.meta.outputs.version }}"
           wails build -clean -nsis -installscope user -platform windows/amd64 -ldflags "-X main.AppVersion=$ver"
+
+      - name: Run vet and unit tests
+        shell: pwsh
+        run: |
+          go vet ./...
+          go test ./internal/updater ./internal/domain ./internal/provider ./internal/antigravity ./internal/history
 
       - name: Prepare release artifacts & latest.json
         shell: pwsh
