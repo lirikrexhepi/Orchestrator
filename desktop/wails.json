@@ -1,20 +1,20 @@
 {
-  "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "Orchestrator",
-  "outputfilename": "Orchestrator",
-  "frontend:install": "npm install",
-  "frontend:build": "npm --prefix ../../internal/remote/mobile install --no-audit --no-fund && npm --prefix ../../internal/remote/mobile run build && npm run build",
-  "frontend:dev:watcher": "npm run dev",
-  "frontend:dev:serverUrl": "http://127.0.0.1:9245",
-  "author": {
-    "name": "LirikRexhepi",
-    "email": "90722318+lirikrexhepi@users.noreply.github.com"
-  },
-  "info": {
-    "companyName": "LirikRexhepi",
-    "productName": "Orchestrator",
-    "productVersion": "1.0.0",
-    "copyright": "Copyright (c) 2026 LirikRexhepi",
-    "comments": "Multi-agent desktop workspace"
-  }
+    "$schema":  "https://wails.io/schemas/config.v2.json",
+    "name":  "Orchestrator",
+    "outputfilename":  "Orchestrator",
+    "frontend:install":  "npm install",
+    "frontend:build":  "npm --prefix ../../internal/remote/mobile install --no-audit --no-fund \u0026\u0026 npm --prefix ../../internal/remote/mobile run build \u0026\u0026 npm run build",
+    "frontend:dev:watcher":  "npm run dev",
+    "frontend:dev:serverUrl":  "http://127.0.0.1:9245",
+    "author":  {
+                   "name":  "LirikRexhepi",
+                   "email":  "90722318+lirikrexhepi@users.noreply.github.com"
+               },
+    "info":  {
+                 "companyName":  "LirikRexhepi",
+                 "productName":  "Orchestrator",
+                 "productVersion":  "1.0.0",
+                 "copyright":  "Copyright (c) 2026 LirikRexhepi",
+                 "comments":  "Multi-agent desktop workspace"
+             }
 }
