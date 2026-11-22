@@ -1,5 +1,5 @@
 import { MaterialIcon } from '../common/icons';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ApprovalOptionItem } from './types';
 
 export interface ApprovalCardProps {
@@ -9,7 +9,7 @@ export interface ApprovalCardProps {
   options?: ApprovalOptionItem[];
   status?: 'pending' | 'resolved' | 'denied';
   decision?: string;
-  onRespond?: (decision: string) => void;
+  onRespond?: (decision: string) => void | Promise<void>;
   className?: string;
 }
 
@@ -38,27 +38,45 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [selectedDecision, setSelectedDecision] = useState<string | null>(decision ?? null);
 
+  useEffect(() => {
+    setSubmitting(false);
+    if (status === 'pending') {
+      setSelectedDecision(decision ?? null);
+    } else if (decision !== undefined) {
+      setSelectedDecision(decision);
+    }
+  }, [status, decision, requestID]);
+
   const isResolved = status === 'resolved' || status === 'denied' || selectedDecision !== null;
 
-  const handleSelect = (decisionId: string) => {
+  const handleSelect = async (decisionId: string) => {
     if (isResolved || submitting) return;
     setSubmitting(true);
     setSelectedDecision(decisionId);
-    onRespond?.(decisionId);
+    try {
+      await onRespond?.(decisionId);
+    } catch {
+      setSubmitting(false);
+      setSelectedDecision(null);
+    }
   };
 
   const getDecisionLabel = (dec: string) => {
-    if (dec === 'always' || dec === 'allowAlways') return 'Allowed always';
-    if (dec === 'once' || dec === 'allowOnce') return 'Allowed once';
-    if (dec === 'reject' || dec === 'deny' || dec === 'cancel') return 'Denied';
+    const norm = dec.trim().toLowerCase();
+    if (norm === 'always' || norm === 'allowalways') return 'Allowed always';
+    if (norm === 'once' || norm === 'allowonce') return 'Allowed once';
+    if (norm === 'reject' || norm === 'deny' || norm === 'denied' || norm === 'cancel' || norm === 'abort') return 'Denied';
     return dec;
   };
 
+  const normalizedDecision = (selectedDecision ?? decision ?? '').trim().toLowerCase();
   const isDenied =
     status === 'denied' ||
-    selectedDecision === 'reject' ||
-    selectedDecision === 'deny' ||
-    selectedDecision === 'cancel';
+    normalizedDecision === 'reject' ||
+    normalizedDecision === 'deny' ||
+    normalizedDecision === 'denied' ||
+    normalizedDecision === 'cancel' ||
+    normalizedDecision === 'abort';
 
   return (
     <div

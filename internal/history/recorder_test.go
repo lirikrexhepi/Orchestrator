@@ -1,7 +1,9 @@
 package history
 
 import (
+	"sync"
 	"testing"
+	"time"
 
 	"composer/internal/domain"
 )
@@ -228,4 +230,90 @@ func keys(m map[string][]domain.RuntimeEvent) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestRecorderTouchTaskDeltaFailureAndKeepKnown(t *testing.T) {
+	store := New(t.TempDir())
+	recorder := NewRecorder(store)
+	defer recorder.Close()
+
+	var changes int
+	var chMu sync.Mutex
+	recorder.OnChanged(func() {
+		chMu.Lock()
+		changes++
+		chMu.Unlock()
+	})
+
+	recorder.OpenWorkspace(domain.Workspace{ID: "ws-1", Title: "Test", CreatedAt: 100, UpdatedAt: 100}, "coord-1")
+	recorder.TrackTask(domain.Task{WorkspaceID: "ws-1", ThreadID: "t-1", CreatedAt: 100, UpdatedAt: 100, State: domain.TaskRunning})
+
+	// Delta agent message followed by TurnFailed must flush delta and advance timestamps.
+	recorder.Record("t-1", domain.RuntimeEvent{
+		Kind:     domain.EventAgentMessage,
+		ThreadID: "t-1",
+		TurnID:   "turn-1",
+		ItemID:   "item-1",
+		Delta:    true,
+		Text:     "partial reply",
+		At:       250,
+	})
+	recorder.Record("t-1", domain.RuntimeEvent{
+		Kind:     domain.EventTurnFailed,
+		ThreadID: "t-1",
+		TurnID:   "turn-1",
+		Error:    "boom",
+		At:       300,
+	})
+
+	meta, err := store.LoadMeta("ws-1")
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.Workspace.UpdatedAt != 300 || meta.Tasks[0].UpdatedAt != 300 {
+		t.Fatalf("expected UpdatedAt=300, got ws=%d task=%d", meta.Workspace.UpdatedAt, meta.Tasks[0].UpdatedAt)
+	}
+
+	// TouchTask advances both workspace and task timestamps.
+	recorder.TouchTask("ws-1", "t-1", 450)
+	meta, err = store.LoadMeta("ws-1")
+	if err != nil {
+		t.Fatalf("LoadMeta after TouchTask: %v", err)
+	}
+	if meta.Workspace.UpdatedAt != 450 || meta.Tasks[0].UpdatedAt != 450 {
+		t.Fatalf("expected UpdatedAt=450 after TouchTask, got ws=%d task=%d", meta.Workspace.UpdatedAt, meta.Tasks[0].UpdatedAt)
+	}
+
+	// Stale TrackTask must preserve CreatedAt and not regress UpdatedAt.
+	recorder.TrackTask(domain.Task{WorkspaceID: "ws-1", ThreadID: "t-1", CreatedAt: 0, UpdatedAt: 120, State: domain.TaskComplete})
+	meta, err = store.LoadMeta("ws-1")
+	if err != nil {
+		t.Fatalf("LoadMeta after stale TrackTask: %v", err)
+	}
+	if meta.Tasks[0].CreatedAt != 100 || meta.Tasks[0].UpdatedAt != 450 {
+		t.Fatalf("stale TrackTask regressed timestamps: created=%d updated=%d", meta.Tasks[0].CreatedAt, meta.Tasks[0].UpdatedAt)
+	}
+
+	// Concurrent NoteProviderSession and TouchTask must not panic on map copy/marshal.
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func(n int) {
+			defer wg.Done()
+			recorder.NoteProviderSession("t-1", "sess-"+string(rune('a'+n%10)))
+		}(i)
+		go func(n int) {
+			defer wg.Done()
+			recorder.TouchTask("ws-1", "t-1", int64(500+n))
+		}(i)
+	}
+	wg.Wait()
+
+	chMu.Lock()
+	gotChanges := changes
+	chMu.Unlock()
+	if gotChanges == 0 {
+		t.Fatal("expected OnChanged notifications")
+	}
+	_ = time.Millisecond
 }

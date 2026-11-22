@@ -34,18 +34,20 @@ export function useUsage(isOpen: boolean): Usage {
     }
   }, []);
 
+  // Always load cached usage once on mount and react to backend quota updates
+  // without polling when the usage UI is closed.
+  useEffect(() => {
+    void read(false);
+    return EventsOn(QUOTA_CHANNEL, () => void read(false));
+  }, [read]);
+
+  // Force-refresh and run the 10s heartbeat only while a usage panel is open.
   useEffect(() => {
     if (!isOpen) return;
     void read(true);
-  }, [isOpen, read]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const offQuota = EventsOn(QUOTA_CHANNEL, () => void read(false));
     const heartbeat = window.setInterval(() => void read(false), HEARTBEAT_MS);
 
     return () => {
-      offQuota();
       window.clearInterval(heartbeat);
     };
   }, [isOpen, read]);

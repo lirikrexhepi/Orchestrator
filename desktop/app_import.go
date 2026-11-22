@@ -60,15 +60,29 @@ func (a *App) ImportOpenCodeSession(sessionID string) (string, error) {
 	workspace := a.workspaces.Create(title, parsed.Prompt, cwd)
 	workspace.ImportedFrom = "opencode"
 	workspace.ImportedSession = parsed.SessionID
+	if parsed.StartedAt > 0 {
+		workspace.CreatedAt = parsed.StartedAt
+	}
+	if parsed.UpdatedAt > 0 {
+		workspace.UpdatedAt = parsed.UpdatedAt
+	}
 	threadID := "import-" + compactID(parsed.SessionID) + "-" + strconv.FormatInt(time.Now().UnixMilli(), 36)
-	task, ok := a.workspaces.AddTask(workspace.ID, domain.Task{
+	taskInput := domain.Task{
 		ThreadID: threadID,
 		Title:    title,
 		Prompt:   parsed.Prompt,
 		Driver:   domain.DriverOpenCode,
 		Model:    parsed.Model,
 		State:    domain.TaskComplete,
-	})
+		Cwd:      cwd,
+	}
+	if parsed.StartedAt > 0 {
+		taskInput.CreatedAt = parsed.StartedAt
+	}
+	if parsed.UpdatedAt > 0 {
+		taskInput.UpdatedAt = parsed.UpdatedAt
+	}
+	task, ok := a.workspaces.AddTask(workspace.ID, taskInput)
 	if !ok {
 		return "", fmt.Errorf("workspace %s is gone", workspace.ID)
 	}
@@ -128,15 +142,29 @@ func (a *App) ImportClaudeCodeSession(filePath string) (string, error) {
 	workspace := a.workspaces.Create(parsed.Title, parsed.Prompt, cwd)
 	workspace.ImportedFrom = "claude-code"
 	workspace.ImportedSession = parsed.SessionID
+	if parsed.StartedAt > 0 {
+		workspace.CreatedAt = parsed.StartedAt
+	}
+	if parsed.UpdatedAt > 0 {
+		workspace.UpdatedAt = parsed.UpdatedAt
+	}
 	threadID := "import-" + compactID(parsed.SessionID) + "-" + strconv.FormatInt(time.Now().UnixMilli(), 36)
-	task, ok := a.workspaces.AddTask(workspace.ID, domain.Task{
+	taskInput := domain.Task{
 		ThreadID: threadID,
 		Title:    parsed.Title,
 		Prompt:   parsed.Prompt,
 		Driver:   domain.DriverClaude,
 		Model:    parsed.Model,
 		State:    domain.TaskComplete,
-	})
+		Cwd:      cwd,
+	}
+	if parsed.StartedAt > 0 {
+		taskInput.CreatedAt = parsed.StartedAt
+	}
+	if parsed.UpdatedAt > 0 {
+		taskInput.UpdatedAt = parsed.UpdatedAt
+	}
+	task, ok := a.workspaces.AddTask(workspace.ID, taskInput)
 	if !ok {
 		return "", fmt.Errorf("workspace %s is gone", workspace.ID)
 	}
@@ -208,7 +236,32 @@ func (a *App) SpawnFromImported(workspaceID, prompt, driver, model string, optio
 	if newDriver == "" {
 		newDriver = domain.DriverClaude
 	}
+	var contThreadID string
+	if len(loaded.Meta.Tasks) > 0 {
+		rootID := history.RootThreadID(loaded.Meta.Tasks[0].ThreadID)
+		if rootID != "" {
+			used := make(map[string]bool)
+			for _, t := range loaded.Meta.Tasks {
+				used[t.ThreadID] = true
+			}
+			if a.workspaces != nil {
+				for _, t := range a.workspaces.Tasks(workspaceID) {
+					used[t.ThreadID] = true
+				}
+			}
+			n := 1
+			for {
+				candidate := fmt.Sprintf("%s-cont-%d", rootID, n)
+				if !used[candidate] {
+					contThreadID = candidate
+					break
+				}
+				n++
+			}
+		}
+	}
 	result, err := a.spawner.Spawn(a.ctx, []session.SpawnRequest{{
+		ThreadID: contThreadID,
 		Title:    importTitle(prompt),
 		Prompt:   prompt,
 		Preamble: preamble.String(),

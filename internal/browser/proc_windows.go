@@ -17,3 +17,7 @@ func hideConsoleWindow(cmd *exec.Cmd) {
 	cmd.SysProcAttr.HideWindow = true
 	cmd.SysProcAttr.CreationFlags |= 0x08000000 // CREATE_NO_WINDOW
 }
+
+func isLiveSingletonTarget(_ string) bool {
+	return false
+}

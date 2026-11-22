@@ -44,34 +44,44 @@ func (a *Adapter) Capabilities() provider.Capabilities {
 }
 
 type pendingApproval struct {
-	options []acpPermissionOption
-	reply   chan acpPermissionOutcome
+	options    []acpPermissionOption
+	reply      chan acpPermissionOutcome
+	questionCh chan acpPermissionOutcome
+	isQuestion bool
 }
 
 type session struct {
-	threadID      string
-	cwd           string
-	model         string
-	options       domain.ModelOptions
-	permission    domain.PermissionMode
-	skills        *domain.SkillPolicy
-	sessionID     string
-	contextWindow int64
+	threadID        string
+	account         string
+	authMethod      string
+	cwd             string
+	model           string
+	options         domain.ModelOptions
+	permission      domain.PermissionMode
+	skills          *domain.SkillPolicy
+	sessionID       string
+	contextWindow   int64
+	contextUsed     int64
+	thoughtConfigID string
+	hasConfigOpts   bool
 
-	proc   *process.Process
-	conn   *jsonrpc.Conn
-	cancel context.CancelFunc
+	proc    *process.Process
+	conn    *jsonrpc.Conn
+	procCtx context.Context
+	cancel  context.CancelFunc
 
-	mu           sync.Mutex
-	turnID       string
-	turnSettled  chan struct{}
-	interrupting bool
+	mu             sync.Mutex
+	turnID         string
+	turnSettled    chan struct{}
+	interrupting   bool
+	loadingHistory bool
 
 	activeKind string // "", "message", "thought"
 	segmentSeq int
 
-	tools     map[string]bool
-	baselines map[string]string
+	tools           map[string]bool
+	baselines       map[string]string
+	nativeSubagents map[string]bool
 
 	reqSeq  atomic.Uint64
 	pending map[string]*pendingApproval
@@ -88,13 +98,70 @@ func permissionMode(mode domain.PermissionMode) string {
 	switch mode {
 	case domain.PermissionBypass:
 		return "auto"
-	case domain.PermissionAcceptEdits:
-		return "accept-edits"
 	case domain.PermissionPlan:
 		return "plan"
 	default:
 		return "default"
 	}
+}
+
+func resolveSessionMode(desired string, rawModes json.RawMessage) (string, bool) {
+	if desired == "" {
+		return "", false
+	}
+	if len(rawModes) == 0 || string(rawModes) == "null" {
+		return desired, true
+	}
+	var modes acpSessionModes
+	if err := json.Unmarshal(rawModes, &modes); err != nil || len(modes.AvailableModes) == 0 {
+		return desired, true
+	}
+	hasDefault := false
+	for _, m := range modes.AvailableModes {
+		if m.ID == desired {
+			return desired, true
+		}
+		if m.ID == "default" {
+			hasDefault = true
+		}
+	}
+	if hasDefault {
+		return "default", true
+	}
+	return "", false
+}
+
+func resolveThoughtConfigID(configOptions []acpConfigOption) (id string, hasOptions bool) {
+	if len(configOptions) == 0 {
+		return "thought_level", false
+	}
+	for _, opt := range configOptions {
+		if opt.Category == "thought_level" {
+			return opt.ID, true
+		}
+	}
+	for _, opt := range configOptions {
+		if opt.Category == "" && opt.ID == "thought_level" {
+			return opt.ID, true
+		}
+	}
+	return "", true
+}
+
+func pickAuthMethod(methods []acpAuthMethod, preferred string) string {
+	if preferred != "" {
+		for _, m := range methods {
+			if m.ID == preferred {
+				return m.ID
+			}
+		}
+	}
+	for _, m := range methods {
+		if m.ID == "oauth-personal" {
+			return m.ID
+		}
+	}
+	return methods[0].ID
 }
 
 func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput) (domain.Session, error) {
@@ -103,22 +170,50 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		return domain.Session{}, fmt.Errorf("%w: %s", process.ErrNotFound, a.binary())
 	}
 
-	cwd := in.Cwd
+	cwd := strings.TrimSpace(in.Cwd)
 	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
-		}
+		return domain.Session{}, errors.New("working directory is required")
 	}
 	in.Cwd = cwd
 
-	args := []string{"acp", "--stdio"}
-	if cwd != "" {
-		args = append(args, "--add-dir", cwd)
+	normAccount := domain.NormalizeAccount(in.Account)
+	args := []string{"acp", "--stdio", "--add-dir", cwd}
+	if normAccount != domain.DefaultAccountID {
+		if geminiDir := firstNonEmpty(env["GEMINI_DIR"], env["GEMINI_CONFIG_DIR"], env["AGY_GEMINI_DIR"]); geminiDir != "" {
+			args = append(args, "--gemini-dir", geminiDir)
+		}
 	}
 	if in.Permission == domain.PermissionBypass {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	args = append(args, shell.TokenizeArgs(a.settings.LaunchArgs)...)
+
+	authMethod := "oauth-personal"
+	if env["GEMINI_API_KEY"] != "" {
+		authMethod = "gemini-api-key"
+	}
+
+	var unlockSpawn func()
+	if env["GEMINI_API_KEY"] == "" {
+		SpawnMutex.Lock()
+		activatedNonDefault := normAccount != domain.DefaultAccountID
+		unlockSpawn = sync.OnceFunc(func() {
+			if activatedNonDefault {
+				if err := DefaultKeyringStore.RestoreDefault(); err != nil {
+					logger.Warnf("Antigravity", "restore default keyring profile: %v", err)
+				}
+			}
+			SpawnMutex.Unlock()
+		})
+		defer func() {
+			if unlockSpawn != nil {
+				unlockSpawn()
+			}
+		}()
+		if err := DefaultKeyringStore.ActivateProfile(in.Account); err != nil {
+			return domain.Session{}, fmt.Errorf("activate antigravity profile %q: %w", in.Account, err)
+		}
+	}
 
 	procCtx, cancel := context.WithCancel(context.Background())
 	proc, err := process.Start(procCtx, process.Spec{
@@ -126,6 +221,7 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		Args:          args,
 		Cwd:           cwd,
 		Env:           env,
+		KillTree:      true,
 		DieWithParent: true,
 	})
 	if err != nil {
@@ -135,17 +231,22 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 
 	model := firstNonEmpty(in.Model, a.settings.Model)
 	s := &session{
-		threadID:   in.ThreadID,
-		cwd:        cwd,
-		model:      model,
-		options:    in.Options,
-		permission: in.Permission,
-		skills:     in.Skills,
-		proc:       proc,
-		cancel:     cancel,
-		tools:      make(map[string]bool),
-		baselines:  make(map[string]string),
-		pending:    make(map[string]*pendingApproval),
+		threadID:        in.ThreadID,
+		account:         normAccount,
+		authMethod:      authMethod,
+		cwd:             cwd,
+		model:           model,
+		options:         in.Options,
+		permission:      in.Permission,
+		skills:          in.Skills,
+		thoughtConfigID: "thought_level",
+		proc:            proc,
+		procCtx:         procCtx,
+		cancel:          cancel,
+		tools:           make(map[string]bool),
+		baselines:       make(map[string]string),
+		nativeSubagents: make(map[string]bool),
+		pending:         make(map[string]*pendingApproval),
 	}
 
 	conn := jsonrpc.NewConn(proc.Stdout(), proc.Stdin(), a.makeHandler(s))
@@ -158,6 +259,11 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		return domain.Session{}, err
 	}
 
+	if unlockSpawn != nil {
+		unlockSpawn()
+		unlockSpawn = nil
+	}
+
 	a.mu.Lock()
 	a.sessions[in.ThreadID] = s
 	a.mu.Unlock()
@@ -168,6 +274,7 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		Kind:     domain.EventSessionStarted,
 		ThreadID: in.ThreadID,
 		Driver:   domain.DriverAntigravity,
+		Account:  s.account,
 		Text:     s.sessionID,
 	})
 
@@ -175,6 +282,7 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		ThreadID:          in.ThreadID,
 		InstanceID:        in.InstanceID,
 		Driver:            domain.DriverAntigravity,
+		Account:           s.account,
 		ProviderSessionID: s.sessionID,
 		Cwd:               cwd,
 		Model:             s.model,
@@ -183,7 +291,7 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 }
 
 func (a *Adapter) initSession(ctx context.Context, s *session, in domain.SessionStartInput) error {
-	initCtx, cancelInit := context.WithTimeout(ctx, 20*time.Second)
+	initCtx, cancelInit := context.WithTimeout(ctx, 60*time.Second)
 	defer cancelInit()
 	var initRes initializeResult
 	if err := s.conn.Call(initCtx, "initialize", initializeParams{
@@ -203,6 +311,13 @@ func (a *Adapter) initSession(ctx context.Context, s *session, in domain.Session
 		return fmt.Errorf("initialize %s: %w", a.binary(), err)
 	}
 
+	if len(initRes.AuthMethods) > 0 && !initRes.Authenticated {
+		methodID := pickAuthMethod(initRes.AuthMethods, s.authMethod)
+		if err := s.conn.Call(initCtx, "authenticate", authenticateParams{MethodID: methodID}, nil); err != nil {
+			return fmt.Errorf("authenticate %s (%s): %w", a.binary(), methodID, err)
+		}
+	}
+
 	var appendParts []string
 	if provider.RuntimeInstructions != "" {
 		appendParts = append(appendParts, provider.RuntimeInstructions)
@@ -215,28 +330,43 @@ func (a *Adapter) initSession(ctx context.Context, s *session, in domain.Session
 	appendPrompt := strings.Join(appendParts, "\n\n")
 
 	var sessionID string
-	loaded := false
+	var sessRes sessionNewResult
 	if in.Resume != "" {
+		// Prefer ACP session/resume so agy reattaches to the persisted session
+		// without replaying historical session/update chunks (Orchestrator already
+		// holds the canonical JSONL transcript). Fall back to session/load only if
+		// the server does not support session/resume.
+		s.mu.Lock()
+		s.loadingHistory = true
+		s.mu.Unlock()
 		loadCtx, cancelLoad := context.WithTimeout(ctx, 20*time.Second)
-		var loadRes sessionNewResult
-		err := s.conn.Call(loadCtx, "session/load", sessionLoadParams{
+		params := sessionLoadParams{
 			SessionID:  in.Resume,
 			Cwd:        s.cwd,
 			MCPServers: mcpServersFor(in.MCP),
-		}, &loadRes)
-		cancelLoad()
-		if err == nil {
-			sessionID = loadRes.SessionID
-			if sessionID == "" {
-				sessionID = in.Resume
-			}
-			loaded = true
-		} else {
-			logger.Warnf("Antigravity", "session/load failed for %s, falling back to session/new: %v", in.Resume, err)
 		}
-	}
-
-	if !loaded {
+		var err error
+		if initRes.supportsResume() {
+			err = s.conn.Call(loadCtx, "session/resume", params, &sessRes)
+			if err != nil {
+				logger.Infof("Antigravity", "session/resume failed (%v), falling back to session/load", err)
+				err = s.conn.Call(loadCtx, "session/load", params, &sessRes)
+			}
+		} else {
+			err = s.conn.Call(loadCtx, "session/load", params, &sessRes)
+		}
+		cancelLoad()
+		s.mu.Lock()
+		s.loadingHistory = false
+		s.mu.Unlock()
+		if err != nil {
+			return fmt.Errorf("session/load %s: %w", a.binary(), err)
+		}
+		sessionID = sessRes.SessionID
+		if sessionID == "" {
+			sessionID = in.Resume
+		}
+	} else {
 		var meta map[string]any
 		if appendPrompt != "" {
 			meta = map[string]any{
@@ -248,22 +378,24 @@ func (a *Adapter) initSession(ctx context.Context, s *session, in domain.Session
 			}
 		}
 		newCtx, cancelNew := context.WithTimeout(ctx, 20*time.Second)
-		var newRes sessionNewResult
 		err := s.conn.Call(newCtx, "session/new", sessionNewParams{
 			Cwd:        s.cwd,
 			MCPServers: mcpServersFor(in.MCP),
 			Meta:       meta,
-		}, &newRes)
+		}, &sessRes)
 		cancelNew()
 		if err != nil {
 			return fmt.Errorf("session/new %s: %w", a.binary(), err)
 		}
-		sessionID = newRes.SessionID
-		if sessionID == "" && in.Resume != "" {
-			sessionID = in.Resume
-		}
+		sessionID = sessRes.SessionID
 	}
 	s.sessionID = sessionID
+
+	thoughtID, hasCfg := resolveThoughtConfigID(sessRes.ConfigOptions)
+	s.mu.Lock()
+	s.thoughtConfigID = thoughtID
+	s.hasConfigOpts = hasCfg
+	s.mu.Unlock()
 
 	cfgCtx, cancelCfg := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelCfg()
@@ -279,18 +411,18 @@ func (a *Adapter) initSession(ctx context.Context, s *session, in domain.Session
 				logger.Warnf("Antigravity", "set initial model %q on thread %s: %v", base, in.ThreadID, err)
 			}
 		}
-		if effort != "" {
+		if effort != "" && thoughtID != "" {
 			if err := s.conn.Call(cfgCtx, "session/set_config_option", sessionSetConfigParams{
 				SessionID: s.sessionID,
-				ConfigID:  "thought_level",
+				ConfigID:  thoughtID,
 				Value:     effort,
 			}, nil); err != nil {
-				logger.Warnf("Antigravity", "set initial thought_level %q on thread %s: %v", effort, in.ThreadID, err)
+				logger.Warnf("Antigravity", "set initial %s %q on thread %s: %v", thoughtID, effort, in.ThreadID, err)
 			}
 		}
 	}
 
-	if mode := permissionMode(in.Permission); mode != "" {
+	if mode, ok := resolveSessionMode(permissionMode(in.Permission), sessRes.Modes); ok {
 		if err := s.conn.Call(cfgCtx, "session/set_config_option", sessionSetConfigParams{
 			SessionID: s.sessionID,
 			ConfigID:  "mode",
@@ -315,6 +447,21 @@ func (a *Adapter) monitor(s *session) {
 	a.finish(s)
 }
 
+func (s *session) claimTurnSettlement(turnID string) (interrupting bool, ctxWindow int64, ctxUsed int64, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if turnID == "" || s.turnID != turnID {
+		return false, 0, 0, false
+	}
+	interrupting = s.interrupting
+	ctxWindow = s.contextWindow
+	ctxUsed = s.contextUsed
+	s.turnID = ""
+	s.interrupting = false
+	s.activeKind = ""
+	return interrupting, ctxWindow, ctxUsed, true
+}
+
 func (a *Adapter) finish(s *session) {
 	a.mu.Lock()
 	if current, ok := a.sessions[s.threadID]; ok && current == s {
@@ -325,16 +472,27 @@ func (a *Adapter) finish(s *session) {
 	s.mu.Lock()
 	turnID := s.turnID
 	interrupting := s.interrupting
-	s.turnID = ""
-	s.interrupting = false
+	if turnID != "" {
+		s.turnID = ""
+		s.interrupting = false
+		s.activeKind = ""
+	}
 	pending := s.pending
 	s.pending = make(map[string]*pendingApproval)
 	s.mu.Unlock()
 
 	for _, p := range pending {
-		select {
-		case p.reply <- acpPermissionOutcome{Outcome: "cancelled"}:
-		default:
+		if p.reply != nil {
+			select {
+			case p.reply <- acpPermissionOutcome{Outcome: "cancelled"}:
+			default:
+			}
+		}
+		if p.questionCh != nil {
+			select {
+			case p.questionCh <- acpPermissionOutcome{Outcome: "cancelled"}:
+			default:
+			}
 		}
 	}
 
@@ -345,6 +503,7 @@ func (a *Adapter) finish(s *session) {
 				ThreadID:   s.threadID,
 				TurnID:     turnID,
 				Driver:     domain.DriverAntigravity,
+				Account:    s.account,
 				StopReason: domain.StopCancelled,
 			})
 		} else {
@@ -357,6 +516,7 @@ func (a *Adapter) finish(s *session) {
 				ThreadID: s.threadID,
 				TurnID:   turnID,
 				Driver:   domain.DriverAntigravity,
+				Account:  s.account,
 				Error:    a.binary() + " exited: " + detail,
 			})
 		}
@@ -366,6 +526,7 @@ func (a *Adapter) finish(s *session) {
 		Kind:     domain.EventSessionStopped,
 		ThreadID: s.threadID,
 		Driver:   domain.DriverAntigravity,
+		Account:  s.account,
 	})
 	s.cancel()
 }
@@ -380,8 +541,12 @@ func (a *Adapter) makeHandler(s *session) jsonrpc.Handler {
 				return nil, nil
 			}
 			s.mu.Lock()
+			loading := s.loadingHistory
 			turnID := s.turnID
 			s.mu.Unlock()
+			if loading || (turnID == "" && params.Update.SessionUpdate != "usage_update") {
+				return nil, nil
+			}
 			a.handleSessionUpdate(s, turnID, &params.Update)
 			return nil, nil
 
@@ -398,7 +563,166 @@ func (a *Adapter) makeHandler(s *session) jsonrpc.Handler {
 	}
 }
 
+func isQuestionPermission(tc acpToolCallPermission) bool {
+	idLower := strings.ToLower(tc.ToolCallID)
+	titleLower := strings.ToLower(tc.Title)
+	kindLower := strings.ToLower(tc.Kind)
+	return strings.HasPrefix(idLower, "interaction_") ||
+		strings.HasPrefix(titleLower, "interaction_") ||
+		strings.HasPrefix(kindLower, "interaction_") ||
+		titleLower == "ask_question" ||
+		kindLower == "ask_question" ||
+		titleLower == "askuserquestion"
+}
+
+func buildQuestionRequest(reqID string, params requestPermissionParams) *domain.QuestionRequest {
+	req := &domain.QuestionRequest{RequestID: reqID}
+	optNames := make([]string, 0, len(params.Options))
+	for _, opt := range params.Options {
+		if opt.Name != "" {
+			optNames = append(optNames, opt.Name)
+		} else if opt.OptionID != "" {
+			optNames = append(optNames, opt.OptionID)
+		}
+	}
+
+	input := params.ToolCall.RawInput
+	if rawQuestions, ok := input["questions"].([]any); ok && len(rawQuestions) > 0 {
+		for _, entry := range rawQuestions {
+			m, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			item := domain.QuestionItem{}
+			if q, ok := m["question"].(string); ok && q != "" {
+				item.Question = q
+			} else if h, ok := m["header"].(string); ok && h != "" {
+				item.Question = h
+			}
+			if h, ok := m["header"].(string); ok && h != "" {
+				if q, ok := m["question"].(string); ok && q != "" && q != h {
+					item.Question = h + ": " + q
+				}
+			}
+			if multi, ok := m["multiSelect"].(bool); ok {
+				item.MultiSelect = multi
+			}
+			if opts, ok := m["options"].([]any); ok {
+				for _, o := range opts {
+					switch v := o.(type) {
+					case string:
+						if v != "" {
+							item.Options = append(item.Options, v)
+						}
+					case map[string]any:
+						label, _ := v["label"].(string)
+						if label == "" {
+							label, _ = v["value"].(string)
+						}
+						if desc, _ := v["description"].(string); desc != "" {
+							if label != "" {
+								label = label + " — " + desc
+							} else {
+								label = desc
+							}
+						}
+						if label != "" {
+							item.Options = append(item.Options, label)
+						}
+					}
+				}
+			}
+			if len(item.Options) == 0 && len(optNames) > 0 {
+				item.Options = append([]string(nil), optNames...)
+			}
+			if item.Question != "" {
+				req.Questions = append(req.Questions, item)
+			}
+		}
+		if len(req.Questions) > 0 {
+			return req
+		}
+	}
+
+	qText, _ := input["question"].(string)
+	if qText == "" {
+		qText, _ = input["prompt"].(string)
+	}
+	if qText == "" {
+		qText = firstNonEmpty(params.ToolCall.Title, "Agent requires input")
+	}
+	var itemOpts []string
+	if opts, ok := input["options"].([]any); ok {
+		for _, o := range opts {
+			if str, ok := o.(string); ok && str != "" {
+				itemOpts = append(itemOpts, str)
+			} else if m, ok := o.(map[string]any); ok {
+				if label, _ := m["label"].(string); label != "" {
+					itemOpts = append(itemOpts, label)
+				}
+			}
+		}
+	}
+	if len(itemOpts) == 0 {
+		itemOpts = optNames
+	}
+	req.Questions = []domain.QuestionItem{{
+		Question: qText,
+		Options:  itemOpts,
+	}}
+	return req
+}
+
 func (a *Adapter) handleRequestPermission(ctx context.Context, s *session, params requestPermissionParams) (any, error) {
+	reqID := params.ToolCall.ToolCallID
+	if reqID == "" {
+		reqID = fmt.Sprintf("req-%d", s.reqSeq.Add(1))
+	}
+
+	var procDone <-chan struct{}
+	if s.proc != nil {
+		procDone = s.proc.Done()
+	}
+
+	if isQuestionPermission(params.ToolCall) {
+		questionCh := make(chan acpPermissionOutcome, 1)
+		s.mu.Lock()
+		s.pending[reqID] = &pendingApproval{
+			options:    params.Options,
+			questionCh: questionCh,
+			isQuestion: true,
+		}
+		turnID := s.turnID
+		s.mu.Unlock()
+
+		defer func() {
+			s.mu.Lock()
+			delete(s.pending, reqID)
+			s.mu.Unlock()
+		}()
+
+		a.emit.Emit(domain.RuntimeEvent{
+			Kind:     domain.EventQuestionAsked,
+			ThreadID: s.threadID,
+			TurnID:   turnID,
+			Driver:   domain.DriverAntigravity,
+			Account:  s.account,
+			ItemID:   reqID,
+			Question: buildQuestionRequest(reqID, params),
+		})
+
+		select {
+		case outcome := <-questionCh:
+			return requestPermissionResult{Outcome: outcome}, nil
+		case <-procDone:
+			return requestPermissionResult{Outcome: acpPermissionOutcome{Outcome: "cancelled"}}, nil
+		case <-s.conn.Done():
+			return requestPermissionResult{Outcome: acpPermissionOutcome{Outcome: "cancelled"}}, nil
+		case <-ctx.Done():
+			return requestPermissionResult{Outcome: acpPermissionOutcome{Outcome: "cancelled"}}, ctx.Err()
+		}
+	}
+
 	s.mu.Lock()
 	perm := s.permission
 	s.mu.Unlock()
@@ -437,11 +761,6 @@ func (a *Adapter) handleRequestPermission(ctx context.Context, s *session, param
 		}, nil
 	}
 
-	reqID := params.ToolCall.ToolCallID
-	if reqID == "" {
-		reqID = fmt.Sprintf("req-%d", s.reqSeq.Add(1))
-	}
-
 	replyCh := make(chan acpPermissionOutcome, 1)
 	s.mu.Lock()
 	s.pending[reqID] = &pendingApproval{
@@ -478,6 +797,7 @@ func (a *Adapter) handleRequestPermission(ctx context.Context, s *session, param
 		ThreadID: s.threadID,
 		TurnID:   turnID,
 		Driver:   domain.DriverAntigravity,
+		Account:  s.account,
 		Approval: &domain.ApprovalRequest{
 			RequestID: reqID,
 			Title:     params.ToolCall.Title,
@@ -486,11 +806,6 @@ func (a *Adapter) handleRequestPermission(ctx context.Context, s *session, param
 			Options:   domainOpts,
 		},
 	})
-
-	var procDone <-chan struct{}
-	if s.proc != nil {
-		procDone = s.proc.Done()
-	}
 
 	select {
 	case outcome := <-replyCh:
@@ -583,6 +898,7 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 
 	s.mu.Lock()
 	if s.turnID != "" {
+		prevTurnID := s.turnID
 		s.interrupting = true
 		prevSettled := s.turnSettled
 		sessionID := s.sessionID
@@ -594,6 +910,16 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 			case <-prevSettled:
 			case <-time.After(3 * time.Second):
 			}
+		}
+		if _, _, _, claimed := s.claimTurnSettlement(prevTurnID); claimed {
+			a.emit.Emit(domain.RuntimeEvent{
+				Kind:       domain.EventTurnCompleted,
+				ThreadID:   s.threadID,
+				TurnID:     prevTurnID,
+				Driver:     domain.DriverAntigravity,
+				Account:    s.account,
+				StopReason: domain.StopCancelled,
+			})
 		}
 		s.mu.Lock()
 	}
@@ -614,6 +940,7 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 		ThreadID: in.ThreadID,
 		TurnID:   in.TurnID,
 		Driver:   domain.DriverAntigravity,
+		Account:  s.account,
 	})
 
 	go func() {
@@ -625,13 +952,10 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 			Prompt:    promptBlocks,
 		}, &res)
 
-		s.mu.Lock()
-		interrupting := s.interrupting
-		s.turnID = ""
-		s.interrupting = false
-		s.activeKind = ""
-		ctxWindow := s.contextWindow
-		s.mu.Unlock()
+		interrupting, ctxWindow, ctxUsed, claimed := s.claimTurnSettlement(turnID)
+		if !claimed {
+			return
+		}
 
 		if err != nil {
 			if interrupting || errors.Is(err, context.Canceled) {
@@ -640,6 +964,7 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 					ThreadID:   s.threadID,
 					TurnID:     turnID,
 					Driver:     domain.DriverAntigravity,
+					Account:    s.account,
 					StopReason: domain.StopCancelled,
 				})
 			} else {
@@ -648,6 +973,7 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 					ThreadID: s.threadID,
 					TurnID:   turnID,
 					Driver:   domain.DriverAntigravity,
+					Account:  s.account,
 					Error:    err.Error(),
 				})
 			}
@@ -655,15 +981,26 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 		}
 
 		if res.Usage != nil {
-			contextTokens := res.Usage.TotalTokens
+			// session/prompt returns cumulative token totals across all tool-call
+			// loops in the turn, whereas current context window fill comes from
+			// usage_update (ctxUsed). Never overwrite ContextTokens with cumulative
+			// TotalTokens that can exceed the context window.
+			contextTokens := ctxUsed
 			if contextTokens == 0 {
-				contextTokens = res.Usage.InputTokens + res.Usage.OutputTokens
+				candidate := res.Usage.TotalTokens
+				if candidate == 0 {
+					candidate = res.Usage.InputTokens + res.Usage.OutputTokens
+				}
+				if ctxWindow == 0 || candidate <= ctxWindow {
+					contextTokens = candidate
+				}
 			}
 			a.emit.Emit(domain.RuntimeEvent{
 				Kind:     domain.EventUsage,
 				ThreadID: s.threadID,
 				TurnID:   turnID,
 				Driver:   domain.DriverAntigravity,
+				Account:  s.account,
 				Usage: &domain.Usage{
 					InputTokens:      res.Usage.InputTokens,
 					OutputTokens:     res.Usage.OutputTokens,
@@ -684,6 +1021,7 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 			ThreadID:   s.threadID,
 			TurnID:     turnID,
 			Driver:     domain.DriverAntigravity,
+			Account:    s.account,
 			StopReason: stopReason,
 		})
 	}()
@@ -768,8 +1106,9 @@ func (a *Adapter) RespondToApproval(ctx context.Context, threadID, requestID str
 
 	s.mu.Lock()
 	pending, ok := s.pending[requestID]
+	turnID := s.turnID
 	s.mu.Unlock()
-	if !ok {
+	if !ok || pending.isQuestion {
 		return errors.New("no pending approval for " + requestID)
 	}
 
@@ -782,7 +1121,9 @@ func (a *Adapter) RespondToApproval(ctx context.Context, threadID, requestID str
 	a.emit.Emit(domain.RuntimeEvent{
 		Kind:     domain.EventApprovalResolved,
 		ThreadID: threadID,
+		TurnID:   turnID,
 		Driver:   domain.DriverAntigravity,
+		Account:  s.account,
 		Approval: &domain.ApprovalRequest{RequestID: requestID},
 		Text:     string(decision),
 	})
@@ -845,20 +1186,30 @@ func (a *Adapter) RespondToQuestion(ctx context.Context, threadID, requestID str
 
 	s.mu.Lock()
 	pending, ok := s.pending[requestID]
+	turnID := s.turnID
 	s.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("no pending question for %s", requestID)
 	}
 
+	ch := pending.questionCh
+	if ch == nil {
+		ch = pending.reply
+	}
+
 	if len(answers) == 0 {
-		select {
-		case pending.reply <- acpPermissionOutcome{Outcome: "cancelled"}:
-		default:
+		if ch != nil {
+			select {
+			case ch <- acpPermissionOutcome{Outcome: "cancelled"}:
+			default:
+			}
 		}
 		a.emit.Emit(domain.RuntimeEvent{
 			Kind:     domain.EventQuestionAnswered,
 			ThreadID: threadID,
+			TurnID:   turnID,
 			Driver:   domain.DriverAntigravity,
+			Account:  s.account,
 			Text:     "",
 			Question: &domain.QuestionRequest{RequestID: requestID},
 		})
@@ -890,15 +1241,19 @@ func (a *Adapter) RespondToQuestion(ctx context.Context, threadID, requestID str
 		outcome = acpPermissionOutcome{Outcome: "selected", OptionID: selectedID}
 	}
 
-	select {
-	case pending.reply <- outcome:
-	default:
+	if ch != nil {
+		select {
+		case ch <- outcome:
+		default:
+		}
 	}
 
 	a.emit.Emit(domain.RuntimeEvent{
 		Kind:     domain.EventQuestionAnswered,
 		ThreadID: threadID,
+		TurnID:   turnID,
 		Driver:   domain.DriverAntigravity,
+		Account:  s.account,
 		Text:     answerText,
 		Question: &domain.QuestionRequest{RequestID: requestID},
 	})
@@ -923,6 +1278,7 @@ func (a *Adapter) StopSession(ctx context.Context, threadID string) error {
 		Kind:     domain.EventSessionStopped,
 		ThreadID: threadID,
 		Driver:   domain.DriverAntigravity,
+		Account:  s.account,
 	})
 	return nil
 }
@@ -946,6 +1302,7 @@ func (a *Adapter) StopAll(ctx context.Context) error {
 			Kind:     domain.EventSessionStopped,
 			ThreadID: s.threadID,
 			Driver:   domain.DriverAntigravity,
+			Account:  s.account,
 		})
 	}
 	return nil
@@ -979,6 +1336,10 @@ func (a *Adapter) UpdateModel(threadID, model string, options domain.ModelOption
 	currentModel := s.model
 	currentOpts := s.options
 	sessionID := s.sessionID
+	thoughtID := s.thoughtConfigID
+	if thoughtID == "" && !s.hasConfigOpts {
+		thoughtID = "thought_level"
+	}
 	s.mu.Unlock()
 
 	base, effort := SplitModelSelection(currentModel, currentOpts)
@@ -995,13 +1356,13 @@ func (a *Adapter) UpdateModel(threadID, model string, options domain.ModelOption
 			return false
 		}
 	}
-	if effort != "" {
+	if effort != "" && thoughtID != "" {
 		if err := s.conn.Call(ctx, "session/set_config_option", sessionSetConfigParams{
 			SessionID: sessionID,
-			ConfigID:  "thought_level",
+			ConfigID:  thoughtID,
 			Value:     effort,
 		}, nil); err != nil {
-			logger.Warnf("Antigravity", "update thought_level failed on thread %s: %v", threadID, err)
+			logger.Warnf("Antigravity", "update %s failed on thread %s: %v", thoughtID, threadID, err)
 			return false
 		}
 	}
@@ -1020,6 +1381,7 @@ func (a *Adapter) Session(threadID string) (domain.Session, bool) {
 	return domain.Session{
 		ThreadID:          threadID,
 		Driver:            domain.DriverAntigravity,
+		Account:           s.account,
 		ProviderSessionID: s.sessionID,
 		Cwd:               s.cwd,
 		Model:             s.model,

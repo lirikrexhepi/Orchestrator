@@ -40,9 +40,16 @@ type cdpResponse struct {
 	Error     *cdpError       `json:"error,omitempty"`
 }
 
+const sessionEventBufferSize = 1024
+
 type sessionDispatcher struct {
 	events chan *cdpResponse
 	done   chan struct{}
+}
+
+type screencastAck struct {
+	sessionID string
+	params    json.RawMessage
 }
 
 // CDPClient provides a minimal, thread-safe CDP JSON-RPC client over gorilla/websocket
@@ -53,6 +60,7 @@ type CDPClient struct {
 	nextID   int64
 	done     chan struct{}
 	closeErr atomic.Pointer[error]
+	ackCh    chan screencastAck
 
 	mu       sync.RWMutex
 	pending  map[int64]chan *cdpResponse
@@ -71,16 +79,32 @@ func DialCDP(ctx context.Context, wsURL string) (*CDPClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial cdp websocket at %s: %w", wsURL, err)
 	}
+	ws.SetReadLimit(32 * 1024 * 1024)
 
 	client := &CDPClient{
 		ws:       ws,
 		done:     make(chan struct{}),
+		ackCh:    make(chan screencastAck, 256),
 		pending:  make(map[int64]chan *cdpResponse),
 		sessions: make(map[string]*sessionDispatcher),
 	}
 
+	go client.ackLoop()
 	go client.readLoop()
 	return client, nil
+}
+
+// Alive reports whether the CDP connection is open and active.
+func (c *CDPClient) Alive() bool {
+	if c == nil {
+		return false
+	}
+	select {
+	case <-c.done:
+		return false
+	default:
+		return true
+	}
 }
 
 // Done returns a channel that is closed when the CDP connection terminates.
@@ -176,7 +200,7 @@ func (c *CDPClient) RegisterSession(sessionID string, handler func(method string
 	}
 
 	disp := &sessionDispatcher{
-		events: make(chan *cdpResponse, 256),
+		events: make(chan *cdpResponse, sessionEventBufferSize),
 		done:   make(chan struct{}),
 	}
 	c.sessions[sessionID] = disp
@@ -214,6 +238,42 @@ func (c *CDPClient) SetBrowserHandler(handler func(method string, params json.Ra
 	c.mu.Lock()
 	c.browserH = handler
 	c.mu.Unlock()
+}
+
+func (c *CDPClient) ackLoop() {
+	for {
+		select {
+		case <-c.done:
+			return
+		case ack := <-c.ackCh:
+			c.sendScreencastAck(ack.sessionID, ack.params)
+		}
+	}
+}
+
+func (c *CDPClient) sendScreencastAck(sessionID string, params json.RawMessage) {
+	var ev struct {
+		SessionID any `json:"sessionId"`
+	}
+	if err := json.Unmarshal(params, &ev); err != nil || ev.SessionID == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = c.Call(ctx, sessionID, "Page.screencastFrameAck", map[string]any{
+		"sessionId": ev.SessionID,
+	}, nil)
+}
+
+func (c *CDPClient) ackScreencastFrameAsync(sessionID string, params json.RawMessage) {
+	select {
+	case <-c.done:
+		return
+	case c.ackCh <- screencastAck{sessionID: sessionID, params: params}:
+	default:
+		// Fallback when ackCh is saturated or nil so screencast ACKs are never dropped.
+		go c.sendScreencastAck(sessionID, params)
+	}
 }
 
 func (c *CDPClient) readLoop() {
@@ -267,10 +327,30 @@ func (c *CDPClient) readLoop() {
 				disp, ok := c.sessions[resp.SessionID]
 				c.mu.RUnlock()
 				if ok {
+					ev := resp
 					select {
-					case disp.events <- &resp:
+					case disp.events <- &ev:
 					default:
-						// If session queue overflows, drop non-critical events or log
+						// Session queue is full: drain the oldest buffered event so newest
+						// events are delivered, and ACK any dropped screencast frame so
+						// Chromium's screencast pipeline never stalls.
+						select {
+						case dropped := <-disp.events:
+							if dropped != nil && dropped.Method == "Page.screencastFrame" {
+								c.ackScreencastFrameAsync(ev.SessionID, dropped.Params)
+							}
+							select {
+							case disp.events <- &ev:
+							default:
+								if ev.Method == "Page.screencastFrame" {
+									c.ackScreencastFrameAsync(ev.SessionID, ev.Params)
+								}
+							}
+						default:
+							if ev.Method == "Page.screencastFrame" {
+								c.ackScreencastFrameAsync(ev.SessionID, ev.Params)
+							}
+						}
 					}
 				}
 			} else {

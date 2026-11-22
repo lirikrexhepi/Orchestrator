@@ -8,6 +8,7 @@ import (
 
 	"composer/internal/domain"
 	"composer/internal/git"
+	"composer/internal/history"
 	"composer/internal/logger"
 	"composer/internal/session"
 
@@ -95,6 +96,12 @@ func (a *App) RespondToQuestion(threadID, requestID string, answers []string) er
 func (a *App) StopSession(threadID string) error {
 	logger.Infof("App", "StopSession: threadID=%s", threadID)
 	err := a.manager.Stop(a.ctx, threadID)
+	if a.terminals != nil {
+		a.terminals.CloseThread(threadID)
+	}
+	if a.browsers != nil {
+		a.browsers.CloseThread(threadID)
+	}
 	// A closed card is a closed task: without this the coordinator's agent
 	// manifest keeps offering it as a routing target.
 	if _, ok := a.workspaces.TaskByThread(threadID); ok {
@@ -109,7 +116,16 @@ func (a *App) ListSessions() []domain.Session {
 }
 
 func (a *App) ThreadHistory(threadID string) []domain.RuntimeEvent {
-	return a.manager.History(threadID)
+	workspaceID := ""
+	if a.workspaces != nil {
+		if task, ok := a.workspaces.TaskByThread(threadID); ok {
+			workspaceID = task.WorkspaceID
+		}
+	}
+	if workspaceID == "" && a.recorder != nil {
+		workspaceID, _ = a.recorder.WorkspaceOf(threadID)
+	}
+	return a.mergeThreadTranscript(workspaceID, threadID)
 }
 
 // SpawnTasks starts one agent session per task, optionally isolating each in
@@ -199,7 +215,11 @@ func (a *App) SwitchTaskAccountWithOptions(oldThreadID, driver, account, model s
 		return domain.Task{}, fmt.Errorf("no task for thread %s", oldThreadID)
 	}
 	workspace := a.workspaces.Get(oldTask.WorkspaceID)
-	cwd, err := a.requireCwd(a.liveTaskCwd(oldTask))
+	taskCwd := strings.TrimSpace(a.liveTaskCwd(oldTask))
+	if taskCwd == "" {
+		return domain.Task{}, fmt.Errorf("task has no working directory")
+	}
+	cwd, err := a.requireCwd(taskCwd)
 	if err != nil {
 		return domain.Task{}, err
 	}
@@ -320,7 +340,11 @@ func (a *App) UpdateTaskModel(threadID, driver, model string, options domain.Mod
 		}
 		return *task, nil
 	}
-	cwd, err := a.requireCwd(a.liveTaskCwd(task))
+	taskCwd := strings.TrimSpace(a.liveTaskCwd(task))
+	if taskCwd == "" {
+		return domain.Task{}, fmt.Errorf("task has no working directory")
+	}
+	cwd, err := a.requireCwd(taskCwd)
 	if err != nil {
 		return domain.Task{}, err
 	}
@@ -350,24 +374,89 @@ func (a *App) UpdateTaskModel(threadID, driver, model string, options domain.Mod
 }
 
 func (a *App) liveTaskCwd(task *domain.Task) string {
-	if live, ok := a.manager.ThreadSession(task.ThreadID); ok && live.Cwd != "" {
-		return live.Cwd
-	}
 	workspaceCwd := ""
-	if workspace := a.workspaces.Get(task.WorkspaceID); workspace != nil {
-		workspaceCwd = workspace.Cwd
+	if a.workspaces != nil {
+		if workspace := a.workspaces.Get(task.WorkspaceID); workspace != nil {
+			workspaceCwd = workspace.Cwd
+		}
 	}
-	return task.Dir(workspaceCwd)
+	if dir := task.Dir(workspaceCwd); dir != "" {
+		return dir
+	}
+	if a.manager != nil {
+		if live, ok := a.manager.ThreadSession(task.ThreadID); ok && live.Cwd != "" {
+			return live.Cwd
+		}
+	}
+	return ""
 }
 
 func (a *App) threadTranscript(task *domain.Task) []domain.RuntimeEvent {
-	events := a.manager.History(task.ThreadID)
-	if len(events) == 0 && a.historyStore != nil {
-		if loaded, err := a.historyStore.Load(task.WorkspaceID); err == nil {
-			events = loaded.Transcripts[task.ThreadID]
+	return a.mergeThreadTranscript(task.WorkspaceID, task.ThreadID)
+}
+
+func (a *App) mergeThreadTranscript(workspaceID, threadID string) []domain.RuntimeEvent {
+	var live []domain.RuntimeEvent
+	if a.manager != nil {
+		live = a.manager.History(threadID)
+	}
+	var durable []domain.RuntimeEvent
+	if workspaceID != "" && a.historyStore != nil {
+		if loaded, err := a.historyStore.Load(workspaceID); err == nil {
+			durable = loaded.Transcripts[threadID]
+			if len(durable) == 0 {
+				if rootID := history.RootThreadID(threadID); rootID != "" && rootID != threadID {
+					durable = loaded.Transcripts[rootID]
+				}
+			}
 		}
 	}
-	return events
+	return mergeTranscriptEvents(durable, live)
+}
+
+func mergeTranscriptEvents(durable, live []domain.RuntimeEvent) []domain.RuntimeEvent {
+	if len(durable) == 0 {
+		return live
+	}
+	if len(live) == 0 {
+		return durable
+	}
+
+	liveByKey := make(map[string][]int, len(live))
+	for i, ev := range live {
+		k := transcriptEventKey(ev)
+		liveByKey[k] = append(liveByKey[k], i)
+	}
+	usedLive := make([]bool, len(live))
+	out := make([]domain.RuntimeEvent, 0, len(durable)+len(live))
+
+	for _, ev := range durable {
+		k := transcriptEventKey(ev)
+		if queue := liveByKey[k]; len(queue) > 0 {
+			idx := queue[0]
+			liveByKey[k] = queue[1:]
+			usedLive[idx] = true
+			out = append(out, live[idx])
+			continue
+		}
+		out = append(out, ev)
+	}
+	for i, ev := range live {
+		if !usedLive[i] {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func transcriptEventKey(ev domain.RuntimeEvent) string {
+	if ev.Delta && (ev.Kind == domain.EventAgentMessage || ev.Kind == domain.EventAgentThought) {
+		return fmt.Sprintf("delta|%s|%s|%s|%d", ev.Kind, ev.TurnID, ev.ItemID, ev.At)
+	}
+	if ev.Tool != nil && ev.Tool.ID != "" {
+		return fmt.Sprintf("tool|%s|%s|%s|%d", ev.Kind, ev.TurnID, ev.Tool.ID, ev.At)
+	}
+	return fmt.Sprintf("ev|%s|%s|%s|%d|%s|%s", ev.Kind, ev.TurnID, ev.ItemID, ev.At, ev.Text, ev.Error)
 }
 
 func sameModelOptions(a, b domain.ModelOptions) bool {

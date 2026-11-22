@@ -48,17 +48,23 @@ const (
 	AvailabilityUnauthed    Availability = "unauthenticated"
 )
 
+type AccountModelDefault struct {
+	Model   string       `json:"model,omitempty"`
+	Options ModelOptions `json:"options,omitempty"`
+}
+
 type ProviderSettings struct {
-	BinaryPath   string            `json:"binaryPath,omitempty"`
-	LaunchArgs   string            `json:"launchArgs,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`
-	ServerURL    string            `json:"serverUrl,omitempty"`
-	APIEndpoint  string            `json:"apiEndpoint,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	Options      ModelOptions      `json:"options,omitempty"`
-	PrintTimeout string            `json:"printTimeout,omitempty"`
-	Enabled      bool              `json:"enabled"`
-	Unset        []string          `json:"-"`
+	BinaryPath      string                         `json:"binaryPath,omitempty"`
+	LaunchArgs      string                         `json:"launchArgs,omitempty"`
+	Env             map[string]string              `json:"env,omitempty"`
+	ServerURL       string                         `json:"serverUrl,omitempty"`
+	APIEndpoint     string                         `json:"apiEndpoint,omitempty"`
+	Model           string                         `json:"model,omitempty"`
+	Options         ModelOptions                   `json:"options,omitempty"`
+	AccountDefaults map[string]AccountModelDefault `json:"accountDefaults,omitempty"`
+	PrintTimeout    string                         `json:"printTimeout,omitempty"`
+	Enabled         bool                           `json:"enabled"`
+	Unset           []string                       `json:"-"`
 }
 
 type ProviderSnapshot struct {
@@ -93,9 +99,11 @@ type ProviderUpdate struct {
 const DefaultAccountID = "default"
 
 type Account struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	ConfigDir string `json:"configDir,omitempty"`
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	ConfigDir string  `json:"configDir,omitempty"`
+	AuthMode  string  `json:"authMode,omitempty"`
+	Models    []Model `json:"models,omitempty"`
 }
 
 func (a Account) IsDefault() bool {

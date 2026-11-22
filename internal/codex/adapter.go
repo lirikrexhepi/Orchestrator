@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,8 +43,9 @@ type thread struct {
 	model    string
 	effort   string
 
-	mu     sync.Mutex
-	turnID string
+	mu            sync.Mutex
+	turnID        string
+	streamedItems map[string]bool
 }
 
 func NewAdapter(settings domain.ProviderSettings, emit provider.Emitter) *Adapter {
@@ -100,10 +102,10 @@ func (a *Adapter) connection(ctx context.Context) (*jsonrpc.Conn, error) {
 
 	procCtx, cancel := context.WithCancel(context.Background())
 	proc, err := process.Start(procCtx, process.Spec{
-		Command: binary(a.settings),
-		Args:    args,
-		Env:     env,
-
+		Command:       binary(a.settings),
+		Args:          args,
+		Env:           env,
+		KillTree:      true,
 		DieWithParent: true,
 	})
 	if err != nil {
@@ -114,6 +116,7 @@ func (a *Adapter) connection(ctx context.Context) (*jsonrpc.Conn, error) {
 	newConn := jsonrpc.NewConn(proc.Stdout(), proc.Stdin(), a.handleInbound)
 	initParams := InitializeParams{ClientInfo: Implementation{Name: "composer", Title: "Composer"}}
 	if err := newConn.Call(ctx, "initialize", initParams, nil); err != nil {
+		newConn.Close(err)
 		cancel()
 		_ = proc.Shutdown(time.Second)
 		return nil, fmt.Errorf("codex initialize: %w (%s)", err, proc.StderrTail())
@@ -138,10 +141,14 @@ func (a *Adapter) watchExit(proc *process.Process, conn *jsonrpc.Conn) {
 	}
 	a.threads = make(map[string]*thread)
 	a.byCodex = make(map[string]*thread)
+	pending := a.pending
+	a.pending = make(map[string]chan string)
 	if a.conn == conn {
 		a.conn, a.proc = nil, nil
 	}
 	a.mu.Unlock()
+
+	abortPending(pending)
 
 	detail := proc.StderrTail()
 	for _, t := range threads {
@@ -162,18 +169,16 @@ func (a *Adapter) watchExit(proc *process.Process, conn *jsonrpc.Conn) {
 }
 
 func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput) (domain.Session, error) {
+	cwd := strings.TrimSpace(in.Cwd)
+	if cwd == "" {
+		return domain.Session{}, errors.New("working directory is required")
+	}
+	in.Cwd = cwd
+
 	conn, err := a.connection(ctx)
 	if err != nil {
 		return domain.Session{}, err
 	}
-
-	cwd := in.Cwd
-	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
-		}
-	}
-	in.Cwd = cwd
 
 	model := in.Model
 	if model == "" {
@@ -182,7 +187,13 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 	effort := ResolveEffort(in.Options, "")
 	approval := approvalPolicy(in.Permission)
 
-	t := &thread{threadID: in.ThreadID, cwd: in.Cwd, model: model, effort: effort}
+	t := &thread{
+		threadID:      in.ThreadID,
+		cwd:           in.Cwd,
+		model:         model,
+		effort:        effort,
+		streamedItems: make(map[string]bool),
+	}
 
 	if in.Resume != "" {
 		params := ThreadResumeParams{
@@ -190,12 +201,11 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 			DeveloperInstructions: provider.RuntimeInstructions,
 		}
 		var resumed ThreadStartResponse
-		if err := conn.Call(ctx, "thread/resume", params, &resumed); err == nil {
-			t.codexID = firstNonEmpty(resumed.Thread.ID, in.Resume)
+		if err := conn.Call(ctx, "thread/resume", params, &resumed); err != nil {
+			return domain.Session{}, fmt.Errorf("codex thread/resume: %w", err)
 		}
-	}
-
-	if t.codexID == "" {
+		t.codexID = firstNonEmpty(resumed.Thread.ID, in.Resume)
+	} else {
 		params := ThreadStartParams{Cwd: in.Cwd, Model: model, Effort: effort, ApprovalPolicy: approval, DeveloperInstructions: provider.RuntimeInstructions}
 		var started ThreadStartResponse
 		if err := conn.Call(ctx, "thread/start", params, &started); err != nil {
@@ -229,11 +239,11 @@ func approvalPolicy(mode domain.PermissionMode) string {
 	case domain.PermissionBypass:
 		return "never"
 	case domain.PermissionAcceptEdits:
-		return "onFailure"
+		return "on-failure"
 	case domain.PermissionPlan:
 		return "always"
 	default:
-		return "onRequest"
+		return "on-request"
 	}
 }
 
@@ -255,16 +265,11 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 		return errors.New("no active session for thread " + in.ThreadID)
 	}
 
-	input := make([]UserInput, 0, len(in.Files)+1)
-	if in.Text != "" {
-		input = append(input, UserInput{Type: "text", Text: in.Text})
-	}
-	for _, file := range in.Files {
-		input = append(input, UserInput{Type: "localImage", Path: file.Path})
-	}
+	input := buildTurnInput(in.Text, in.Files)
 
 	t.mu.Lock()
 	t.turnID = in.TurnID
+	t.streamedItems = make(map[string]bool)
 	t.mu.Unlock()
 
 	a.emit.Emit(domain.RuntimeEvent{
@@ -361,13 +366,19 @@ func (a *Adapter) StopSession(ctx context.Context, threadID string) error {
 
 func (a *Adapter) StopAll(ctx context.Context) error {
 	a.mu.Lock()
-	proc, cancel := a.proc, a.cancel
+	proc, conn, cancel := a.proc, a.conn, a.cancel
 	a.threads = make(map[string]*thread)
 	a.byCodex = make(map[string]*thread)
 	a.codexTurns = nil
+	pending := a.pending
+	a.pending = make(map[string]chan string)
 	a.proc, a.conn, a.cancel = nil, nil, nil
 	a.mu.Unlock()
 
+	abortPending(pending)
+	if conn != nil {
+		conn.Close(nil)
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -375,6 +386,48 @@ func (a *Adapter) StopAll(ctx context.Context) error {
 		return proc.Shutdown(2 * time.Second)
 	}
 	return nil
+}
+
+func abortPending(pending map[string]chan string) {
+	for _, ch := range pending {
+		if ch == nil {
+			continue
+		}
+		select {
+		case ch <- DecisionAbort:
+		default:
+		}
+	}
+}
+
+func buildTurnInput(text string, files []domain.FileRef) []UserInput {
+	mentions := text
+	images := make([]UserInput, 0, len(files))
+	for _, file := range files {
+		if isImageFile(file) {
+			images = append(images, UserInput{Type: "localImage", Path: file.Path})
+			continue
+		}
+		mentions += "\n@" + file.Path
+	}
+	input := make([]UserInput, 0, len(images)+1)
+	if strings.TrimSpace(mentions) != "" || len(images) == 0 {
+		input = append(input, UserInput{Type: "text", Text: mentions})
+	}
+	return append(input, images...)
+}
+
+func isImageFile(file domain.FileRef) bool {
+	mime := strings.ToLower(strings.TrimSpace(file.MIME))
+	if mime != "" {
+		return strings.HasPrefix(mime, "image/")
+	}
+	switch strings.ToLower(filepath.Ext(file.Path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Adapter) HasSession(threadID string) bool {
@@ -388,12 +441,14 @@ func (a *Adapter) UpdateModel(threadID, model string, options domain.ModelOption
 	a.mu.RLock()
 	t, ok := a.threads[threadID]
 	a.mu.RUnlock()
-	if !ok || model == "" {
-		return ok
+	if !ok {
+		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.model = model
+	if model != "" {
+		t.model = model
+	}
 	if effort := options.String(domain.OptionEffort); effort != "" {
 		t.effort = effort
 	}

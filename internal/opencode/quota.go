@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -40,7 +41,25 @@ var goWindowNames = map[string]string{
 }
 
 func goAuthPath() (string, error) {
+	if xdg := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); xdg != "" {
+		return filepath.Join(xdg, "opencode", "auth.json"), nil
+	}
 	home, err := os.UserHomeDir()
+	if runtime.GOOS == "windows" {
+		if local := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); local != "" {
+			candidate := filepath.Join(local, "opencode", "auth.json")
+			if _, statErr := os.Stat(candidate); statErr == nil || err != nil {
+				return candidate, nil
+			}
+			if err == nil {
+				fallback := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+				if _, statErr := os.Stat(fallback); statErr == nil {
+					return fallback, nil
+				}
+			}
+			return candidate, nil
+		}
+	}
 	if err != nil {
 		return "", err
 	}

@@ -241,12 +241,13 @@ const FeedBlock = React.memo(function FeedBlock({
           onRespond={async (decision) => {
             const { onRespondApproval, threadId } = handlers.current;
             if (onRespondApproval) {
-              onRespondApproval(block.requestID, decision);
+              await onRespondApproval(block.requestID, decision);
             } else if (threadId) {
               try {
                 await RespondToApproval(threadId, block.requestID, decision);
               } catch (err) {
                 console.error('Failed to respond to approval:', err);
+                throw err;
               }
             }
           }}
@@ -257,8 +258,8 @@ const FeedBlock = React.memo(function FeedBlock({
       return (
         <SubagentFeedRow
           agent={block}
-          driver={defaultDriver}
-          modelId={defaultModel}
+          driver={block.driver || defaultDriver}
+          modelId={block.model || defaultModel}
           onOpen={(agentId) => handlers.current.onOpenSubagent?.(agentId)}
         />
       );
@@ -437,13 +438,23 @@ const AgentSessionFeedImpl: React.FC<AgentSessionFeedProps> = ({
           drawDistance={1200}
           recycleItems={false}
           initialScrollAtEnd
-          maintainVisibleContentPosition={isWorking ? undefined : { data: true }}
+          maintainVisibleContentPosition={false}
           onStartReached={hasEarlier && onLoadEarlier ? () => onLoadEarlier() : undefined}
           onStartReachedThreshold={0.1}
           ListHeaderComponent={
             loadingEarlier ? (
               <div className={virtual.itemClassName}>
                 <NoticeDivider label="Loading earlier messages" />
+              </div>
+            ) : hasEarlier && onLoadEarlier ? (
+              <div className={`${virtual.itemClassName || ''} flex justify-center py-2`}>
+                <button
+                  type="button"
+                  onClick={onLoadEarlier}
+                  className="px-3 py-1 rounded-full text-[11px] font-medium font-(family-name:--app-font) bg-current/[0.06] hover:bg-current/[0.12] text-current/60 hover:text-current/90 transition-colors cursor-pointer"
+                >
+                  Load earlier messages
+                </button>
               </div>
             ) : undefined
           }

@@ -1,5 +1,5 @@
 import { MaterialIcon } from '../common/icons';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 export interface PlanToolProps {
   planFile?: string;
@@ -33,6 +33,10 @@ const PlanToolImpl: React.FC<PlanToolProps> = ({
 }) => {
   const [isApproved, setIsApproved] = useState(approved);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+
+  useEffect(() => {
+    setIsApproved(approved);
+  }, [approved]);
 
   const handleApprove = () => {
     setIsApproved(true);
@@ -100,7 +104,7 @@ const PlanToolImpl: React.FC<PlanToolProps> = ({
                 </div>
               ) : (
                 <button
-                  type="submit"
+                  type="button"
                   onClick={handleApprove}
                   className="px-4 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-600 active:scale-95 text-[12px] font-medium text-white transition-all cursor-pointer"
                 >

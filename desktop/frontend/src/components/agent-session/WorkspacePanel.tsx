@@ -6,7 +6,7 @@ import { MarkdownText } from './MarkdownText';
 import { formatModelBadge, renderChatIcon } from '../common/DynamicIsland';
 import { SubagentBlockData } from './types';
 import { BreakdownHover, StatFile } from './ChangeBreakdown';
-import { DARK_TONE, DOT_TONE, EntryRow, LIGHT_TONE, STATUS_WORD, Tone, elapsedOf, useNow } from './SubagentMenu';
+import { DARK_TONE, DOT_TONE, EntryRow, LIGHT_TONE, STATUS_WORD, Tone, elapsedOf, resolveSubagentDriver, useNow } from './SubagentMenu';
 import { AvailableEditors, GitPullRequestURL, GitPush, OpenInEditor } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime/runtime';
 import { domain } from '../../../wailsjs/go/models';
@@ -100,6 +100,7 @@ export interface WorkspaceSectionProps {
   projectName?: string;
   path?: string;
   lane?: domain.WorktreeChanges | null;
+  hideBranchHeader?: boolean;
   onOpenChanges?: () => void;
   onClose?: () => void;
 }
@@ -120,6 +121,7 @@ export const WorkspaceSection = React.memo(function WorkspaceSection({
   projectName,
   path,
   lane,
+  hideBranchHeader = false,
   onOpenChanges,
   onClose,
 }: WorkspaceSectionProps) {
@@ -199,23 +201,25 @@ export const WorkspaceSection = React.memo(function WorkspaceSection({
       {lane && (
         <>
           <div className={`mx-2 my-1 border-t ${tone.divider}`} />
-          <Row
-            tone={tone}
-            icon={<MaterialIcon name="fork_right" size={15} />}
-            title={target ? `${lane.branch} → ${target}` : lane.branch}
-            label={
-              <span className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 truncate">{lane.branch || 'detached'}</span>
-                {target && target !== lane.branch && (
-                  <>
-                    <MaterialIcon name="arrow_forward" size={12} className={`shrink-0 ${tone.faint}`} />
-                    <span className={`min-w-0 truncate ${tone.muted}`}>{target}</span>
-                  </>
-                )}
-              </span>
-            }
-            onClick={onOpenChanges}
-          />
+          {!hideBranchHeader && (
+            <Row
+              tone={tone}
+              icon={<MaterialIcon name="fork_right" size={15} />}
+              title={target ? `${lane.branch} → ${target}` : lane.branch}
+              label={
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 truncate">{lane.branch || 'detached'}</span>
+                  {target && target !== lane.branch && (
+                    <>
+                      <MaterialIcon name="arrow_forward" size={12} className={`shrink-0 ${tone.faint}`} />
+                      <span className={`min-w-0 truncate ${tone.muted}`}>{target}</span>
+                    </>
+                  )}
+                </span>
+              }
+              onClick={onOpenChanges}
+            />
+          )}
           <Row
             tone={tone}
             icon={<MaterialIcon name="commit" size={15} />}
@@ -284,6 +288,7 @@ export const SubagentFeedRow = React.memo(function SubagentFeedRow({
   const tone = isLight ? LIGHT_TONE : DARK_TONE;
   const now = useNow(agent.status === 'running');
   const step = currentStep(agent);
+  const resolved = resolveSubagentDriver(agent, driver);
   return (
     <button
       type="button"
@@ -291,7 +296,7 @@ export const SubagentFeedRow = React.memo(function SubagentFeedRow({
       className={`group my-1 flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-left transition-colors cursor-pointer ${tone.hover}`}
     >
       <span className="relative flex h-[22px] w-[22px] shrink-0 items-center justify-center">
-        {renderChatIcon(driver, modelId, isLight, 'w-[18px] h-[18px]')}
+        {renderChatIcon(resolved.driver, resolved.model || modelId, isLight, 'w-[18px] h-[18px]')}
         <span className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full ring-2 ${tone.ring} ${DOT_TONE[agent.status]}`} />
       </span>
       <span className="flex min-w-0 flex-1 flex-col">
@@ -341,6 +346,8 @@ export const SubagentFullView: React.FC<SubagentFullViewProps> = ({
   const now = useNow(running);
   const [fullPrompt, setFullPrompt] = useState(false);
   const elapsed = elapsedOf(agent, now);
+  const resolved = resolveSubagentDriver(agent, driver);
+  const resolvedModel = resolved.model || modelId;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -427,8 +434,8 @@ export const SubagentFullView: React.FC<SubagentFullViewProps> = ({
 
       <div className="flex shrink-0 justify-center px-4 pb-4">
         <div className={`flex h-10 w-full max-w-[720px] items-center gap-2.5 rounded-full border px-4 text-[12px] whitespace-nowrap font-(family-name:--app-font) ${tone.card}`}>
-          <span className="flex shrink-0 items-center">{renderChatIcon(driver, modelId, isLight, 'w-[14px] h-[14px]')}</span>
-          {modelId && <span className={`min-w-0 truncate font-medium ${tone.title}`}>{formatModelBadge(modelId, driver)}</span>}
+          <span className="flex shrink-0 items-center">{renderChatIcon(resolved.driver, resolvedModel, isLight, 'w-[14px] h-[14px]')}</span>
+          {resolvedModel && <span className={`min-w-0 truncate font-medium ${tone.title}`}>{formatModelBadge(resolvedModel, resolved.driver)}</span>}
           {effort && <span className={`shrink-0 ${tone.muted}`}>{effort}</span>}
           <span className={`shrink-0 ${tone.muted}`}>{running ? `Working ${elapsed}` : STATUS_WORD[agent.status]}</span>
           <span className="flex-1" />

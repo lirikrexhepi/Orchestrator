@@ -39,8 +39,8 @@ export const UsagePanel: React.FC<UsagePanelProps> = ({
     .filter((driver) => !!driver.limitsError)
     .map((driver) => ({ key: usageKey(driver), name: usageName(driver), message: driver.limitsError as string }));
   // Session spend comes from the event stream and needs no subscription, so a
-  // CLI without quota (OpenCode on third-party models, Codex, Antigravity)
-  // still shows what it burned this run.
+  // CLI without quota (OpenCode on third-party models, Codex) still shows what
+  // it burned this run.
   const spendDrivers = drivers.filter(
     (driver) =>
       (driver.inputTokens ?? 0) + (driver.outputTokens ?? 0) > 0 ||
@@ -164,8 +164,8 @@ export const UsagePanel: React.FC<UsagePanelProps> = ({
                   </span>
                 )}
               </div>
-              {driver.limits?.map((limit) => (
-                <QuotaBar key={`${usageKey(driver)}-${limit.window}`} limit={limit} />
+              {driver.limits?.map((limit, idx) => (
+                <QuotaBar key={`${usageKey(driver)}-${limit.window}-${idx}`} limit={limit} />
               ))}
             </div>
           ))}

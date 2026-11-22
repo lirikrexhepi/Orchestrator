@@ -205,5 +205,19 @@ func (a *App) RenameChat(threadID, title string) error {
 	if len([]rune(title)) > 120 {
 		title = string([]rune(title)[:120])
 	}
-	return a.applyTitle(history.RootThreadID(threadID), title, titler.SourceUser, 0)
+	rootID := history.RootThreadID(threadID)
+	if err := a.applyTitle(rootID, title, titler.SourceUser, 0); err != nil {
+		return err
+	}
+	if a.sessionService != nil {
+		ctx := a.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		_ = a.sessionService.RenameSession(ctx, rootID, title)
+		if threadID != "" && threadID != rootID {
+			_ = a.sessionService.RenameSession(ctx, threadID, title)
+		}
+	}
+	return nil
 }

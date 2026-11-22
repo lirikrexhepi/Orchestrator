@@ -60,29 +60,12 @@ func (a *Adapter) onPartUpdated(raw json.RawMessage) {
 	if t.messageRoles != nil {
 		role = t.messageRoles[part.MessageID]
 	}
-	lastUserText := t.lastUserText
 	t.mu.Unlock()
-
-	trimmedPart := strings.TrimSpace(part.Text)
-	trimmedUser := strings.TrimSpace(lastUserText)
 
 	// If the part belongs to a user message, ignore it so it doesn't get mirrored in the assistant feed
 	if role == "user" {
 		logger.Debugf("OpenCode", "Skipping user message part: msg=%s part=%s type=%s", part.MessageID, part.ID, part.Type)
 		return
-	}
-	// Fallback check if the message event hasn't arrived yet or if delta matches user text
-	if role == "" && part.Type == "text" && trimmedUser != "" && trimmedPart != "" {
-		if trimmedPart == trimmedUser || strings.HasPrefix(trimmedUser, trimmedPart) || strings.HasPrefix(trimmedPart, trimmedUser) {
-			t.mu.Lock()
-			if t.messageRoles == nil {
-				t.messageRoles = make(map[string]string)
-			}
-			t.messageRoles[part.MessageID] = "user"
-			t.mu.Unlock()
-			logger.Infof("OpenCode", "Filtered user echo part: msg=%s part=%s text=%q", part.MessageID, part.ID, trimmedPart)
-			return
-		}
 	}
 
 	t.mu.Lock()
@@ -285,10 +268,10 @@ func (a *Adapter) onMessageUpdated(raw json.RawMessage) {
 		t.mu.Lock()
 		turnID := t.turnID
 		t.turnID = ""
-		t.lastUserText = ""
 		t.tools = make(map[string]string)
 		t.partText = make(map[string]string)
 		t.partTypes = make(map[string]string)
+		t.stepUsage = make(map[string]domain.Usage)
 		t.mu.Unlock()
 
 		if turnID != "" {
@@ -312,16 +295,32 @@ func (a *Adapter) onMessageUpdated(raw json.RawMessage) {
 		return
 	}
 
-	event := a.base(t, domain.EventUsage)
-	event.Usage = &domain.Usage{
+	t.mu.Lock()
+	if t.stepUsage == nil {
+		t.stepUsage = make(map[string]domain.Usage)
+	}
+	t.stepUsage[info.ID] = domain.Usage{
 		InputTokens:      info.Tokens.Input,
 		OutputTokens:     info.Tokens.Output,
 		CacheReadTokens:  info.Tokens.Cache.Read,
 		CacheWriteTokens: info.Tokens.Cache.Write,
 		CostUSD:          info.Cost,
-		ContextTokens:    info.Tokens.Input + info.Tokens.Output + info.Tokens.Reasoning + info.Tokens.Cache.Read + info.Tokens.Cache.Write,
-		ContextWindow:    a.contextLimit(t, info.ProviderID, info.ModelID),
 	}
+	var cumulative domain.Usage
+	for _, u := range t.stepUsage {
+		cumulative.InputTokens += u.InputTokens
+		cumulative.OutputTokens += u.OutputTokens
+		cumulative.CacheReadTokens += u.CacheReadTokens
+		cumulative.CacheWriteTokens += u.CacheWriteTokens
+		cumulative.CostUSD += u.CostUSD
+	}
+	t.mu.Unlock()
+
+	cumulative.ContextTokens = info.Tokens.Input + info.Tokens.Output + info.Tokens.Reasoning + info.Tokens.Cache.Read + info.Tokens.Cache.Write
+	cumulative.ContextWindow = a.contextLimit(t, info.ProviderID, info.ModelID)
+
+	event := a.base(t, domain.EventUsage)
+	event.Usage = &cumulative
 	a.emit.Emit(event)
 }
 
@@ -340,10 +339,10 @@ func (a *Adapter) onSessionIdle(raw json.RawMessage) {
 	t.mu.Lock()
 	turnID := t.turnID
 	t.turnID = ""
-	t.lastUserText = ""
 	t.tools = make(map[string]string)
 	t.partText = make(map[string]string)
 	t.partTypes = make(map[string]string)
+	t.stepUsage = make(map[string]domain.Usage)
 	t.mu.Unlock()
 	if turnID == "" {
 		return
@@ -370,7 +369,7 @@ func (a *Adapter) onSessionError(raw json.RawMessage) {
 	t.mu.Lock()
 	turnID := t.turnID
 	t.turnID = ""
-	t.lastUserText = ""
+	t.stepUsage = make(map[string]domain.Usage)
 	t.mu.Unlock()
 
 	logger.Errorf("OpenCode", "Session error: %s (turnID=%s threadID=%s)", string(props.Error), turnID, t.threadID)

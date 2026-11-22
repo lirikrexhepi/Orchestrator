@@ -30,18 +30,32 @@ func quote(s string) string {
 	return string(append(out, '"'))
 }
 
-func TestResumeCwdUsesRecordedFolder(t *testing.T) {
+func TestResumeCwdUsesRecordedFolderWhenEmpty(t *testing.T) {
 	config := t.TempDir()
 	real := t.TempDir()
-	other := t.TempDir()
 	writeSession(t, config, "real-project", "sess-1", real)
 
-	got, err := resumeCwd(config, "sess-1", other)
+	got, err := resumeCwd(config, "sess-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !samePath(got, real) {
 		t.Fatalf("cwd = %q, want %q", got, real)
+	}
+}
+
+func TestResumeCwdPreservesExplicitCwd(t *testing.T) {
+	config := t.TempDir()
+	real := t.TempDir()
+	other := t.TempDir()
+	writeSession(t, config, "real-project", "sess-1b", real)
+
+	got, err := resumeCwd(config, "sess-1b", other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(got, other) {
+		t.Fatalf("cwd = %q, want explicit %q (must not override explicit cwd with recorded %q)", got, other, real)
 	}
 }
 

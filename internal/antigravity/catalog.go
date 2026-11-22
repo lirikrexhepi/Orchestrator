@@ -1,10 +1,16 @@
 package antigravity
 
 import (
+	"context"
+	"encoding/json"
+	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"composer/internal/domain"
+	"composer/internal/provider"
+	"composer/internal/shell"
 )
 
 // agy bakes the effort tier into the model id (`gemini-3.7-flash-high`) rather
@@ -16,9 +22,12 @@ var effortSuffixes = []struct {
 	id     string
 	label  string
 }{
+	{"-xhigh", "xhigh", "Extra High"},
 	{"-high", "high", "High"},
 	{"-medium", "medium", "Medium"},
 	{"-low", "low", "Low"},
+	{"-max", "max", "Max"},
+	{"-ultra", "ultra", "Ultra"},
 }
 
 type family struct {
@@ -87,7 +96,9 @@ func ParseModels(stdout string) []domain.Model {
 	return out
 }
 
-var effortRank = map[string]int{"low": 0, "medium": 1, "high": 2}
+var effortRank = map[string]int{
+	"low": 0, "medium": 1, "high": 2, "xhigh": 3, "max": 4, "ultra": 5,
+}
 
 // sortEfforts orders tiers low→high; `agy models` lists them high-first.
 func sortEfforts(choices []domain.OptionChoice) {
@@ -121,9 +132,19 @@ func splitEffort(id string) (base, effort, label string) {
 	return id, "", ""
 }
 
+var effortParenTerms = []string{
+	"(low)", "(medium)", "(high)", "(xhigh)", "(extra high)", "(max)", "(ultra)", "(thinking)",
+}
+
 func baseDisplayName(display string) string {
-	if idx := strings.Index(display, " ("); idx > 0 {
-		return display[:idx]
+	idx := strings.Index(display, " (")
+	if idx > 0 {
+		paren := strings.ToLower(strings.TrimSpace(display[idx:]))
+		for _, term := range effortParenTerms {
+			if strings.HasPrefix(paren, term) {
+				return strings.TrimSpace(display[:idx])
+			}
+		}
 	}
 	return display
 }
@@ -144,4 +165,106 @@ func defaultChoice(choices []domain.OptionChoice) string {
 		}
 	}
 	return ""
+}
+
+var (
+	accountModelsMu       sync.Mutex
+	accountModelsCache    = make(map[string][]domain.Model)
+	accountModelsFilePath string
+)
+
+// InitAccountModelsCache sets the file path to persist account models across app runs.
+func InitAccountModelsCache(path string) {
+	accountModelsMu.Lock()
+	defer accountModelsMu.Unlock()
+	accountModelsFilePath = path
+	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+		var stored map[string][]domain.Model
+		if json.Unmarshal(data, &stored) == nil && stored != nil {
+			accountModelsCache = stored
+		}
+	}
+}
+
+func saveAccountModelsLocked() {
+	if accountModelsFilePath == "" || len(accountModelsCache) == 0 {
+		return
+	}
+	if data, err := json.Marshal(accountModelsCache); err == nil {
+		_ = os.WriteFile(accountModelsFilePath, data, 0o644)
+	}
+}
+
+// FetchAccountModels retrieves available models for a specific Antigravity account,
+// using the appropriate environment or keyring profile.
+func FetchAccountModels(ctx context.Context, binary string, accountID, authMode, apiKey string) ([]domain.Model, error) {
+	normID := domain.NormalizeAccount(accountID)
+	cacheKey := normID
+	if authMode == "api_key" {
+		cacheKey = "api:" + normID
+	}
+
+	accountModelsMu.Lock()
+	if cached, ok := accountModelsCache[cacheKey]; ok && len(cached) > 0 {
+		accountModelsMu.Unlock()
+		return cached, nil
+	}
+	accountModelsMu.Unlock()
+
+	var stdout string
+	if authMode == "api_key" && apiKey != "" {
+		env := provider.Without(
+			shell.BaseEnvironment(),
+			"GEMINI_API_KEY",
+			"GOOGLE_API_KEY",
+			"GOOGLE_GENERATIVE_AI_API_KEY",
+			"ANTIGRAVITY_API_KEY",
+		)
+		env["GEMINI_API_KEY"] = apiKey
+		res := provider.RunCommand(ctx, binary, []string{"models"}, env, "")
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		stdout = res.Stdout
+	} else {
+		// Keyring mode
+		SpawnMutex.Lock()
+		defer SpawnMutex.Unlock()
+
+		// Activate requested profile (backing up default if needed), then restore default after running.
+		if err := DefaultKeyringStore.ActivateProfile(normID); err != nil && normID != domain.DefaultAccountID {
+			return nil, err
+		}
+		if normID != domain.DefaultAccountID {
+			defer func() { _ = DefaultKeyringStore.RestoreDefault() }()
+		}
+
+		res := provider.RunCommand(ctx, binary, []string{"models"}, nil, "")
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		stdout = res.Stdout
+	}
+
+	models := ParseModels(stdout)
+	if len(models) > 0 {
+		accountModelsMu.Lock()
+		accountModelsCache[cacheKey] = models
+		saveAccountModelsLocked()
+		accountModelsMu.Unlock()
+	}
+	return models, nil
+}
+
+// InvalidateAccountModels clears the model cache for an account (or all if accountID is empty).
+func InvalidateAccountModels(accountID string) {
+	accountModelsMu.Lock()
+	defer accountModelsMu.Unlock()
+	if accountID == "" {
+		accountModelsCache = make(map[string][]domain.Model)
+	} else {
+		delete(accountModelsCache, domain.NormalizeAccount(accountID))
+		delete(accountModelsCache, "api:"+domain.NormalizeAccount(accountID))
+	}
+	saveAccountModelsLocked()
 }

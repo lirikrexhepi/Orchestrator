@@ -1,5 +1,5 @@
 import { MaterialIcon } from '../common/icons';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 export interface QuestionOption {
   key: string;
@@ -11,6 +11,7 @@ export interface QuestionOption {
 export interface QuestionItem {
   question: string;
   options: QuestionOption[];
+  isMultiSelect?: boolean;
 }
 
 export interface QuestionToolProps {
@@ -19,6 +20,7 @@ export interface QuestionToolProps {
   question: string;
   options?: QuestionOption[];
   items?: QuestionItem[];
+  isMultiSelect?: boolean;
   onAnswer?: (answers: string[]) => void;
   onSkip?: () => void;
   blockId?: string;
@@ -33,6 +35,7 @@ const QuestionToolImpl: React.FC<QuestionToolProps> = ({
   question,
   options = [],
   items,
+  isMultiSelect,
   onAnswer,
   onSkip,
   blockId,
@@ -42,13 +45,26 @@ const QuestionToolImpl: React.FC<QuestionToolProps> = ({
   selectedAnswer: initialAnswer,
   className = '',
 }) => {
-  const list: QuestionItem[] = items && items.length > 0 ? items : [{ question, options }];
+  const list: QuestionItem[] = items && items.length > 0 ? items : [{ question, options, isMultiSelect }];
   const [page, setPage] = useState(0);
   const [picked, setPicked] = useState<Record<number, string>>({});
+  const [multiPicked, setMultiPicked] = useState<Record<number, string[]>>({});
   const [customs, setCustoms] = useState<Record<number, string>>({});
   const [submitted, setSubmitted] = useState<string | null>(
     initialAnswered ? initialAnswer || 'Answered' : null,
   );
+
+  useEffect(() => {
+    if (initialAnswered) {
+      setSubmitted(initialAnswer || 'Answered');
+    } else {
+      setSubmitted(null);
+      setPicked({});
+      setMultiPicked({});
+      setCustoms({});
+      setPage(0);
+    }
+  }, [initialAnswered, initialAnswer]);
 
   if (submitted) {
     return (
@@ -65,21 +81,42 @@ const QuestionToolImpl: React.FC<QuestionToolProps> = ({
   }
 
   const item = list[page];
+  const isMulti = Boolean(item.isMultiSelect);
   const custom = item.options.find((option) => option.isCustomInput);
   const choices = item.options.filter((option) => !option.isCustomInput);
   const selected = picked[page];
+  const selectedMulti = multiPicked[page] ?? [];
   const customText = customs[page] ?? '';
   const isLast = page === list.length - 1;
 
   const answerFor = (index: number): string => {
+    const qItem = list[index];
     const typed = (customs[index] ?? '').trim();
+    if (qItem.isMultiSelect) {
+      const keys = multiPicked[index] ?? [];
+      const labels = qItem.options
+        .filter((candidate) => !candidate.isCustomInput && keys.includes(candidate.key))
+        .map((candidate) => candidate.label);
+      if (typed) labels.push(typed);
+      return labels.join(', ');
+    }
     const key = picked[index];
-    const option = list[index].options.find((candidate) => candidate.key === key);
+    const option = qItem.options.find((candidate) => candidate.key === key);
     if (option?.isCustomInput || (!option && typed)) return typed || option?.label || '';
-    return option?.label || list[index].options.find((candidate) => !candidate.isCustomInput)?.label || '';
+    return option?.label || qItem.options.find((candidate) => !candidate.isCustomInput)?.label || '';
   };
 
-  const canAdvance = Boolean(selected) || customText.trim().length > 0;
+  const canAdvance = isMulti
+    ? selectedMulti.length > 0 || customText.trim().length > 0
+    : Boolean(selected) || customText.trim().length > 0;
+
+  const toggleMultiChoice = (key: string) => {
+    setMultiPicked((prev) => {
+      const current = prev[page] ?? [];
+      const next = current.includes(key) ? current.filter((k) => k !== key) : [...current, key];
+      return { ...prev, [page]: next };
+    });
+  };
 
   const advance = () => {
     if (!canAdvance) return;
@@ -130,13 +167,22 @@ const QuestionToolImpl: React.FC<QuestionToolProps> = ({
 
       <div className="flex flex-col gap-0.5">
         {choices.map((option, index) => {
-          const active = selected === option.key;
+          const active = isMulti ? selectedMulti.includes(option.key) : selected === option.key;
           return (
             <button
               key={option.key}
               type="button"
-              onClick={() => setPicked((prev) => ({ ...prev, [page]: option.key }))}
+              role={isMulti ? 'checkbox' : undefined}
+              aria-checked={isMulti ? active : undefined}
+              onClick={() => {
+                if (isMulti) {
+                  toggleMultiChoice(option.key);
+                } else {
+                  setPicked((prev) => ({ ...prev, [page]: option.key }));
+                }
+              }}
               onDoubleClick={() => {
+                if (isMulti) return;
                 setPicked((prev) => ({ ...prev, [page]: option.key }));
                 if (!isLast) setPage(page + 1);
               }}
@@ -144,9 +190,19 @@ const QuestionToolImpl: React.FC<QuestionToolProps> = ({
                 active ? 'bg-current/[0.08]' : 'hover:bg-current/[0.045]'
               }`}
             >
-              <span className={`w-3 text-[12px] tabular-nums leading-[18px] shrink-0 ${active ? 'text-current/80' : 'text-current/35'}`}>
-                {index + 1}
-              </span>
+              {isMulti ? (
+                <span
+                  className={`mt-[2px] w-3.5 h-3.5 rounded-[4px] border flex items-center justify-center shrink-0 transition-colors ${
+                    active ? 'border-current/70 bg-current/20 text-current' : 'border-current/30 text-transparent'
+                  }`}
+                >
+                  {active && <MaterialIcon name="check" className="text-[11px]" />}
+                </span>
+              ) : (
+                <span className={`w-3 text-[12px] tabular-nums leading-[18px] shrink-0 ${active ? 'text-current/80' : 'text-current/35'}`}>
+                  {index + 1}
+                </span>
+              )}
               <span className="text-[12.5px] tracking-tight leading-[18px] min-w-0">
                 <span className={`font-medium ${active ? 'text-current' : 'text-current/85'}`}>{option.label}</span>
                 {option.description && <span className="text-current/40"> {option.description}</span>}
@@ -157,7 +213,7 @@ const QuestionToolImpl: React.FC<QuestionToolProps> = ({
 
         <label
           className={`flex items-center gap-3 px-2.5 py-2 rounded-[10px] transition-colors duration-150 cursor-text ${
-            custom && selected === custom.key ? 'bg-current/[0.08]' : 'hover:bg-current/[0.045]'
+            !isMulti && custom && selected === custom.key ? 'bg-current/[0.08]' : 'hover:bg-current/[0.045]'
           }`}
         >
           <span className="w-3 text-[12px] text-current/35 leading-[18px] shrink-0">
@@ -169,7 +225,9 @@ const QuestionToolImpl: React.FC<QuestionToolProps> = ({
             onChange={(event) => {
               const value = event.target.value;
               setCustoms((prev) => ({ ...prev, [page]: value }));
-              setPicked((prev) => ({ ...prev, [page]: custom?.key ?? '' }));
+              if (!isMulti) {
+                setPicked((prev) => ({ ...prev, [page]: custom?.key ?? '' }));
+              }
             }}
             onKeyDown={(event) => {
               if (event.key === 'Enter') advance();

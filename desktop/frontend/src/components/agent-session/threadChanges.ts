@@ -25,18 +25,47 @@ export function isEditToolName(name?: string): boolean {
   return Boolean(name) && EDIT_TOOL_NAME.test(name!);
 }
 
+type SubagentWithDriver = SubagentBlockData & { driver?: string; model?: string; cwd?: string };
+
 export function normalizePath(path: string): string {
   let out = path.replace(/\\/g, '/').replace(/:\d+(?:-\d+)?$/, '');
   if (/^\/[A-Za-z]:\//.test(out)) out = out.slice(1);
+  out = out.replace(/^([A-Za-z]):/, (_, drive: string) => `${drive.toLowerCase()}:`);
+  if (out.length > 3) out = out.replace(/\/+$/, '');
   return out;
 }
 
-export function collectThreadChanges(blocks: AgentStreamBlock[]): ThreadFileChange[] {
+function isAbsolutePath(p: string): boolean {
+  return /^(?:[A-Za-z]:\/|\/|\\\\)/.test(p);
+}
+
+function resolveAgainstCwd(rawPath: string, cwd?: string): string {
+  const cleaned = normalizePath(rawPath.trim());
+  if (!cleaned || /[/\\]$/.test(rawPath.trim())) return '';
+  if (isAbsolutePath(cleaned) || !cwd) return cleaned;
+
+  const base = normalizePath(cwd.trim()).replace(/\/+$/, '');
+  if (!base) return cleaned;
+
+  const parts = base.split('/');
+  const relParts = cleaned.split('/');
+  for (const seg of relParts) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') {
+      if (parts.length > 1) parts.pop();
+    } else {
+      parts.push(seg);
+    }
+  }
+  return parts.join('/');
+}
+
+export function collectThreadChanges(blocks: AgentStreamBlock[], workspaceCwd?: string): ThreadFileChange[] {
   const byKey = new Map<string, ThreadFileChange>();
   const order: string[] = [];
 
-  const add = (rawPath: string, group: ThreadEditGroup) => {
-    const path = normalizePath(rawPath.trim());
+  const add = (rawPath: string, group: ThreadEditGroup, baseCwd?: string) => {
+    const path = resolveAgainstCwd(rawPath, baseCwd);
     if (!path || /[/\\]$/.test(path)) return;
     const key = path.toLowerCase();
     let entry = byKey.get(key);
@@ -59,24 +88,33 @@ export function collectThreadChanges(blocks: AgentStreamBlock[]): ThreadFileChan
   for (const block of blocks) {
     if (block.type === 'tool_edit') {
       if (block.status === 'error') continue;
-      add(block.filePath, {
-        toolName: block.toolName,
-        status: block.status,
-        additions: block.additions ?? 0,
-        deletions: block.deletions ?? 0,
-        lines: block.diffLines ?? [],
-      });
+      add(
+        block.filePath,
+        {
+          toolName: block.toolName,
+          status: block.status,
+          additions: block.additions ?? 0,
+          deletions: block.deletions ?? 0,
+          lines: block.diffLines ?? [],
+        },
+        workspaceCwd,
+      );
     } else if (block.type === 'subagent') {
-      const agent = block as SubagentBlockData;
+      const agent = block as SubagentWithDriver;
+      const subCwd = agent.cwd || workspaceCwd;
       for (const entry of agent.entries) {
         if (entry.kind !== 'tool' || !isEditToolName(entry.name)) continue;
         if (entry.status === 'error') continue;
-        add(entry.filePath || entry.target, {
-          status: entry.status,
-          additions: entry.additions ?? 0,
-          deletions: entry.deletions ?? 0,
-          lines: entry.diffLines ?? [],
-        });
+        add(
+          entry.filePath || entry.target,
+          {
+            status: entry.status,
+            additions: entry.additions ?? 0,
+            deletions: entry.deletions ?? 0,
+            lines: entry.diffLines ?? [],
+          },
+          subCwd,
+        );
       }
     }
   }

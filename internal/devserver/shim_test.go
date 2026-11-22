@@ -47,7 +47,7 @@ func TestShimKeepsServerAliveAfterItExits(t *testing.T) {
 
 	binDir := t.TempDir()
 	shimPath := filepath.Join(binDir, shimFileName())
-	build := exec.Command(goTool, "build", "-o", shimPath, ".")
+	build := exec.Command(goTool, "build", "-o", shimPath, "./desktop")
 	build.Dir = root
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build shim: %v\n%s", err, out)

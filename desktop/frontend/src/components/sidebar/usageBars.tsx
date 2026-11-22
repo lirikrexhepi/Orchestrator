@@ -137,17 +137,17 @@ export const UsageRing: React.FC<UsageRingProps> = ({ used, logo, size = 26, isL
 export const QuotaBar: React.FC<{ limit: domain.RateLimit }> = ({ limit }) => {
   const used = limit.usedPercent;
   const known = typeof used === 'number';
-  const label = windowLabel(limit.window);
+  const label = windowLabel(limit.window || limit.status || '');
   const tone = quotaTone(used);
 
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[11px] font-medium font-(family-name:--app-font) text-white/70 tracking-tight">
+        <span className="text-[11px] font-medium font-(family-name:--app-font) text-white/70 tracking-tight truncate">
           {label}
         </span>
-        <span className="text-[11px] font-semibold font-(family-name:--app-font) text-white/90 tabular-nums">
-          {known ? `${used}%` : '—'}
+        <span className="text-[11px] font-semibold font-(family-name:--app-font) text-white/90 tabular-nums shrink-0">
+          {known ? `${used}% used` : '—'}
         </span>
       </div>
 

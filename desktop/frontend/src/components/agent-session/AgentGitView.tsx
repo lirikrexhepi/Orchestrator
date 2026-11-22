@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { domain, files } from '../../../wailsjs/go/models';
 import { DiffView } from '../git/DiffView';
 import { GitMenu } from '../git/GitMenu';
@@ -34,7 +34,17 @@ export interface AgentGitViewProps {
   branch?: string;
   git?: GitState;
   threadChanges?: ThreadFileChange[];
+  targetRepoPath?: string;
+  targetFile?: { path: string; nonce: number } | null;
   className?: string;
+}
+
+function normGitPath(p: string): string {
+  let out = p.trim().replace(/\\/g, '/');
+  if (/^\/[A-Za-z]:\//.test(out)) out = out.slice(1);
+  out = out.replace(/^([A-Za-z]):/, (_, d: string) => `${d.toLowerCase()}:`);
+  if (out.length > 3) out = out.replace(/\/+$/, '');
+  return out.toLowerCase();
 }
 
 const STATUS_MARKS: Record<string, { glyph: string; tone: string; label: string; size: string }> = {
@@ -230,7 +240,15 @@ const SectionHeader: React.FC<{
   </div>
 );
 
-export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, git, threadChanges = [], className = '' }) => {
+export const AgentGitView: React.FC<AgentGitViewProps> = ({
+  threadId,
+  branch,
+  git,
+  threadChanges = [],
+  targetRepoPath,
+  targetFile,
+  className = '',
+}) => {
   const [copied, setCopied] = useState(false);
   const [leftTab, setLeftTab] = useState<LeftTab>('thread');
   const [threadKey, setThreadKey] = useState<string | null>(null);
@@ -264,6 +282,17 @@ export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, gi
     null;
 
   const [pickedLanePath, setPickedLanePath] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!targetRepoPath || !git?.lanes?.length) {
+      setPickedLanePath(null);
+      return;
+    }
+    const targetNorm = normGitPath(targetRepoPath);
+    const matched = git.lanes.find((l) => normGitPath(l.path) === targetNorm);
+    setPickedLanePath(matched ? matched.path : null);
+  }, [targetRepoPath, git?.lanes]);
+
   const lane = (pickedLanePath && git?.lanes.find((l) => l.path === pickedLanePath)) || matchingLane;
 
   useEffect(() => {
@@ -279,6 +308,39 @@ export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, gi
   useEffect(() => setTreeFile(null), [treeRoot]);
 
   const changedFiles = lane?.files ?? [];
+
+  const handledTargetFileNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!targetFile?.path || !git) return;
+    if (handledTargetFileNonceRef.current === targetFile.nonce) return;
+    if (targetRepoPath && (!lane || normGitPath(lane.path) !== normGitPath(targetRepoPath))) {
+      return;
+    }
+
+    const targetNorm = normGitPath(targetFile.path);
+    const matchedChange = threadChanges.find((c) => {
+      const cn = normGitPath(c.path);
+      return cn === targetNorm || cn.endsWith('/' + targetNorm) || targetNorm.endsWith('/' + cn);
+    });
+    const matchedWorktree = changedFiles.find((f) => {
+      const fn = normGitPath(f.path);
+      return fn === targetNorm || targetNorm.endsWith('/' + fn);
+    });
+
+    if (matchedWorktree && (!matchedChange || !changeDiffFile(matchedChange))) {
+      setLeftTab('worktree');
+      git.selectFile({ path: matchedWorktree.path, staged: matchedWorktree.staged });
+      handledTargetFileNonceRef.current = targetFile.nonce;
+    } else if (matchedChange) {
+      setLeftTab('thread');
+      setThreadKey(matchedChange.key);
+      handledTargetFileNonceRef.current = targetFile.nonce;
+    } else if (matchedWorktree) {
+      setLeftTab('worktree');
+      git.selectFile({ path: matchedWorktree.path, staged: matchedWorktree.staged });
+      handledTargetFileNonceRef.current = targetFile.nonce;
+    }
+  }, [targetFile, targetRepoPath, lane, changedFiles, threadChanges, git]);
   const commits = lane?.commits ?? [];
   const staged = useMemo(() => changedFiles.filter((f) => f.staged), [changedFiles]);
   const unstaged = useMemo(() => changedFiles.filter((f) => !f.staged), [changedFiles]);
@@ -373,7 +435,7 @@ export const AgentGitView: React.FC<AgentGitViewProps> = ({ threadId, branch, gi
   const commitDisabled = busy || !summary.trim() || changedFiles.length === 0;
 
   return (
-    <div className={`flex flex-col h-full w-full min-h-0 select-none ${className}`}>
+    <div className={`flex flex-col h-full w-full min-h-0 select-none pt-[52px] px-3 pb-2 ${className}`}>
       <div className="flex items-center gap-2 shrink-0 pb-2.5 px-0.5">
         <GitMenu
           width={280}

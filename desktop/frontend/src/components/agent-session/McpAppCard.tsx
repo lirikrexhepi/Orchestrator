@@ -1,4 +1,4 @@
-import { MaterialIcon } from '../common/icons';
+import { MaterialIcon, Maximize } from '../common/icons';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { OrbitLoader } from './OrbitLoader';
 
@@ -87,6 +87,7 @@ export const McpAppCard: React.FC<McpAppCardProps> = ({
   // Handle postMessage communication from the sandboxed iframe
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
+      if (event.source !== iframeRef.current?.contentWindow) return;
       // Validate message structure
       if (!event.data || typeof event.data !== 'object') return;
       const { type, height: reportedHeight, uri: targetUri } = event.data;
@@ -147,8 +148,8 @@ export const McpAppCard: React.FC<McpAppCardProps> = ({
   const renderIframe = (inModal = false) => {
     if (!embedUrl && !currentHtml) {
       return (
-        <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
-          <MaterialIcon name="devices" className="text-[28px] text-white/30 mb-2" />
+        <div className="flex flex-col items-center justify-center py-8 px-4 text-center bg-[#0d0d0f]">
+          <MaterialIcon name="computer" className="text-[28px] text-white/30 mb-2" />
           <span className="text-[12px] font-medium text-white/60">
             UI resource reference: <code className="text-white/80">{activeUri || 'N/A'}</code>
           </span>
@@ -166,16 +167,16 @@ export const McpAppCard: React.FC<McpAppCardProps> = ({
     }
 
     return (
-      <div className="relative w-full h-full flex flex-col items-center justify-center">
+      <div className="relative w-full h-full flex flex-col items-center justify-center bg-[#0d0d0f]">
         {loading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/20 backdrop-blur-[2px] z-10 transition-opacity duration-200">
+          <div className="absolute inset-0 flex items-center justify-center bg-[#0d0d0f]/80 backdrop-blur-[2px] z-10 transition-opacity duration-200">
             <OrbitLoader size={22} className="text-white/80" />
           </div>
         )}
 
         <iframe
-          ref={iframeRef}
-          id={cardIdRef.current}
+          ref={inModal ? undefined : iframeRef}
+          id={inModal ? `${cardIdRef.current}-modal` : cardIdRef.current}
           title={title || badge.label}
           src={embedUrl || undefined}
           srcDoc={!embedUrl ? currentHtml : undefined}
@@ -186,13 +187,13 @@ export const McpAppCard: React.FC<McpAppCardProps> = ({
             setLoading(false);
             setError('Failed to load MCP UI component.');
           }}
-          className={`w-full border-0 transition-opacity duration-200 ${
+          className={`w-full border-0 bg-[#0d0d0f] transition-opacity duration-200 ${
             loading ? 'opacity-0' : 'opacity-100'
           }`}
           style={{
             height: inModal ? '100%' : `${height}px`,
             maxHeight: inModal ? '100%' : '800px',
-            backgroundColor: 'transparent',
+            backgroundColor: '#0d0d0f',
           }}
         />
       </div>
@@ -202,29 +203,106 @@ export const McpAppCard: React.FC<McpAppCardProps> = ({
   return (
     <>
       <div
-        className={`w-full relative my-1 bg-transparent overflow-visible font-(family-name:--app-font) ${className}`}
+        className={`w-full relative my-1.5 rounded-xl border border-white/[0.08] bg-[#0d0d0f] overflow-hidden font-(family-name:--app-font) ${className}`}
       >
-        {error ? (
-          <div className="p-4 text-center text-rose-400 text-[12px] flex flex-col items-center gap-2">
-            <MaterialIcon name="error_outline" className="text-[20px]" />
-            <span>{error}</span>
-            <button
-              type="button"
-              onClick={handleReload}
-              className="px-3 py-1 rounded-full bg-white/10 hover:bg-white/20 text-white text-[11px] mt-1 transition-all cursor-pointer"
-            >
-              Retry
-            </button>
+        <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/[0.06] bg-white/[0.02]">
+          <button
+            type="button"
+            onClick={() => setIsCollapsed((prev) => !prev)}
+            className="flex items-center gap-2 min-w-0 text-left cursor-pointer"
+            title={isCollapsed ? 'Expand MCP App' : 'Collapse MCP App'}
+          >
+            <MaterialIcon
+              name={isCollapsed ? 'expand_more' : 'expand_less'}
+              className="text-[14px] text-white/50 shrink-0"
+            />
+            <span className="text-[10.5px] font-medium px-1.5 py-0.5 rounded bg-white/[0.06] text-white/75 shrink-0">
+              {badge.brand}
+            </span>
+            <span className="text-[11.5px] font-medium text-white/85 truncate">
+              {title || badge.label}
+            </span>
+          </button>
+
+          <div className="flex items-center gap-1 shrink-0">
+            {rawOutput && (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRawOutput((prev) => !prev);
+                  if (isCollapsed) setIsCollapsed(false);
+                }}
+                title={showRawOutput ? 'Show rendered app' : 'Show raw output'}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] transition-colors cursor-pointer ${
+                  showRawOutput
+                    ? 'bg-white/[0.14] text-white'
+                    : 'text-white/55 hover:text-white hover:bg-white/[0.06]'
+                }`}
+              >
+                <MaterialIcon name="terminal" className="text-[12px]" />
+                <span>{showRawOutput ? 'App' : 'Raw'}</span>
+              </button>
+            )}
+            {!showRawOutput && !isCollapsed && (embedUrl || currentHtml) && (
+              <button
+                type="button"
+                onClick={handleReload}
+                title="Reload app"
+                className="p-1 rounded text-white/55 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
+              >
+                <MaterialIcon name="refresh" className="text-[13px]" />
+              </button>
+            )}
+            {(embedUrl || activeUri.startsWith('ui://falacy/')) && (
+              <button
+                type="button"
+                onClick={handleOpenExternal}
+                title="Open in browser"
+                className="p-1 rounded text-white/55 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
+              >
+                <MaterialIcon name="open_in_new" className="text-[13px]" />
+              </button>
+            )}
+            {(embedUrl || currentHtml) && (
+              <button
+                type="button"
+                onClick={() => setIsFullscreen(true)}
+                title="Fullscreen"
+                className="p-1 rounded text-white/55 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
+              >
+                <Maximize size={12} />
+              </button>
+            )}
           </div>
-        ) : (
-          renderIframe(false)
+        </div>
+
+        {!isCollapsed && (
+          showRawOutput && rawOutput ? (
+            <pre className="m-0 p-3 text-[11px] leading-relaxed font-mono text-white/80 bg-[#0d0d0f] overflow-auto max-h-[420px] whitespace-pre-wrap break-words select-text">
+              {rawOutput}
+            </pre>
+          ) : error ? (
+            <div className="p-4 text-center text-rose-400 text-[12px] flex flex-col items-center gap-2 bg-[#0d0d0f]">
+              <MaterialIcon name="error" className="text-[20px]" />
+              <span>{error}</span>
+              <button
+                type="button"
+                onClick={handleReload}
+                className="px-3 py-1 rounded-full bg-white/10 hover:bg-white/20 text-white text-[11px] mt-1 transition-all cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          ) : (
+            renderIframe(false)
+          )
         )}
       </div>
 
       {/* Fullscreen Zoom Modal (T3Code-style popout) */}
       {isFullscreen && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-8 animate-in fade-in duration-200">
-          <div className="w-full max-w-5xl h-[85vh] bg-[#121215] border border-white/[0.12] rounded-[24px] shadow-2xl flex flex-col overflow-hidden">
+          <div className="w-full max-w-5xl h-[85vh] bg-[#0d0d0f] border border-white/[0.12] rounded-[24px] shadow-2xl flex flex-col overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.08] bg-white/[0.02]">
               <div className="flex items-center gap-2">
                 <span className="text-[13px] font-medium text-white/90">
@@ -251,7 +329,7 @@ export const McpAppCard: React.FC<McpAppCardProps> = ({
                 </button>
               </div>
             </div>
-            <div className="flex-1 w-full h-full p-2 bg-transparent overflow-hidden">
+            <div className="flex-1 w-full h-full p-2 bg-[#0d0d0f] overflow-hidden">
               {renderIframe(true)}
             </div>
           </div>

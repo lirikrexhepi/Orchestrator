@@ -26,6 +26,8 @@ export function ActivityOverview(arg1:string,arg2:string):Promise<activity.Overv
 
 export function AddAccount(arg1:string,arg2:string,arg3:boolean):Promise<main.AccountAdded>;
 
+export function AddAntigravityAccount(arg1:string,arg2:string,arg3:string):Promise<main.AccountAdded>;
+
 export function AddProject(arg1:string):Promise<projects.Project>;
 
 export function AvailableEditors():Promise<Array<string>>;
@@ -35,6 +37,8 @@ export function BrowserClose(arg1:string):Promise<void>;
 export function BrowserEndpoint():Promise<main.BrowserEndpointInfo>;
 
 export function BrowserOpen(arg1:string,arg2:string,arg3:number,arg4:number):Promise<browser.SessionInfo>;
+
+export function CaptureAntigravityProfile(arg1:string):Promise<void>;
 
 export function ChooseAttachments():Promise<Array<attachments.Attachment>>;
 
@@ -65,6 +69,8 @@ export function DeleteTaskHistory(arg1:string,arg2:string):Promise<void>;
 export function DeleteTurn(arg1:string,arg2:string):Promise<Array<domain.RuntimeEvent>>;
 
 export function DiscardAttachment(arg1:string):Promise<void>;
+
+export function GetAccountModels(arg1:string,arg2:string):Promise<Array<domain.Model>>;
 
 export function GetAgentTasks(arg1:string):Promise<Array<domain.PlanEntry>>;
 
@@ -219,6 +225,8 @@ export function ResolveFileRepos(arg1:Array<string>):Promise<Record<string, main
 export function RespondToApproval(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RespondToQuestion(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
+
+export function RestoreAntigravityDefault():Promise<void>;
 
 export function ResumeHistory(arg1:string):Promise<session.ResumeResult>;
 

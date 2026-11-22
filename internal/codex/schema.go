@@ -151,35 +151,51 @@ type PlanStep struct {
 	Status string `json:"status,omitempty"`
 }
 
+type TokenBreakdown struct {
+	TotalTokens           int64 `json:"totalTokens"`
+	InputTokens           int64 `json:"inputTokens"`
+	OutputTokens          int64 `json:"outputTokens"`
+	CachedInputTokens     int64 `json:"cachedInputTokens"`
+	ReasoningOutputTokens int64 `json:"reasoningOutputTokens"`
+	ContextWindow         int64 `json:"contextWindow"`
+}
+
 type TokenUsageNotification struct {
-	ThreadID string `json:"threadId"`
-	Usage    struct {
-		InputTokens       int64 `json:"inputTokens"`
-		OutputTokens      int64 `json:"outputTokens"`
-		CachedInputTokens int64 `json:"cachedInputTokens"`
-		ContextWindow     int64 `json:"contextWindow"`
-	} `json:"usage"`
+	ThreadID   string `json:"threadId"`
+	TurnID     string `json:"turnId,omitempty"`
+	TokenUsage *struct {
+		Last               *TokenBreakdown `json:"last,omitempty"`
+		Total              *TokenBreakdown `json:"total,omitempty"`
+		ModelContextWindow int64           `json:"modelContextWindow,omitempty"`
+	} `json:"tokenUsage,omitempty"`
+	Usage TokenBreakdown `json:"usage"`
 }
 
 type ApprovalRequest struct {
-	ThreadID string             `json:"threadId"`
-	TurnID   string             `json:"turnId"`
-	ItemID   string             `json:"itemId"`
-	CallID   string             `json:"callId,omitempty"`
-	Command  string             `json:"command,omitempty"`
-	Cwd      string             `json:"cwd,omitempty"`
-	Reason   string             `json:"reason,omitempty"`
-	Changes  []FileUpdateChange `json:"changes,omitempty"`
-	Raw      json.RawMessage    `json:"-"`
+	ThreadID    string             `json:"threadId"`
+	TurnID      string             `json:"turnId"`
+	ItemID      string             `json:"itemId"`
+	CallID      string             `json:"callId,omitempty"`
+	Command     string             `json:"command,omitempty"`
+	Cwd         string             `json:"cwd,omitempty"`
+	Reason      string             `json:"reason,omitempty"`
+	Changes     []FileUpdateChange `json:"changes,omitempty"`
+	Permissions map[string]any     `json:"permissions,omitempty"`
+	Raw         json.RawMessage    `json:"-"`
 }
 
 type ApprovalResponse struct {
 	Decision string `json:"decision"`
 }
 
+type PermissionsApprovalResponse struct {
+	Permissions map[string]any `json:"permissions"`
+	Scope       string         `json:"scope"`
+}
+
 const (
-	DecisionApproved           = "approved"
-	DecisionApprovedForSession = "approved_for_session"
-	DecisionDenied             = "denied"
-	DecisionAbort              = "abort"
+	DecisionApproved           = "accept"
+	DecisionApprovedForSession = "acceptForSession"
+	DecisionDenied             = "decline"
+	DecisionAbort              = "cancel"
 )

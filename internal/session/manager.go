@@ -177,12 +177,13 @@ func (m *Manager) adapterFor(kind domain.DriverKind, account string) (provider.A
 
 // record stamps the event, appends it to the thread transcript, and publishes.
 func (m *Manager) record(event domain.RuntimeEvent) {
-	domain.NormalizeEvent(&event)
+	// Assigning Seq and appending to m.history under the same lock guarantees
+	// HistorySnapshot's lastSeq never jumps ahead of an unappended event.
+	m.mu.Lock()
 	// Adapters report their own events and do not all know their driver kind, so
 	// the manager fills it in from the thread's session. Consumers that group by
 	// CLI (usage totals, diagnostics) depend on this being present.
 	if (event.Driver == "" || event.Account == "" || event.Model == "") && event.ThreadID != "" {
-		m.mu.RLock()
 		if entry, ok := m.threads[event.ThreadID]; ok {
 			if event.Driver == "" {
 				event.Driver = entry.session.Driver
@@ -194,43 +195,46 @@ func (m *Manager) record(event domain.RuntimeEvent) {
 				event.Account = entry.session.Account
 			}
 		}
-		m.mu.RUnlock()
 	}
 
-	if event.Kind == domain.EventAgentMessage || event.Kind == domain.EventAgentThought {
-		logger.Debugf("Manager", "Stream chunk: thread=%s kind=%s len=%d", event.ThreadID, event.Kind, len(event.Text))
+	published := m.bus.Prepare(event)
+
+	if published.ThreadID != "" {
+		if entry, ok := m.threads[published.ThreadID]; ok {
+			entry.lastAt = published.At
+		}
+		transcript := m.history[published.ThreadID]
+		// Consecutive deltas of the same item are stored as one event, so the
+		// bounded transcript covers whole turns instead of a few hundred tokens.
+		if n := len(transcript); n > 0 && published.Delta && sameStream(transcript[n-1], published) {
+			merged := transcript[n-1]
+			merged.Text += published.Text
+			// The merged event carries the newest seq, so a snapshot's highest
+			// seq marks exactly what it already contains.
+			merged.Seq = published.Seq
+			transcript[n-1] = merged
+		} else {
+			transcript = append(transcript, published)
+		}
+		if len(transcript) > historyLimit {
+			transcript = transcript[len(transcript)-historyLimit:]
+		}
+		m.history[published.ThreadID] = transcript
+	}
+	recorder := m.recorder
+	m.mu.Unlock()
+
+	if published.Kind == domain.EventAgentMessage || published.Kind == domain.EventAgentThought {
+		logger.Debugf("Manager", "Stream chunk: thread=%s kind=%s len=%d", published.ThreadID, published.Kind, len(published.Text))
 	} else {
-		logger.Infof("Manager", "Event: thread=%s driver=%s kind=%s seq=%d", event.ThreadID, event.Driver, event.Kind, event.Seq)
+		logger.Infof("Manager", "Event: thread=%s driver=%s kind=%s seq=%d", published.ThreadID, published.Driver, published.Kind, published.Seq)
 	}
 
-	published := m.bus.Publish(event)
+	m.bus.Publish(published)
 
 	if published.ThreadID == "" {
 		return
 	}
-	m.mu.Lock()
-	if entry, ok := m.threads[published.ThreadID]; ok {
-		entry.lastAt = published.At
-	}
-	transcript := m.history[published.ThreadID]
-	// Consecutive deltas of the same item are stored as one event, so the
-	// bounded transcript covers whole turns instead of a few hundred tokens.
-	if n := len(transcript); n > 0 && published.Delta && sameStream(transcript[n-1], published) {
-		merged := transcript[n-1]
-		merged.Text += published.Text
-		// The merged event carries the newest seq, so a snapshot's highest
-		// seq marks exactly what it already contains.
-		merged.Seq = published.Seq
-		transcript[n-1] = merged
-	} else {
-		transcript = append(transcript, published)
-	}
-	if len(transcript) > historyLimit {
-		transcript = transcript[len(transcript)-historyLimit:]
-	}
-	m.history[published.ThreadID] = transcript
-	recorder := m.recorder
-	m.mu.Unlock()
 
 	// Outside the lock: persistence must never widen the critical section that
 	// every streamed token passes through.
@@ -342,6 +346,9 @@ func (m *Manager) Start(ctx context.Context, kind domain.DriverKind, in domain.S
 	}
 	if session.Model == "" {
 		session.Model = in.Model
+	}
+	if session.Cwd == "" {
+		session.Cwd = in.Cwd
 	}
 	session.Account = account
 

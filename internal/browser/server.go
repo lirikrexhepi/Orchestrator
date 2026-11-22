@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"composer/internal/logger"
 	"github.com/gorilla/websocket"
 )
 
@@ -121,7 +122,8 @@ func (s *Server) Close(ctx context.Context) error {
 }
 
 type inboundMessage struct {
-	Type string `json:"type"`
+	Type      string `json:"type"`
+	RequestID string `json:"requestId,omitempty"`
 
 	// navigate
 	URL string `json:"url,omitempty"`
@@ -160,6 +162,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if origin != "" {
 		u, err := url.Parse(origin)
 		if err != nil || !isAllowedOrigin(u.Hostname()) {
+			logger.Warnf("BrowserServer", "Rejected WebSocket origin=%q", origin)
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -167,6 +170,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	token := r.URL.Query().Get("token")
 	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) != 1 {
+		logger.Warnf("BrowserServer", "Rejected WebSocket unauthorized token")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -179,6 +183,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	snapshot, lastFrame, eventCh, cancel, err := s.mgr.Subscribe(tabID)
 	if err != nil {
+		logger.Warnf("BrowserServer", "Subscribe failed for tab=%s: %v", tabID, err)
 		http.Error(w, "Tab not found", http.StatusNotFound)
 		return
 	}
@@ -186,56 +191,71 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		logger.Warnf("BrowserServer", "WebSocket upgrade failed for tab=%s: %v", tabID, err)
 		return
 	}
 	defer conn.Close()
 
 	const writeWait = 5 * time.Second
+	var writeMu sync.Mutex
+	writeSafe := func(msgType int, payload []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+		return conn.WriteMessage(msgType, payload)
+	}
 
 	// Send initial state
 	initialStatePayload, _ := json.Marshal(map[string]any{
 		"type":  "state",
 		"state": snapshot,
 	})
-	conn.SetWriteDeadline(time.Now().Add(writeWait))
-	if err := conn.WriteMessage(websocket.TextMessage, initialStatePayload); err != nil {
+	if err := writeSafe(websocket.TextMessage, initialStatePayload); err != nil {
 		return
 	}
 
 	// Send initial frame if available
 	if len(lastFrame) > 0 {
-		conn.SetWriteDeadline(time.Now().Add(writeWait))
-		if err := conn.WriteMessage(websocket.BinaryMessage, lastFrame); err != nil {
+		if err := writeSafe(websocket.BinaryMessage, lastFrame); err != nil {
 			return
 		}
 	}
 
 	done := make(chan struct{})
+	readerDone := make(chan struct{})
 
 	// Writer pump: forwards binary JPEG frames and JSON state changes
 	go func() {
 		defer close(done)
-		for ev := range eventCh {
-			conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if ev.isBinary {
-				if err := conn.WriteMessage(websocket.BinaryMessage, ev.binary); err != nil {
+		defer conn.Close()
+		for {
+			select {
+			case <-readerDone:
+				return
+			case ev, ok := <-eventCh:
+				if !ok {
 					return
 				}
-			} else if ev.err != "" {
-				errPayload, _ := json.Marshal(map[string]any{
-					"type":    "error",
-					"message": ev.err,
-				})
-				if err := conn.WriteMessage(websocket.TextMessage, errPayload); err != nil {
-					return
-				}
-			} else {
-				statePayload, _ := json.Marshal(map[string]any{
-					"type":  "state",
-					"state": ev.state,
-				})
-				if err := conn.WriteMessage(websocket.TextMessage, statePayload); err != nil {
-					return
+				if ev.isBinary {
+					if err := writeSafe(websocket.BinaryMessage, ev.binary); err != nil {
+						return
+					}
+				} else if ev.err != "" {
+					errPayload, _ := json.Marshal(map[string]any{
+						"type":    "error",
+						"message": ev.err,
+					})
+					if err := writeSafe(websocket.TextMessage, errPayload); err != nil {
+						return
+					}
+				} else {
+					statePayload, _ := json.Marshal(map[string]any{
+						"type":  "state",
+						"state": ev.state,
+					})
+					if err := writeSafe(websocket.TextMessage, statePayload); err != nil {
+						return
+					}
 				}
 			}
 		}
@@ -253,10 +273,44 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		if cmd.Type == "capture" {
+			reqID := cmd.RequestID
+			go func() {
+				capCtx, capCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer capCancel()
+				data, err := s.mgr.CaptureScreenshot(capCtx, tabID)
+				resp := map[string]any{
+					"type":      "screenshot",
+					"requestId": reqID,
+				}
+				if err != nil {
+					resp["error"] = err.Error()
+				} else {
+					resp["data"] = data
+				}
+				payload, _ := json.Marshal(resp)
+				select {
+				case <-done:
+					return
+				case <-readerDone:
+					return
+				default:
+					_ = writeSafe(websocket.TextMessage, payload)
+				}
+			}()
+			continue
+		}
+
 		ctx, cmdCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		switch cmd.Type {
 		case "navigate":
-			_ = s.mgr.Navigate(ctx, tabID, cmd.URL)
+			if navErr := s.mgr.Navigate(ctx, tabID, cmd.URL); navErr != nil {
+				errPayload, _ := json.Marshal(map[string]any{
+					"type":    "error",
+					"message": navErr.Error(),
+				})
+				_ = writeSafe(websocket.TextMessage, errPayload)
+			}
 		case "back":
 			_ = s.mgr.Back(ctx, tabID)
 		case "forward":
@@ -307,5 +361,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		cmdCancel()
 	}
 
+	close(readerDone)
 	<-done
 }

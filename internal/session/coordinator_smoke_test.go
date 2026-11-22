@@ -53,6 +53,7 @@ func TestCoordinatorSwitchesModel(t *testing.T) {
 	cfg := Config{
 		Driver:     string(domain.DriverClaude),
 		Model:      "claude-sonnet-5",
+		Cwd:        t.TempDir(),
 		Options:    domain.ModelOptions{domain.OptionEffort: "low"},
 		Permission: domain.PermissionPlan,
 	}
@@ -126,6 +127,7 @@ func TestCoordinatorThinkingOption(t *testing.T) {
 	turnID, err := coordinator.Send(ctx, Config{
 		Driver:     string(domain.DriverClaude),
 		Model:      "claude-haiku-4-5",
+		Cwd:        t.TempDir(),
 		Options:    domain.ModelOptions{domain.OptionThinking: false},
 		Permission: domain.PermissionPlan,
 	}, "Reply with exactly: HAIKU_OK")
@@ -171,6 +173,7 @@ func TestCoordinatorAutoPermissions(t *testing.T) {
 			turnID, err := coordinator.Send(ctx, Config{
 				Driver:     string(tc.driver),
 				Model:      tc.model,
+				Cwd:        t.TempDir(),
 				Options:    tc.options,
 				Permission: domain.PermissionBypass,
 			}, "Reply with exactly: AUTO_OK")

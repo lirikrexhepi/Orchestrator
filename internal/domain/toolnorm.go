@@ -66,10 +66,11 @@ var (
 		"todo":        {},
 	}
 	subagentToolNames = map[string]struct{}{
-		"task":          {},
-		"agent":         {},
-		"subagent":      {},
-		"delegate_task": {},
+		"task":            {},
+		"agent":           {},
+		"subagent":        {},
+		"delegate_task":   {},
+		"invoke_subagent": {},
 	}
 
 	filePathKeys = []string{
@@ -249,6 +250,21 @@ func NormalizeToolCall(tool *ToolCall) {
 					target = findFirstString(lowered, searchPathKeys)
 				}
 				tool.Target = target
+			case ToolCategoryMCP:
+				if nameLower == "call_mcp_tool" {
+					server := findFirstString(lowered, []string{"servername", "server_name", "server"})
+					toolName := findFirstString(lowered, []string{"toolname", "tool_name", "tool"})
+					if server != "" && toolName != "" {
+						tool.Target = server + ":" + toolName
+					} else if toolName != "" {
+						tool.Target = toolName
+					} else if server != "" {
+						tool.Target = server
+					}
+				}
+				if tool.Target == "" {
+					tool.Target = findFirstString(lowered, []string{"board_name", "query", "item_id", "threadid", "thread_id", "title", "name", "uri", "path"})
+				}
 			default:
 				target := extractFilePathWithLines(lowered)
 				if target == "" {

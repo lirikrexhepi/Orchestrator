@@ -15,6 +15,7 @@ func (a *Adapter) event(s *session, turnID string, kind domain.EventKind) domain
 		ThreadID: s.threadID,
 		TurnID:   turnID,
 		Driver:   domain.DriverAntigravity,
+		Account:  s.account,
 	}
 }
 
@@ -179,6 +180,10 @@ func (a *Adapter) handleToolCall(s *session, turnID string, update *acpSessionUp
 		s.rememberFile(path)
 	}
 
+	if a.maybeStartNativeSubagentWatch(s, turnID, tool) {
+		tool.Async = true
+	}
+
 	kind := domain.EventToolResult
 	if !seen {
 		kind = domain.EventToolCall
@@ -190,9 +195,14 @@ func (a *Adapter) handleToolCall(s *session, turnID string, update *acpSessionUp
 }
 
 func (a *Adapter) handleUsageUpdate(s *session, turnID string, update *acpSessionUpdate) {
-	if update.Size > 0 {
+	if update.Size > 0 || update.Used > 0 {
 		s.mu.Lock()
-		s.contextWindow = update.Size
+		if update.Size > 0 {
+			s.contextWindow = update.Size
+		}
+		if update.Used > 0 {
+			s.contextUsed = update.Used
+		}
 		s.mu.Unlock()
 	}
 	event := a.event(s, turnID, domain.EventUsage)

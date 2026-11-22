@@ -60,6 +60,7 @@ type pendingControl struct {
 
 type session struct {
 	threadID   string
+	account    string
 	permission domain.PermissionMode
 	proc       *process.Process
 	cancel     context.CancelFunc
@@ -190,8 +191,8 @@ func sessionSettings(options domain.ModelOptions, policy *domain.SkillPolicy) st
 	if _, ok := options[domain.OptionThinking]; ok {
 		fields["alwaysThinkingEnabled"] = options.Bool(domain.OptionThinking)
 	}
-	if options.Bool(domain.OptionFastMode) {
-		fields["fastMode"] = true
+	if _, ok := options[domain.OptionFastMode]; ok {
+		fields["fastMode"] = options.Bool(domain.OptionFastMode)
 	}
 	if thinkingSummaries(options) {
 		fields["showThinkingSummaries"] = true
@@ -254,11 +255,9 @@ func writeMCPConfig(mcp *domain.MCPConfig) (string, error) {
 }
 
 func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput) (domain.Session, error) {
-	cwd := in.Cwd
+	cwd := strings.TrimSpace(in.Cwd)
 	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
-		}
+		return domain.Session{}, errors.New("working directory is required")
 	}
 	env := provider.LaunchEnv(a.settings)
 	if in.Resume != "" {
@@ -266,10 +265,7 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		if err != nil {
 			return domain.Session{}, err
 		}
-		if !samePath(resolved, cwd) {
-			logger.Infof("Claude", "Resuming session %s in %s, where it was recorded, instead of %s", in.Resume, resolved, cwd)
-			cwd = resolved
-		}
+		cwd = resolved
 	}
 	in.Cwd = cwd
 
@@ -289,6 +285,7 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		Args:          a.buildArgs(in, mcpConfigFile),
 		Cwd:           cwd,
 		Env:           env,
+		KillTree:      true,
 		DieWithParent: true,
 	})
 	if err != nil {
@@ -301,6 +298,7 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 
 	s := &session{
 		threadID:      in.ThreadID,
+		account:       domain.NormalizeAccount(in.Account),
 		permission:    in.Permission,
 		proc:          proc,
 		cancel:        cancel,
@@ -328,6 +326,7 @@ func (a *Adapter) StartSession(ctx context.Context, in domain.SessionStartInput)
 		ThreadID:          in.ThreadID,
 		InstanceID:        in.InstanceID,
 		Driver:            domain.DriverClaude,
+		Account:           s.account,
 		ProviderSessionID: s.providerSessionID(),
 		Cwd:               in.Cwd,
 		Model:             in.Model,
@@ -392,7 +391,7 @@ func (a *Adapter) finish(s *session, err error) {
 		if interrupting {
 			a.emit.Emit(domain.RuntimeEvent{
 				Kind: domain.EventTurnCompleted, ThreadID: s.threadID, TurnID: turnID,
-				Driver: domain.DriverClaude, StopReason: domain.StopCancelled,
+				Driver: domain.DriverClaude, Account: s.account, StopReason: domain.StopCancelled,
 			})
 		} else {
 			detail := s.proc.StderrTail()
@@ -401,13 +400,13 @@ func (a *Adapter) finish(s *session, err error) {
 			}
 			a.emit.Emit(domain.RuntimeEvent{
 				Kind: domain.EventTurnFailed, ThreadID: s.threadID, TurnID: turnID,
-				Driver: domain.DriverClaude, Error: a.binary() + " exited: " + detail,
+				Driver: domain.DriverClaude, Account: s.account, Error: a.binary() + " exited: " + detail,
 			})
 		}
 	}
 
 	a.emit.Emit(domain.RuntimeEvent{
-		Kind: domain.EventSessionStopped, ThreadID: s.threadID, Driver: domain.DriverClaude,
+		Kind: domain.EventSessionStopped, ThreadID: s.threadID, Driver: domain.DriverClaude, Account: s.account,
 	})
 	if s.mcpConfigFile != "" {
 		_ = os.Remove(s.mcpConfigFile)
@@ -442,10 +441,23 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 	s.mu.Unlock()
 
 	a.emit.Emit(domain.RuntimeEvent{
-		Kind: domain.EventTurnStarted, ThreadID: in.ThreadID, TurnID: in.TurnID, Driver: domain.DriverClaude,
+		Kind: domain.EventTurnStarted, ThreadID: in.ThreadID, TurnID: in.TurnID, Driver: domain.DriverClaude, Account: s.account,
 	})
 
 	if err := s.write(buildUserMessage(in.Text, in.Files)); err != nil {
+		s.mu.Lock()
+		if s.turnID == in.TurnID {
+			s.turnID = ""
+		}
+		s.mu.Unlock()
+		a.emit.Emit(domain.RuntimeEvent{
+			Kind:     domain.EventTurnFailed,
+			ThreadID: in.ThreadID,
+			TurnID:   in.TurnID,
+			Driver:   domain.DriverClaude,
+			Account:  s.account,
+			Error:    err.Error(),
+		})
 		return fmt.Errorf("write turn: %w", err)
 	}
 	return nil
@@ -594,6 +606,7 @@ func (a *Adapter) RespondToApproval(ctx context.Context, threadID, requestID str
 		ThreadID: threadID,
 		TurnID:   a.event(s, "").TurnID,
 		Driver:   domain.DriverClaude,
+		Account:  s.account,
 		Approval: &domain.ApprovalRequest{RequestID: requestID},
 		Text:     behavior,
 	})
@@ -654,6 +667,7 @@ func (a *Adapter) RespondToQuestion(ctx context.Context, threadID, requestID str
 		Kind:     domain.EventQuestionAnswered,
 		ThreadID: threadID,
 		Driver:   domain.DriverClaude,
+		Account:  s.account,
 		Text:     strings.Join(answers, " / "),
 		Question: &domain.QuestionRequest{RequestID: requestID},
 	})
@@ -740,18 +754,24 @@ func (a *Adapter) UpdateModel(threadID, model string, options domain.ModelOption
 	s.mu.Lock()
 	sameOpts := sameOptions(s.options, options)
 	current := s.model
+	effectiveOpts := s.options
 	s.mu.Unlock()
 	if options != nil && !sameOpts {
 		return false
 	}
+	if options != nil {
+		effectiveOpts = options
+	}
 	if model == "" || model == current {
 		return true
 	}
-	if err := s.control(map[string]any{"subtype": "set_model", "model": ResolveModelID(model, options)}); err != nil {
+	if err := s.control(map[string]any{"subtype": "set_model", "model": ResolveModelID(model, effectiveOpts)}); err != nil {
 		return false
 	}
 	s.mu.Lock()
 	s.model = model
+	s.runningModel = ""
+	s.contextWindow = 0
 	s.mu.Unlock()
 	return true
 }

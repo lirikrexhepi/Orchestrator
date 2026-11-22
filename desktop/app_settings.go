@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"composer/internal/antigravity"
 	"composer/internal/domain"
 	"composer/internal/opencode"
 	"composer/internal/session"
@@ -26,13 +27,8 @@ func (a *App) UsageReport() session.UsageReport {
 //
 // Claude's is fetched from the account with the OAuth token the CLI stores,
 // falling back to that CLI's own on-disk cache. OpenCode Go's comes from the
-// official usage endpoint with the key the CLI stores in auth.json. A missing
-// Go sign-in is not an error worth showing: most OpenCode setups run other
-// providers, and their spend is still tracked below from the event stream.
-// Antigravity refreshes its token and quota in memory for the lifetime of a CLI
-// process and writes neither to disk, so there is nothing to read and no way to
-// authenticate a fetch without impersonating its OAuth client. Its quota stays
-// in its own settings UI.
+// official usage endpoint with the key the CLI stores in auth.json. Antigravity's
+// comes from the Cloud Code quota summary endpoint using the active OAuth token.
 func (a *App) refreshQuota() {
 	limits, fetchedAt, err := a.quota.Snapshot()
 	a.usage.SetLimits(domain.DriverClaude, limits, fetchedAt)
@@ -45,6 +41,14 @@ func (a *App) refreshQuota() {
 	if goErr != nil && !errors.Is(goErr, opencode.ErrNoGoCredentials) {
 		a.usage.SetQuotaError(domain.DriverOpenCode, goErr.Error())
 	}
+
+	if a.antigravityQuota != nil {
+		agLimits, agFetchedAt, agErr := a.antigravityQuota.Snapshot()
+		a.usage.SetLimits(domain.DriverAntigravity, agLimits, agFetchedAt)
+		if agErr != nil && !errors.Is(agErr, antigravity.ErrNoCredentials) {
+			a.usage.SetQuotaError(domain.DriverAntigravity, agErr.Error())
+		}
+	}
 }
 
 // RefreshUsage forces quota to be re-fetched rather than served from the
@@ -56,6 +60,9 @@ func (a *App) refreshQuota() {
 func (a *App) RefreshUsage() session.UsageReport {
 	a.quota.Invalidate()
 	a.opencodeQuota.Invalidate()
+	if a.antigravityQuota != nil {
+		a.antigravityQuota.Invalidate()
+	}
 	a.refreshAccountQuotas(true)
 	return a.UsageReport()
 }

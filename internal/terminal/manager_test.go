@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,10 +17,10 @@ import (
 )
 
 func TestRingBuffer_WrapAroundAndExactCap(t *testing.T) {
-	// 1. Exact default capacity
+	// 1. Exact default capacity (256 KB)
 	r := NewRingBuffer()
-	if r.Cap() != defaultScrollbackBytes {
-		t.Fatalf("expected cap %d, got %d", defaultScrollbackBytes, r.Cap())
+	if r.Cap() != 256*1024 || r.Cap() != defaultScrollbackBytes {
+		t.Fatalf("expected cap %d (256 KB), got %d", defaultScrollbackBytes, r.Cap())
 	}
 	if r.Len() != 0 {
 		t.Fatalf("expected len 0, got %d", r.Len())
@@ -55,10 +56,10 @@ func TestRingBuffer_WrapAroundAndExactCap(t *testing.T) {
 		t.Fatalf("expected len 10, got %d", small.Len())
 	}
 
-	// 4. Exact 64 KB cap under heavy writes
+	// 4. Exact 256 KB cap under heavy writes
 	heavy := NewRingBuffer(defaultScrollbackBytes)
 	chunk := bytes.Repeat([]byte("A"), 1024)
-	for i := 0; i < 100; i++ { // 100 KB total
+	for i := 0; i < 300; i++ { // 300 KB total
 		_, _ = heavy.Write(chunk)
 	}
 	if heavy.Len() != defaultScrollbackBytes {
@@ -346,5 +347,134 @@ func TestManager_SnapshotReplay(t *testing.T) {
 	}
 	if !strings.Contains(string(data), marker) {
 		t.Fatalf("client 2 initial snapshot missing %q: %s", marker, string(data))
+	}
+}
+
+type mockPTY struct {
+	resizeCount atomic.Int32
+	lastCols    atomic.Int32
+	lastRows    atomic.Int32
+}
+
+func (m *mockPTY) Read(_ []byte) (int, error)          { return 0, fmt.Errorf("eof") }
+func (m *mockPTY) Write(p []byte) (int, error)         { return len(p), nil }
+func (m *mockPTY) Wait(_ context.Context) (int, error) { return 0, nil }
+func (m *mockPTY) Close() error                        { return nil }
+func (m *mockPTY) Resize(cols, rows int) error {
+	m.resizeCount.Add(1)
+	m.lastCols.Store(int32(cols))
+	m.lastRows.Store(int32(rows))
+	return nil
+}
+
+func TestManager_ListEmptyThreadGuardAndListAll(t *testing.T) {
+	mgr := NewManager()
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+
+	mgr.sessions["s1"] = &session{
+		info: SessionInfo{
+			ID:        "s1",
+			ThreadID:  "thread-a",
+			Cols:      100,
+			Rows:      28,
+			Running:   true,
+			CreatedAt: 100,
+		},
+		pty:         &mockPTY{},
+		ring:        NewRingBuffer(),
+		ctx:         ctx1,
+		cancel:      cancel1,
+		subscribers: make(map[int]chan Event),
+	}
+	mgr.sessions["s2"] = &session{
+		info: SessionInfo{
+			ID:        "s2",
+			ThreadID:  "thread-b",
+			Cols:      100,
+			Rows:      28,
+			Running:   true,
+			CreatedAt: 200,
+		},
+		pty:         &mockPTY{},
+		ring:        NewRingBuffer(),
+		ctx:         ctx2,
+		cancel:      cancel2,
+		subscribers: make(map[int]chan Event),
+	}
+
+	if empty := mgr.List(""); len(empty) != 0 {
+		t.Fatalf("expected List(\"\") to return empty slice, got %+v", empty)
+	}
+
+	listA := mgr.List("thread-a")
+	if len(listA) != 1 || listA[0].ID != "s1" {
+		t.Fatalf("expected only s1 for thread-a, got %+v", listA)
+	}
+
+	all := mgr.ListAll()
+	if len(all) != 2 || all[0].ID != "s1" || all[1].ID != "s2" {
+		t.Fatalf("expected [s1, s2] from ListAll(), got %+v", all)
+	}
+}
+
+func TestManager_ResizeDeduplication(t *testing.T) {
+	mgr := NewManager()
+	pty := &mockPTY{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr.sessions["s-resize"] = &session{
+		info: SessionInfo{
+			ID:        "s-resize",
+			ThreadID:  "thread-resize",
+			Cols:      100,
+			Rows:      28,
+			Running:   true,
+			CreatedAt: 100,
+		},
+		pty:         pty,
+		ring:        NewRingBuffer(),
+		ctx:         ctx,
+		cancel:      cancel,
+		subscribers: make(map[int]chan Event),
+	}
+
+	// No-op resize matching current 100x28 must not invoke pty.Resize
+	if err := mgr.Resize("s-resize", 100, 28); err != nil {
+		t.Fatalf("Resize failed: %v", err)
+	}
+	if got := pty.resizeCount.Load(); got != 0 {
+		t.Fatalf("expected 0 pty.Resize calls for identical dimensions, got %d", got)
+	}
+
+	// Clamped no-op (0, 0 -> default 100x28) must also deduplicate
+	if err := mgr.Resize("s-resize", 0, 0); err != nil {
+		t.Fatalf("Resize failed: %v", err)
+	}
+	if got := pty.resizeCount.Load(); got != 0 {
+		t.Fatalf("expected 0 pty.Resize calls for clamped identical dimensions, got %d", got)
+	}
+
+	// Actual dimension change invokes pty.Resize once
+	if err := mgr.Resize("s-resize", 120, 32); err != nil {
+		t.Fatalf("Resize failed: %v", err)
+	}
+	if got := pty.resizeCount.Load(); got != 1 {
+		t.Fatalf("expected 1 pty.Resize call after dimension change, got %d", got)
+	}
+	if pty.lastCols.Load() != 120 || pty.lastRows.Load() != 32 {
+		t.Fatalf("expected 120x32, got %dx%d", pty.lastCols.Load(), pty.lastRows.Load())
+	}
+
+	// Repeated 120x32 must deduplicate
+	if err := mgr.Resize("s-resize", 120, 32); err != nil {
+		t.Fatalf("Resize failed: %v", err)
+	}
+	if got := pty.resizeCount.Load(); got != 1 {
+		t.Fatalf("expected still 1 pty.Resize call after duplicate resize, got %d", got)
 	}
 }

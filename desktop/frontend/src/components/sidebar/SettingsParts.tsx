@@ -145,6 +145,7 @@ export function GeneralSettings({ isLight }: { isLight: boolean }) {
   const [gpu, setGpu] = useState(true);
   const [gpuChanged, setGpuChanged] = useState(false);
   const [launchFullscreen, setLaunchFullscreen] = useState(false);
+  const [restoreOpenChats, setRestoreOpenChats] = useState(false);
 
   useEffect(() => {
     GetUserPreference('disable_gpu_acceleration')
@@ -152,6 +153,9 @@ export function GeneralSettings({ isLight }: { isLight: boolean }) {
       .catch(() => undefined);
     GetUserPreference('launch_fullscreen')
       .then((val) => setLaunchFullscreen(val === 'true'))
+      .catch(() => undefined);
+    GetUserPreference('restore_open_chats')
+      .then((val) => setRestoreOpenChats(val === 'true'))
       .catch(() => undefined);
   }, []);
 
@@ -208,6 +212,23 @@ export function GeneralSettings({ isLight }: { isLight: boolean }) {
               }}
               isLight={isLight}
               label="Launch maximized"
+            />
+          }
+        />
+        <SettingsRow
+          title="Reopen open chats on startup"
+          hint="Restore the chat tabs you left open when closing Orchestrator"
+          isLight={isLight}
+          control={
+            <Switch
+              on={restoreOpenChats}
+              onChange={() => {
+                const next = !restoreOpenChats;
+                setRestoreOpenChats(next);
+                void SetUserPreference('restore_open_chats', next ? 'true' : 'false');
+              }}
+              isLight={isLight}
+              label="Reopen open chats on startup"
             />
           }
         />

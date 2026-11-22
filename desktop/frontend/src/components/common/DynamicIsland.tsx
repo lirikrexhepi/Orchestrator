@@ -11,8 +11,8 @@ import claudeLogo from '../../assets/logo/claude-icon-logo.png';
 import antigravityLogo from '../../assets/logo/antigravity-icon-logo.png';
 import { useTheme } from '../../themes';
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
-import { ProjectGlyph } from '../orchestrator/ProjectGlyph';
 import { providerIcon } from '../orchestrator/providerIcons';
+import { windowLabel } from '../sidebar/usageBars';
 
 export interface DynamicIslandNotification {
   id: string;
@@ -52,20 +52,22 @@ export interface DynamicIslandProps {
   onDeleteHistory?: (workspaceId: string, threadId?: string) => void;
   onSetChatArchived?: (workspaceId: string, threadId: string, archived: boolean) => void;
   onMoveChat?: (payload: ChatDragPayload, project: Project) => void;
+  onRenameChat?: (threadId: string, title: string) => void | Promise<void>;
   onTerminateAgent?: (threadId: string) => void;
   onRefreshHistory?: () => void;
   onNewChat?: () => void;
+  onUsageOpenChange?: (open: boolean) => void;
   /** Native Claude Code sessions for the inline list. */
   claudeSessions?: claudeimport.ExternalSession[];
   claudeLoading?: boolean;
   claudeLoadingMore?: boolean;
   claudeExhausted?: Record<'claude' | 'antigravity' | 'opencode', boolean>;
   onLoadMoreClaude?: (providers: Array<'claude' | 'antigravity' | 'opencode'>) => void;
-  claudeImporting?: boolean;
+  claudeImporting?: boolean | string | null;
   claudeError?: string | null;
   onRefreshClaude?: () => void;
   /** Imports the session invisibly and opens it. */
-  onImportClaudeSession?: (filePath: string) => void;
+  onImportClaudeSession?: (filePath: string) => void | Promise<void>;
   openProjectsTrigger?: number;
   openHistoryTrigger?: number;
   className?: string;
@@ -300,8 +302,7 @@ export function extractChatHistoryItems(
           drivers,
           models,
           updatedAt:
-            Math.max(0, ...groupTasks.map((gt: any) => gt.updatedAt || 0)) ||
-            meta.workspace?.updatedAt ||
+            Math.max(0, ...groupTasks.map((gt: any) => gt.updatedAt || 0), meta.workspace?.updatedAt || 0) ||
             meta.workspace?.createdAt ||
             0,
           archived: Boolean(meta.workspace?.archived) || groupTasks.every((gt: any) => gt.archived),
@@ -467,6 +468,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   viewMode = 'deck',
   cardMode,
   usageReport,
+  usageError,
   activeTasks = [],
   notification,
   onDismissNotification,
@@ -475,8 +477,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   onOpenHistory,
   onSetChatArchived,
   onMoveChat,
+  onRenameChat,
   onRefreshHistory,
   onNewChat,
+  onUsageOpenChange,
   claudeSessions = [],
   claudeLoading,
   claudeLoadingMore,
@@ -496,13 +500,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const islandRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [contentHeight, setContentHeight] = useState(0);
-  const [windowWidth, setWindowWidth] = useState<number>(typeof window !== 'undefined' ? window.innerWidth : 1200);
-
-  useEffect(() => {
-    const handleResize = () => setWindowWidth(window.innerWidth);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   useEffect(() => {
     if (openProjectsTrigger && openProjectsTrigger > 0) {
@@ -529,12 +526,14 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   useEffect(() => {
     if (mode === 'projects' || mode === 'project-chats') {
       onRefreshHistory?.();
+    } else if (mode === 'claude-chats') {
+      onRefreshClaude?.();
     }
-  }, [mode, onRefreshHistory]);
+    onUsageOpenChange?.(mode === 'usage');
+  }, [mode, onRefreshHistory, onRefreshClaude, onUsageOpenChange]);
 
   const { currentTheme } = useTheme();
   const isLight = currentTheme.id === 'light' || currentTheme.id === 'white';
-  const isGlass = currentTheme.id === 'glass';
   const tone = useMemo(() => islandTone(isLight), [isLight]);
   const selectedProviderId = useOrchestratorStore((s) => s.selectedProviderId);
   const selectedModelId = useOrchestratorStore((s) => s.selectedModelId);
@@ -561,8 +560,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const displayedProjectName =
     viewMode === 'deck' && activeTaskProjectName
       ? activeTaskProjectName
-      : projects?.active?.name ||
-        (projects && projects.projects.length > 0 ? projects.projects[0].name : 'Select Project');
+      : projects?.active?.name || 'No project';
 
   // Best-effort id for the favicon lookup; empty means the folder glyph stays.
   const displayedProjectId =
@@ -670,12 +668,14 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   const [viewedDriver, setViewedDriver] = useState<UsageDriverName | null>(null);
   const [viewedAccounts, setViewedAccounts] = useState<Record<string, string>>({});
+  const [showAllLimits, setShowAllLimits] = useState(false);
   const driverName = viewedDriver ?? autoDriverName;
 
   useEffect(() => {
     if (mode !== 'usage') {
       setViewedDriver(null);
       setViewedAccounts({});
+      setShowAllLimits(false);
     }
   }, [mode]);
 
@@ -690,6 +690,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     const index = usageDrivers.indexOf(driverName);
     const next = usageDrivers[(index + delta + usageDrivers.length) % usageDrivers.length];
     setViewedDriver(next);
+    setShowAllLimits(false);
   };
 
   const storeShownAccount = useOrchestratorStore((state) => state.shownAccount(driverName));
@@ -709,36 +710,69 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   const driverData = useMemo(() => {
     const entries = usageReport?.drivers?.filter((d) => d.driver === driverName) ?? [];
+    const exact = entries.find((d) => (d.account || 'default') === shownAccount);
+    if (exact && (exact.limits?.length ?? 0) > 0) return exact;
     return (
-      entries.find((d) => (d.account || 'default') === shownAccount) ||
+      entries.find((d) => (d.limits?.length ?? 0) > 0) ||
+      exact ||
       entries.find((d) => (d.account || 'default') === 'default') ||
       entries[0]
     );
   }, [usageReport, driverName, shownAccount]);
 
-  // Session limit (five_hour window)
-  const sessionLimit = useMemo(() => {
-    return (
-      driverData?.limits?.find((l) => l.window === 'five_hour') ||
-      driverData?.limits?.[0] ||
-      null
-    );
-  }, [driverData]);
+  const limits = driverData?.limits ?? [];
+  const hasQuota = limits.length > 0;
 
-  // All models / weekly limit (seven_day window)
-  const weeklyLimit = useMemo(() => {
-    return (
-      driverData?.limits?.find(
-        (l) => l.window.startsWith('seven_day') && l.window !== sessionLimit?.window,
-      ) ||
-      driverData?.limits?.[1] ||
-      null
-    );
-  }, [driverData, sessionLimit]);
+  // Primary quota figure for the subtle circular ring around the notch logo.
+  // Works for all CLIs: prefers 5h session limit, falling back to weekly if 5h is 0%
+  // while weekly has active usage, so Claude/Antigravity/OpenCode all show progress.
+  const notchUsedPercent = useMemo<number | undefined>(() => {
+    if (limits.length === 0) return undefined;
+    const fiveH =
+      limits.find((l) => l.window === 'five_hour' && typeof l.usedPercent === 'number') ??
+      limits.find((l) => (l.window || '').startsWith('Gemini ·') && (l.window || '').toLowerCase().includes('5h') && typeof l.usedPercent === 'number') ??
+      limits.find((l) => (l.window || '').toLowerCase().includes('5h') && typeof l.usedPercent === 'number');
+    const weekly =
+      limits.find((l) => l.window === 'seven_day' && typeof l.usedPercent === 'number') ??
+      limits.find((l) => (l.window || '').startsWith('Gemini ·') && (l.window || '').toLowerCase().includes('weekly') && typeof l.usedPercent === 'number') ??
+      limits.find((l) => (l.window || '').toLowerCase().includes('weekly') && typeof l.usedPercent === 'number');
+    const first = limits.find((l) => typeof l.usedPercent === 'number');
+    const chosen =
+      fiveH && (fiveH.usedPercent ?? 0) > 0
+        ? fiveH
+        : weekly && (weekly.usedPercent ?? 0) > 0
+          ? weekly
+          : fiveH ?? weekly ?? first;
+    return typeof chosen?.usedPercent === 'number' ? Math.max(0, Math.min(100, chosen.usedPercent)) : undefined;
+  }, [limits]);
 
-  const sessionUsedPercent = typeof sessionLimit?.usedPercent === 'number' ? sessionLimit.usedPercent : 0;
-  const weeklyUsedPercent = typeof weeklyLimit?.usedPercent === 'number' ? weeklyLimit.usedPercent : 0;
-  const hasQuota = sessionLimit !== null || weeklyLimit !== null;
+  const notchRingColor = useMemo(() => {
+    if (notchUsedPercent === undefined) return 'transparent';
+    // Smooth, restrained transition: sage-emerald (0%) -> warm amber (65%) -> muted coral-red (100%)
+    const t = notchUsedPercent / 100;
+    const hue = t <= 0.65
+      ? 142 - (t / 0.65) * 102 // 142 -> 40
+      : 40 - ((t - 0.65) / 0.35) * 36; // 40 -> 4
+    const sat = isLight ? 52 : 48;
+    const light = isLight ? 42 : 52;
+    const alpha = isLight ? 0.72 : 0.76;
+    return `hsla(${Math.round(hue)}, ${sat}%, ${light}%, ${alpha})`;
+  }, [notchUsedPercent, isLight]);
+  const emptyQuotaMessage = (() => {
+    if (driverData?.limitsError) return driverData.limitsError;
+    if (usageError) return usageError;
+    switch (driverName) {
+      case 'opencode':
+        return 'No quota — sign in to OpenCode Go for limits';
+      case 'antigravity':
+        return 'Sign in to Antigravity for quota limits';
+      case 'claude':
+        return 'Sign in to Claude for quota limits';
+      case 'codex':
+      default:
+        return 'No quota limits reported';
+    }
+  })();
 
   // Theme color for selected model (inspired by user Image 2)
   const modelTheme = useMemo(() => {
@@ -814,11 +848,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   };
 
   const isListMode = mode === 'project-chats' || mode === 'claude-chats' || mode === 'projects';
-  const isBrowserMode = cardMode === 'browser' && mode === 'idle';
+  const isAutoHeightMode = isListMode || mode === 'usage';
   const targetWidth =
-    isBrowserMode
-      ? Math.min(740, Math.max(480, windowWidth - 220))
-      : mode === 'project-chats' || mode === 'claude-chats'
+    mode === 'project-chats' || mode === 'claude-chats'
       ? 380
       : mode === 'projects'
       ? 350
@@ -827,18 +859,14 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       : notification
       ? 320
       : 196;
-  const targetHeight = isListMode ? Math.max(contentHeight, 60) : mode === 'usage' ? 180 : 36;
-  const targetRadius = isBrowserMode ? 18 : mode === 'idle' ? 17 : 24;
+  const targetHeight = isAutoHeightMode ? Math.max(contentHeight, mode === 'usage' ? 120 : 60) : 36;
+  const targetRadius = mode === 'idle' ? 17 : 24;
   const viewMotion = {
     initial: { opacity: 0, y: -6 },
     animate: { opacity: 1, y: 0 },
     exit: { opacity: 0, y: -4, transition: { duration: 0.1 } },
     transition: { duration: 0.2, ease: [0.16, 1, 0.3, 1] as const },
   };
-
-  // SVG Ring values for 20px circle (r=8 -> circum=50.26)
-  const ringCircumference = 50.26;
-  const ringOffset = ringCircumference - (ringCircumference * Math.min(100, sessionUsedPercent)) / 100;
 
   return (
     <motion.div
@@ -876,7 +904,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         }
       />
 
-      <div ref={contentRef} className="w-full relative z-10" style={{ height: isListMode ? 'auto' : '100%' }}>
+      <div ref={contentRef} className="w-full relative z-10" style={{ height: isAutoHeightMode ? 'auto' : '100%' }}>
       <AnimatePresence mode="wait" initial={false}>
         {/* ===================================================================
             1. COMPACT IDLE STATE (Notification or Two clickable zones)
@@ -937,24 +965,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           </motion.div>
         )}
 
-        {mode === 'idle' && !notification && isBrowserMode && (
-          <motion.div
-            key="browser-slot-container"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            className="flex items-center w-full h-full px-2"
-          >
-            <div
-              id="dynamic-island-browser-slot"
-              className="w-full h-full flex items-center min-w-0"
-              style={{ ['--wails-draggable' as string]: 'no-drag' }}
-            />
-          </motion.div>
-        )}
-
-        {mode === 'idle' && !notification && !isBrowserMode && (
+        {mode === 'idle' && !notification && (
           <motion.div
             key="compact"
             initial={{ opacity: 0 }}
@@ -992,7 +1003,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               {anyBusyTask && <DynamicIslandWaveform />}
             </div>
 
-            {/* Right Clickable Zone: Model Usage Button */}
+            {/* Right Clickable Zone: Model Usage Button with subtle quota ring */}
             <button
               type="button"
               onClick={(e) => {
@@ -1000,16 +1011,56 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 setMode('usage');
               }}
               style={{ ['--wails-draggable' as string]: 'no-drag' }}
-              className={`flex items-center justify-center w-[28px] h-[28px] rounded-full ${
+              className={`relative flex items-center justify-center w-[28px] h-[28px] rounded-full ${
                 isLight ? 'hover:bg-black/[0.06]' : 'hover:bg-white/[0.08]'
               } active:scale-95 transition-all cursor-pointer shrink-0`}
-              title={`${modelTheme.name} Quota & Usage\nClick to inspect`}
+              title={
+                notchUsedPercent !== undefined
+                  ? `${modelTheme.name} · ${notchUsedPercent}% used\nClick to inspect`
+                  : `${modelTheme.name} Quota & Usage\nClick to inspect`
+              }
               aria-label="Model Quota"
             >
+              {notchUsedPercent !== undefined && (() => {
+                const r = 11.5;
+                const circ = 2 * Math.PI * r;
+                const usedFrac = notchUsedPercent > 0 ? Math.max(0.03, notchUsedPercent / 100) : 0;
+                return (
+                  <svg
+                    width="26"
+                    height="26"
+                    viewBox="0 0 26 26"
+                    fill="none"
+                    aria-hidden="true"
+                    className="absolute inset-0 m-auto -rotate-90 pointer-events-none"
+                  >
+                    <circle
+                      cx="13"
+                      cy="13"
+                      r={r}
+                      stroke={isLight ? 'rgba(0, 0, 0, 0.11)' : 'rgba(255, 255, 255, 0.12)'}
+                      strokeWidth="1.4"
+                    />
+                    {usedFrac > 0 && (
+                      <circle
+                        cx="13"
+                        cy="13"
+                        r={r}
+                        stroke={notchRingColor}
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeDasharray={circ}
+                        strokeDashoffset={circ * (1 - usedFrac)}
+                        className="transition-[stroke-dashoffset,stroke] duration-500 ease-out"
+                      />
+                    )}
+                  </svg>
+                );
+              })()}
               <img
                 src={providerIcon(driverName, isLight) || antigravityLogo}
                 alt={modelTheme.name}
-                className="w-[16px] h-[16px] object-contain"
+                className="relative w-[15px] h-[15px] object-contain"
               />
             </button>
           </motion.div>
@@ -1025,8 +1076,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               recentClaude={recentClaudeChats}
               relativeTime={relativeTime}
               onOpenClaudeSession={(chat) => {
-                onImportClaudeSession?.(chat.filePath);
-                setMode('idle');
+                void (async () => {
+                  await onImportClaudeSession?.(chat.filePath);
+                  if (chat.provider !== 'antigravity') setMode('idle');
+                })();
               }}
               onClose={() => setMode('idle')}
               onPicked={() => setMode('idle')}
@@ -1044,21 +1097,23 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               renderIcon={(chat) => renderOverlappingChatIcons(chat, isLight)}
               subtitle={formatChatSubtitle}
               onOpenChat={(chat) => {
-                if (chat.projectPath) {
-                  const proj =
-                    projects?.projects.find((p) => isSamePath(p.path, chat.projectPath!)) ||
-                    (chat.projectName
-                      ? projects?.projects.find(
-                          (p) => p.name.toLowerCase() === chat.projectName!.toLowerCase(),
-                        )
-                      : undefined);
-                  if (proj && proj.id !== projects?.active?.id) {
-                    void projects?.select(proj.id);
+                void (async () => {
+                  if (chat.projectPath) {
+                    const proj =
+                      projects?.projects.find((p) => isSamePath(p.path, chat.projectPath!)) ||
+                      (chat.projectName
+                        ? projects?.projects.find(
+                            (p) => p.name.toLowerCase() === chat.projectName!.toLowerCase(),
+                          )
+                        : undefined);
+                    if (proj && proj.id !== projects?.active?.id) {
+                      await projects?.select(proj.id);
+                    }
                   }
-                }
-                if (chat.archived) onSetChatArchived?.(chat.workspaceId, chat.threadId, false);
-                onOpenHistory?.(chat.workspaceId, chat.threadId);
-                setMode('idle');
+                  if (chat.archived) onSetChatArchived?.(chat.workspaceId, chat.threadId, false);
+                  onOpenHistory?.(chat.workspaceId, chat.threadId);
+                  setMode('idle');
+                })();
               }}
             />
           </motion.div>
@@ -1098,18 +1153,21 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                     await projects?.select(proj.id);
                   }
                   onNewChat?.();
+                  setMode('idle');
                 })();
-                setMode('idle');
               }}
               onOpen={(chat) => {
-                const proj = selectedProject || projects?.active;
-                if (proj && proj.id !== projects?.active?.id) {
-                  void projects?.select(proj.id);
-                }
-                if (chat.archived) onSetChatArchived?.(chat.workspaceId, chat.threadId, false);
-                onOpenHistory?.(chat.workspaceId, chat.threadId);
-                setMode('idle');
+                void (async () => {
+                  const proj = selectedProject || projects?.active;
+                  if (proj && proj.id !== projects?.active?.id) {
+                    await projects?.select(proj.id);
+                  }
+                  if (chat.archived) onSetChatArchived?.(chat.workspaceId, chat.threadId, false);
+                  onOpenHistory?.(chat.workspaceId, chat.threadId);
+                  setMode('idle');
+                })();
               }}
+              onRename={onRenameChat ? (chat, title) => onRenameChat(chat.threadId, title) : undefined}
               onSetArchived={(chat, archived) => onSetChatArchived?.(chat.workspaceId, chat.threadId, archived)}
             />
           </motion.div>
@@ -1130,8 +1188,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               onBack={() => setMode('projects')}
               onClose={() => setMode('idle')}
               onOpen={(session) => {
-                onImportClaudeSession?.(session.filePath);
-                setMode('idle');
+                void (async () => {
+                  await onImportClaudeSession?.(session.filePath);
+                  if (session.provider !== 'antigravity') setMode('idle');
+                })();
               }}
             />
           </motion.div>
@@ -1147,9 +1207,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.96 }}
             transition={{ duration: 0.15 }}
-            className="flex flex-col w-full h-full p-4 justify-between"
+            className="flex flex-col w-full p-4 gap-3"
           >
-            <div className="flex items-center justify-between pb-1">
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-1 min-w-0">
                 {usageDrivers.length > 1 && (
                 <button
@@ -1165,8 +1225,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 </button>
                 )}
                 <div className="w-5 h-5 flex items-center justify-center shrink-0">{modelTheme.icon}</div>
-                <span className="text-[13px] font-semibold text-white font-(family-name:--app-font) tracking-tight truncate">
-                  {modelTheme.name} Usage
+                <span className={`text-[13px] font-semibold font-(family-name:--app-font) tracking-tight truncate ${tone.fg}`}>
+                  {driverAccounts.length > 1 ? modelTheme.name : `${modelTheme.name} Usage`}
                 </span>
                 {usageDrivers.length > 1 && (
                 <button
@@ -1207,74 +1267,91 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
             </div>
 
             {!hasQuota ? (
-              <div className="flex flex-col gap-1.5 my-1">
+              <div className="flex flex-col gap-1.5">
                 <div className="flex items-center justify-between text-[11px] font-(family-name:--app-font)">
-                  <span className="text-white/60">This run</span>
+                  <span className={tone.sub}>This run</span>
                 </div>
-                <div className="flex items-center gap-3 text-[11px] font-(family-name:--app-font) text-white/80 tabular-nums">
+                <div className={`flex items-center gap-3 text-[11px] font-(family-name:--app-font) tabular-nums ${isLight ? 'text-black/80' : 'text-white/80'}`}>
                   <span>↓ {compactCount(driverData?.inputTokens ?? 0)} in</span>
                   <span>↑ {compactCount(driverData?.outputTokens ?? 0)} out</span>
                   {(driverData?.costUsd ?? 0) > 0 && (
                     <span>${(driverData?.costUsd ?? 0).toFixed(2)}</span>
                   )}
                 </div>
-                <span className="text-[10px] text-white/45 font-(family-name:--app-font)">
-                  No quota — sign in to OpenCode Go for limits
+                <span className={`text-[10px] font-(family-name:--app-font) leading-snug ${tone.sub}`}>
+                  {emptyQuotaMessage}
                 </span>
               </div>
-            ) : (
-              <>
-                {/* Current Session Limit (Matching Image 2) */}
-                <div className="flex flex-col gap-1.5 my-1">
-                  <div className="flex items-center justify-between text-[11px] font-(family-name:--app-font)">
-                    <span className="text-white/60">Current session</span>
-                    <span className="text-[#8E8E93] text-[10px]">
-                      {sessionLimit?.resetsAt ? formatResets(sessionLimit.resetsAt) : ''}
-                    </span>
-                  </div>
+            ) : (() => {
+              const isAntigravity = driverName === 'antigravity';
+              const primaryLimits = isAntigravity
+                ? limits.filter((l) => (l.window || '').startsWith('Gemini ·'))
+                : limits;
+              const extraLimits = isAntigravity
+                ? limits.filter((l) => !(l.window || '').startsWith('Gemini ·'))
+                : [];
+              const visibleLimits =
+                isAntigravity && primaryLimits.length > 0 && !showAllLimits
+                  ? primaryLimits
+                  : limits;
 
-                  {/* Progress bar matching Image 2 */}
-                  <div className={`h-[4px] rounded-full ${isLight ? 'bg-black/[0.08]' : 'bg-white/[0.12]'} overflow-hidden`}>
-                    <div
-                      className="h-full rounded-full transition-all duration-300"
-                      style={{
-                        width: `${Math.min(100, Math.max(sessionUsedPercent > 0 ? 3 : 0, sessionUsedPercent))}%`,
-                        backgroundColor: modelTheme.barColor,
-                      }}
-                    />
-                  </div>
+              return (
+              <div className="flex flex-col gap-2.5 max-h-[260px] overflow-y-auto custom-scrollbar pr-0.5">
+                {visibleLimits.map((limit, idx) => {
+                  const used = typeof limit.usedPercent === 'number' ? limit.usedPercent : undefined;
+                  const known = typeof used === 'number';
+                  const remaining = known ? Math.max(0, 100 - used) : undefined;
+                  const barColor =
+                    known && used >= 90
+                      ? '#fb7185'
+                      : known && used >= 75
+                      ? '#fcd34d'
+                      : idx % 2 === 1 && visibleLimits.length === 2
+                      ? '#10b981'
+                      : modelTheme.barColor;
+                  return (
+                    <div key={`${limit.window}-${idx}`} className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between gap-2 text-[11px] font-(family-name:--app-font)">
+                        <span className={`truncate ${isLight ? 'text-black/70' : 'text-white/75'}`}>
+                          {windowLabel(limit.window || limit.status || '')}
+                        </span>
+                        <span className="text-[#8E8E93] text-[10px] shrink-0">
+                          {limit.resetsAt ? formatResets(limit.resetsAt) : ''}
+                        </span>
+                      </div>
 
-                  <span className="text-[10px] text-white/80 font-medium font-(family-name:--app-font)">
-                    {sessionUsedPercent}% Used
-                  </span>
-                </div>
+                      <div className={`h-[4px] rounded-full ${isLight ? 'bg-black/[0.08]' : 'bg-white/[0.12]'} overflow-hidden`}>
+                        {known && (
+                          <div
+                            className="h-full rounded-full transition-all duration-300"
+                            style={{
+                              width: `${Math.min(100, Math.max(used > 0 ? 3 : 0, used))}%`,
+                              backgroundColor: barColor,
+                            }}
+                          />
+                        )}
+                      </div>
 
-                {/* All Models / Weekly Limit (Matching Image 2) */}
-                <div className="flex flex-col gap-1.5">
-                  <div className="flex items-center justify-between text-[11px] font-(family-name:--app-font)">
-                    <span className="text-white/60">All models</span>
-                    <span className="text-[#8E8E93] text-[10px]">
-                      {weeklyLimit?.resetsAt ? formatResets(weeklyLimit.resetsAt) : ''}
-                    </span>
-                  </div>
-
-                  {/* Progress bar matching Image 2 */}
-                  <div className={`h-[4px] rounded-full ${isLight ? 'bg-black/[0.08]' : 'bg-white/[0.12]'} overflow-hidden`}>
-                    <div
-                      className="h-full rounded-full transition-all duration-300"
-                      style={{
-                        width: `${Math.min(100, Math.max(weeklyUsedPercent > 0 ? 3 : 0, weeklyUsedPercent))}%`,
-                        backgroundColor: '#10b981', // Green from Image 2
-                      }}
-                    />
-                  </div>
-
-                  <span className="text-[10px] text-white/80 font-medium font-(family-name:--app-font)">
-                    {weeklyUsedPercent}% Used
-                  </span>
-                </div>
-              </>
-            )}
+                      <span className={`text-[10px] font-medium font-(family-name:--app-font) tabular-nums ${isLight ? 'text-black/75' : 'text-white/80'}`}>
+                        {known ? `${used}% used` : '—'}
+                      </span>
+                    </div>
+                  );
+                })}
+                {isAntigravity && extraLimits.length > 0 && primaryLimits.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllLimits((prev) => !prev)}
+                    className={`self-start text-[10.5px] font-medium font-(family-name:--app-font) transition-colors cursor-pointer ${
+                      isLight ? 'text-black/45 hover:text-black/75' : 'text-white/40 hover:text-white/75'
+                    }`}
+                  >
+                    {showAllLimits ? 'Hide extra limits' : `Show ${extraLimits.length} more`}
+                  </button>
+                )}
+              </div>
+              );
+            })()}
           </motion.div>
         )}
       </AnimatePresence>

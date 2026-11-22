@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, SlidersHorizontal, Cpu, Palette, Smartphone, ScrollText } from '../common/icons';
 import { WallpaperState } from './useWallpaper';
@@ -37,7 +37,14 @@ export function SettingsWindow({
   const isGlass = currentTheme.id === 'glass';
   const claudeUpdate = useClaudeUpdate();
   const [section, setSection] = useState<SectionId>('general');
+  const scrollRef = useRef<HTMLDivElement>(null);
   const fg = isLight ? 'text-black/90' : 'text-white';
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = 0;
+    }
+  }, [section, open]);
 
   return (
     <AnimatePresence>
@@ -118,39 +125,33 @@ export function SettingsWindow({
                   <X size={15} strokeWidth={2} />
                 </button>
               </div>
-              <ScrollArea className="flex-1 min-h-0 px-7 pb-7">
-                <AnimatePresence mode="wait" initial={false}>
-                  <motion.div
-                    key={section}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -4, transition: { duration: 0.08 } }}
-                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-                    className="flex flex-col gap-3 max-w-[560px]"
-                  >
-                    {section === 'general' && <GeneralSettings isLight={isLight} />}
-                    {section === 'providers' &&
-                      (defaultModels.entries.length > 0 ? (
-                        <ProvidersSection defaultModels={defaultModels} claudeUpdate={claudeUpdate} isLight={isLight} />
-                      ) : (
-                        <span className={`text-[12.5px] ${isLight ? 'text-black/45' : 'text-white/40'}`}>Loading providers…</span>
-                      ))}
-                    {section === 'appearance' && (
-                      <>
-                        <SectionLabel isLight={isLight}>Theme</SectionLabel>
-                        <ThemePicker isLight={isLight} />
-                        <div className="h-2" />
-                        <AppIconPicker isLight={isLight} />
-                        <div className="h-2" />
-                        <FontPicker isLight={isLight} />
-                        <div className="h-2" />
-                        <WallpaperPicker wallpaper={wallpaper} isLight={isLight} columns={4} />
-                      </>
-                    )}
-                    {section === 'instructions' && <InstructionsSection isLight={isLight} />}
-                    {section === 'remote' && <RemoteAccessSection />}
-                  </motion.div>
-                </AnimatePresence>
+              <ScrollArea ref={scrollRef} smoothScroll={false} className="flex-1 min-h-0 px-7 pb-10">
+                <div
+                  key={section}
+                  className="flex flex-col gap-3 max-w-[560px]"
+                >
+                  {section === 'general' && <GeneralSettings isLight={isLight} />}
+                  {section === 'providers' &&
+                    (defaultModels.entries.length > 0 ? (
+                      <ProvidersSection defaultModels={defaultModels} claudeUpdate={claudeUpdate} isLight={isLight} />
+                    ) : (
+                      <span className={`text-[12.5px] ${isLight ? 'text-black/45' : 'text-white/40'}`}>Loading providers…</span>
+                    ))}
+                  {section === 'appearance' && (
+                    <>
+                      <SectionLabel isLight={isLight}>Theme</SectionLabel>
+                      <ThemePicker isLight={isLight} />
+                      <div className="h-2" />
+                      <AppIconPicker isLight={isLight} />
+                      <div className="h-2" />
+                      <FontPicker isLight={isLight} />
+                      <div className="h-2" />
+                      <WallpaperPicker wallpaper={wallpaper} isLight={isLight} columns={4} />
+                    </>
+                  )}
+                  {section === 'instructions' && <InstructionsSection isLight={isLight} />}
+                  {section === 'remote' && <RemoteAccessSection />}
+                </div>
               </ScrollArea>
             </div>
           </motion.div>

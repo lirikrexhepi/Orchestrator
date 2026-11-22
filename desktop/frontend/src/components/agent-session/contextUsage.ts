@@ -21,8 +21,23 @@ export interface ContextUsage {
 export function nextContext(prev: ContextUsage | undefined, event: RuntimeEvent): ContextUsage | undefined {
   const usage = event.usage;
   if (!usage) return prev;
-  const tokens = usage.contextTokens && usage.contextTokens > 0 ? usage.contextTokens : (prev?.tokens ?? 0);
   const window = usage.contextWindow && usage.contextWindow > 0 ? usage.contextWindow : prev?.window;
+  const rawContextTokens = usage.contextTokens ?? 0;
+  const inputPlusCache =
+    Math.max(0, usage.inputTokens ?? 0) +
+    Math.max(0, usage.cacheReadTokens ?? 0) +
+    Math.max(0, usage.cacheWriteTokens ?? 0);
+  const withinWindow = (n: number) => n > 0 && (!window || window <= 0 || n <= window);
+  const effectiveContextTokens = withinWindow(rawContextTokens)
+    ? rawContextTokens
+    : withinWindow(inputPlusCache) && (!prev?.tokens || prev.tokens <= 0)
+      ? inputPlusCache
+      : rawContextTokens > 0 && (!prev?.tokens || prev.tokens <= 0)
+        ? rawContextTokens
+        : 0;
+  const prevValidTokens =
+    prev?.tokens && withinWindow(prev.tokens) ? prev.tokens : (prev?.tokens ?? 0);
+  const tokens = effectiveContextTokens > 0 ? effectiveContextTokens : prevValidTokens;
 
   const key = event.turnId || event.itemId || '_default';
   const turns = prev?._turns ? { ...prev._turns } : {};

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"composer/internal/domain"
 )
@@ -261,5 +262,50 @@ func TestParseFileClosesLaunchedAgentWithoutNotificationAtLastActivity(t *testin
 	}
 	if launchAt == 0 || endAt-launchAt < 10*60*1000 {
 		t.Fatalf("launch=%d end=%d", launchAt, endAt)
+	}
+}
+
+func TestListPageSkipsSubagentsAndHandlesSparseFolder(t *testing.T) {
+	config := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", config)
+	pageMu.Lock()
+	pageFiles = nil
+	pageBuiltAt = time.Time{}
+	pageMu.Unlock()
+
+	proj := filepath.Join(config, "projects", "proj-sparse")
+	subDir := filepath.Join(proj, "sess-1", "subagents")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Subagent transcript inside subagents/ should not be indexed as top-level chat.
+	subPayload := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"subagent work"}]},"timestamp":"2026-09-20T10:00:05.000Z","sessionId":"sub-1"}` + "\n"
+	if err := os.WriteFile(filepath.Join(subDir, "agent-sub1.jsonl"), []byte(subPayload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Empty/non-human files in sparse project folder.
+	for i := 0; i < 3; i++ {
+		p := filepath.Join(proj, "empty-"+string(rune('a'+i))+".jsonl")
+		if err := os.WriteFile(p, []byte(`{"type":"system","timestamp":"2026-09-20T10:00:02.000Z"}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	realPayload := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Real chat question"}]},"timestamp":"2026-09-20T09:00:00.000Z","sessionId":"sess-real"}` + "\n"
+	realPath := filepath.Join(proj, "sess-real.jsonl")
+	if err := os.WriteFile(realPath, []byte(realPayload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	older := time.Now().Add(-10 * time.Minute)
+	_ = os.Chtimes(realPath, older, older)
+
+	page, err := ListPage(0, 5)
+	if err != nil {
+		t.Fatalf("ListPage: %v", err)
+	}
+	if len(page.Sessions) != 1 || page.Sessions[0].ID != "sess-real" {
+		t.Fatalf("expected only sess-real, got %+v", page.Sessions)
+	}
+	if page.Next != -1 {
+		t.Fatalf("expected Next=-1 when all files scanned, got %d", page.Next)
 	}
 }

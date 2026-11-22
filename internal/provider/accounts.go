@@ -82,8 +82,21 @@ func (s *Accounts) List(kind domain.DriverKind) []domain.Account {
 	defer s.mu.Unlock()
 	entry := s.saved[kind]
 	out := make([]domain.Account, 0, len(entry.Accounts)+1)
-	out = append(out, domain.Account{ID: domain.DefaultAccountID, Name: defaultName(entry)})
-	out = append(out, entry.Accounts...)
+	defaultAcc := domain.Account{ID: domain.DefaultAccountID, Name: defaultName(entry)}
+	if kind == domain.DriverAntigravity {
+		defaultAcc.AuthMode = "keyring"
+	}
+	out = append(out, defaultAcc)
+	for _, acc := range entry.Accounts {
+		if kind == domain.DriverAntigravity && acc.AuthMode == "" {
+			if meta, err := ReadAccountMeta(acc.ConfigDir); err == nil && meta.AuthMode != "" {
+				acc.AuthMode = meta.AuthMode
+			} else {
+				acc.AuthMode = "keyring"
+			}
+		}
+		out = append(out, acc)
+	}
 	return out
 }
 
@@ -98,9 +111,16 @@ func (s *Accounts) Get(kind domain.DriverKind, id string) (domain.Account, bool)
 }
 
 func (s *Accounts) Add(kind domain.DriverKind, name string) (domain.Account, error) {
+	return s.AddWithMode(kind, name, "")
+}
+
+func (s *Accounts) AddWithMode(kind domain.DriverKind, name, authMode string) (domain.Account, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return domain.Account{}, ErrAccountName
+	}
+	if kind == domain.DriverAntigravity && authMode == "" {
+		authMode = "keyring"
 	}
 
 	s.mu.Lock()
@@ -114,6 +134,7 @@ func (s *Accounts) Add(kind domain.DriverKind, name string) (domain.Account, err
 		ID:        id,
 		Name:      name,
 		ConfigDir: filepath.Join(s.root, accountsDir, string(kind)+"-"+id),
+		AuthMode:  authMode,
 	}
 	entry.Accounts = append(entry.Accounts, account)
 	s.saved[kind] = entry
@@ -128,6 +149,28 @@ func (s *Accounts) Add(kind domain.DriverKind, name string) (domain.Account, err
 		return domain.Account{}, err
 	}
 	return account, nil
+}
+
+func (s *Accounts) SetAuthMode(kind domain.DriverKind, id, authMode string) error {
+	id = domain.NormalizeAccount(id)
+	s.mu.Lock()
+	entry := s.saved[kind]
+	found := false
+	for i := range entry.Accounts {
+		if entry.Accounts[i].ID == id {
+			entry.Accounts[i].AuthMode = authMode
+			found = true
+			break
+		}
+	}
+	if found {
+		s.saved[kind] = entry
+	}
+	s.mu.Unlock()
+	if !found {
+		return ErrAccountNotFound
+	}
+	return s.persist()
 }
 
 func (s *Accounts) Rename(kind domain.DriverKind, id, name string) error {
@@ -367,8 +410,17 @@ func (r *Registry) CopyDefaultSettings(kind domain.DriverKind, id string) ([]str
 }
 
 func AccountSettings(settings domain.ProviderSettings, account domain.Account, driver Driver) (domain.ProviderSettings, error) {
+	out := settings
+	if def, ok := settings.AccountDefaults[domain.NormalizeAccount(account.ID)]; ok {
+		if def.Model != "" {
+			out.Model = def.Model
+		}
+		if len(def.Options) > 0 {
+			out.Options = def.Options
+		}
+	}
 	if account.IsDefault() {
-		return settings, nil
+		return out, nil
 	}
 	accounts, ok := driver.(AccountDriver)
 	if !ok {
@@ -384,7 +436,6 @@ func AccountSettings(settings domain.ProviderSettings, account domain.Account, d
 		unset = append(unset, key)
 	}
 
-	out := settings
 	out.Env = Without(settings.Env, unset...)
 	for key, value := range overrides {
 		out.Env[key] = value
@@ -503,3 +554,35 @@ func copyFile(source, target string, mode os.FileMode) error {
 	}
 	return out.Close()
 }
+
+type AccountMeta struct {
+	ID       string            `json:"id"`
+	Name     string            `json:"name"`
+	AuthMode string            `json:"authMode,omitempty"`
+	APIKey   string            `json:"apiKey,omitempty"`
+	Env      map[string]string `json:"env,omitempty"`
+}
+
+func ReadAccountMeta(dir string) (AccountMeta, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "account.json"))
+	if err != nil {
+		return AccountMeta{}, err
+	}
+	var meta AccountMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return AccountMeta{}, err
+	}
+	return meta, nil
+}
+
+func WriteAccountMeta(dir string, meta AccountMeta) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "account.json"), data, 0o600)
+}
+

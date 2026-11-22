@@ -1,19 +1,26 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { BrowserClose, BrowserEndpoint, BrowserOpen } from '../../../wailsjs/go/main/App';
 import { browser } from '../../../wailsjs/go/models';
+import { CircleAlert, RefreshCw } from '../common/icons';
+
+export interface CdpBrowserAction {
+  back(): void;
+  forward(): void;
+  reload(): void;
+  navigate(url: string): void;
+  retry(): void;
+  captureScreenshot(): Promise<string | null>;
+}
 
 export interface CdpBrowserSurfaceProps {
   threadId?: string;
+  tabId?: string;
   initialUrl: string;
   paused?: boolean;
   isFocused?: boolean;
+  hideErrorOverlay?: boolean;
   externalNav?: { url: string; nonce: number };
-  actionRef?: React.MutableRefObject<{
-    back(): void;
-    forward(): void;
-    reload(): void;
-    navigate(url: string): void;
-  } | null>;
+  actionRef?: React.MutableRefObject<CdpBrowserAction | null>;
   onStateChange?: (state: {
     url: string;
     title: string;
@@ -25,11 +32,26 @@ export interface CdpBrowserSurfaceProps {
   className?: string;
 }
 
+const PREVENT_KEYS = new Set([
+  ' ',
+  'Spacebar',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'Tab',
+  'Backspace',
+  'Escape',
+  'Enter',
+]);
+
 export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
   threadId = '',
+  tabId = 'default',
   initialUrl,
   paused = false,
   isFocused = true,
+  hideErrorOverlay = false,
   externalNav,
   actionRef,
   onStateChange,
@@ -41,6 +63,29 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
   const wsRef = useRef<WebSocket | null>(null);
   const sessionRef = useRef<browser.SessionInfo | null>(null);
   const latestFrameSeq = useRef<number>(0);
+
+  const pendingResizeRef = useRef<{ width: number; height: number; dpr: number } | null>(null);
+  const pendingNavRef = useRef<string | null>(null);
+  const pendingCapturesRef = useRef<Map<string, (data: string | null) => void>>(new Map());
+  const captureSeqRef = useRef<number>(0);
+
+  const moveRafRef = useRef<number | null>(null);
+  const pendingMoveRef = useRef<{
+    x: number;
+    y: number;
+    buttons: number;
+    modifiers: number;
+  } | null>(null);
+
+  const wheelRafRef = useRef<number | null>(null);
+  const pendingWheelRef = useRef<{
+    x: number;
+    y: number;
+    deltaX: number;
+    deltaY: number;
+    modifiers: number;
+  } | null>(null);
+
   const tabStateRef = useRef<{
     width: number;
     height: number;
@@ -59,13 +104,107 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
     canGoForward: false,
   });
 
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const initialUrlRef = useRef(initialUrl);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
+  const isFocusedRef = useRef(isFocused);
+  isFocusedRef.current = isFocused;
 
-  const send = useCallback((msg: any) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(msg));
+  const onStateChangeRef = useRef(onStateChange);
+  onStateChangeRef.current = onStateChange;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [reconnectNonce, setReconnectNonce] = useState<number>(0);
+
+  const sessionThreadKey =
+    tabId && tabId !== 'default'
+      ? threadId
+        ? `${threadId}:${tabId}`
+        : `browser:${tabId}`
+      : threadId;
+
+  const send = useCallback((msg: Record<string, unknown>) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+      return;
     }
+    if (msg.type === 'resize') {
+      pendingResizeRef.current = {
+        width: Number(msg.width) || 1280,
+        height: Number(msg.height) || 800,
+        dpr: Number(msg.dpr) || 1,
+      };
+    } else if (msg.type === 'navigate' && typeof msg.url === 'string') {
+      pendingNavRef.current = msg.url;
+    }
+  }, []);
+
+  const captureFromCanvas = useCallback((): string | null => {
+    const canvas = canvasRef.current;
+    if (!canvas || canvas.width === 0 || canvas.height === 0) return null;
+    try {
+      return canvas.toDataURL('image/png');
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const captureScreenshot = useCallback((): Promise<string | null> => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return Promise.resolve(captureFromCanvas());
+    }
+    const requestId = `cap-${Date.now()}-${++captureSeqRef.current}`;
+    return new Promise<string | null>((resolve) => {
+      const timer = window.setTimeout(() => {
+        if (pendingCapturesRef.current.has(requestId)) {
+          pendingCapturesRef.current.delete(requestId);
+          resolve(captureFromCanvas());
+        }
+      }, 4500);
+
+      pendingCapturesRef.current.set(requestId, (data) => {
+        window.clearTimeout(timer);
+        if (data && data.length > 0) {
+          resolve(data.startsWith('data:') ? data : `data:image/png;base64,${data}`);
+        } else {
+          resolve(captureFromCanvas());
+        }
+      });
+
+      try {
+        ws.send(JSON.stringify({ type: 'capture', requestId }));
+      } catch {
+        pendingCapturesRef.current.delete(requestId);
+        window.clearTimeout(timer);
+        resolve(captureFromCanvas());
+      }
+    });
+  }, [captureFromCanvas]);
+
+  const retry = useCallback(() => {
+    setErrorMessage(null);
+    const activeUrl = tabStateRef.current.url;
+    if (activeUrl && activeUrl !== 'about:blank') {
+      initialUrlRef.current = activeUrl;
+    }
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch {
+        // Ignore close errors
+      }
+      wsRef.current = null;
+    }
+    if (sessionRef.current?.id) {
+      const oldId = sessionRef.current.id;
+      sessionRef.current = null;
+      void BrowserClose(oldId);
+    }
+    setReconnectNonce((n) => n + 1);
   }, []);
 
   // Expose action controls to parent component
@@ -75,7 +214,14 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
         back: () => send({ type: 'back' }),
         forward: () => send({ type: 'forward' }),
         reload: () => send({ type: 'reload' }),
-        navigate: (url: string) => send({ type: 'navigate', url }),
+        navigate: (url: string) => {
+          if (url && url !== 'about:blank') {
+            initialUrlRef.current = url;
+          }
+          send({ type: 'navigate', url });
+        },
+        retry,
+        captureScreenshot,
       };
     }
     return () => {
@@ -83,13 +229,16 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
         actionRef.current = null;
       }
     };
-  }, [actionRef, send]);
+  }, [actionRef, send, retry, captureScreenshot]);
 
   // Sync external navigation requests
   const lastNavNonce = useRef<number | undefined>(externalNav?.nonce);
   useEffect(() => {
     if (externalNav && externalNav.nonce !== lastNavNonce.current) {
       lastNavNonce.current = externalNav.nonce;
+      if (externalNav.url && externalNav.url !== 'about:blank') {
+        initialUrlRef.current = externalNav.url;
+      }
       send({ type: 'navigate', url: externalNav.url });
     }
   }, [externalNav, send]);
@@ -110,10 +259,12 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
         const rect = containerRef.current?.getBoundingClientRect();
         const w = Math.max(200, Math.round(rect?.width || 1280));
         const h = Math.max(160, Math.round(rect?.height || 800));
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const startUrl = initialUrlRef.current || 'about:blank';
 
         const [endpoint, session] = await Promise.all([
           BrowserEndpoint(),
-          BrowserOpen(threadId, initialUrl, w, h),
+          BrowserOpen(sessionThreadKey, startUrl, w, h),
         ]);
 
         if (unmounted) {
@@ -121,7 +272,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
           return;
         }
 
-        const activeUrl = (session.url && session.url !== 'about:blank') ? session.url : initialUrl;
+        const activeUrl = session.url && session.url !== 'about:blank' ? session.url : startUrl;
         createdSessionId = session.id;
         sessionRef.current = session;
         tabStateRef.current = {
@@ -134,15 +285,13 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
           canGoForward: session.canGoForward || false,
         };
 
-        if (onStateChange) {
-          onStateChange({
-            url: activeUrl,
-            title: session.title || '',
-            loading: session.loading || false,
-            canGoBack: session.canGoBack || false,
-            canGoForward: session.canGoForward || false,
-          });
-        }
+        onStateChangeRef.current?.({
+          url: activeUrl,
+          title: session.title || '',
+          loading: session.loading || false,
+          canGoBack: session.canGoBack || false,
+          canGoForward: session.canGoForward || false,
+        });
 
         const wsUrl = `${endpoint.wsUrl}?id=${encodeURIComponent(session.id)}&token=${encodeURIComponent(endpoint.token)}`;
         ws = new WebSocket(wsUrl);
@@ -150,11 +299,34 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
         wsRef.current = ws;
 
         ws.onopen = () => {
-          if (unmounted) return;
-          setIsConnected(true);
+          if (unmounted || !ws) return;
           setErrorMessage(null);
-          if (paused) {
-            ws?.send(JSON.stringify({ type: 'pause', paused: true }));
+
+          // Flush queued resize (or apply initial HiDPI DPR sizing)
+          const pendingResize = pendingResizeRef.current;
+          pendingResizeRef.current = null;
+          if (pendingResize) {
+            tabStateRef.current.width = pendingResize.width;
+            tabStateRef.current.height = pendingResize.height;
+            ws.send(JSON.stringify({ type: 'resize', ...pendingResize }));
+          } else {
+            const curRect = containerRef.current?.getBoundingClientRect();
+            const curW = Math.max(200, Math.round(curRect?.width || w));
+            const curH = Math.max(160, Math.round(curRect?.height || h));
+            tabStateRef.current.width = curW;
+            tabStateRef.current.height = curH;
+            ws.send(JSON.stringify({ type: 'resize', width: curW, height: curH, dpr }));
+          }
+
+          // Flush queued navigation
+          const pendingNav = pendingNavRef.current;
+          pendingNavRef.current = null;
+          if (pendingNav) {
+            ws.send(JSON.stringify({ type: 'navigate', url: pendingNav }));
+          }
+
+          if (pausedRef.current) {
+            ws.send(JSON.stringify({ type: 'pause', paused: true }));
           }
         };
 
@@ -189,13 +361,16 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
             return;
           }
 
-          // JSON state or error frame
+          // JSON state, screenshot, or error frame
           if (typeof event.data === 'string') {
             try {
               const payload = JSON.parse(event.data);
               if (payload.type === 'state' && payload.state) {
                 const s = payload.state;
-                const stateUrl = (s.url && s.url !== 'about:blank') ? s.url : (tabStateRef.current.url || initialUrl);
+                const stateUrl =
+                  s.url && s.url !== 'about:blank'
+                    ? s.url
+                    : tabStateRef.current.url || initialUrlRef.current;
                 tabStateRef.current = {
                   width: s.width || tabStateRef.current.width,
                   height: s.height || tabStateRef.current.height,
@@ -205,17 +380,23 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
                   canGoBack: s.canGoBack ?? false,
                   canGoForward: s.canGoForward ?? false,
                 };
-                onStateChange?.({
+                onStateChangeRef.current?.({
                   url: stateUrl,
                   title: s.title || '',
                   loading: s.loading ?? false,
                   canGoBack: s.canGoBack ?? false,
                   canGoForward: s.canGoForward ?? false,
                 });
+              } else if (payload.type === 'screenshot' && payload.requestId) {
+                const resolver = pendingCapturesRef.current.get(payload.requestId);
+                if (resolver) {
+                  pendingCapturesRef.current.delete(payload.requestId);
+                  resolver(typeof payload.data === 'string' ? payload.data : null);
+                }
               } else if (payload.type === 'error') {
                 const msg = payload.message || 'Browser session error';
                 setErrorMessage(msg);
-                onError?.(msg);
+                onErrorRef.current?.(msg);
               }
             } catch {
               // JSON parse error
@@ -227,18 +408,32 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
           if (unmounted) return;
           const msg = 'WebSocket connection to browser stream failed';
           setErrorMessage(msg);
-          onError?.(msg);
+          onErrorRef.current?.(msg);
         };
 
         ws.onclose = () => {
           if (unmounted) return;
-          setIsConnected(false);
+          for (const [, resolver] of pendingCapturesRef.current.entries()) {
+            resolver(null);
+          }
+          pendingCapturesRef.current.clear();
+          if (tabStateRef.current.loading) {
+            tabStateRef.current.loading = false;
+            onStateChangeRef.current?.({
+              url: tabStateRef.current.url,
+              title: tabStateRef.current.title,
+              loading: false,
+              canGoBack: tabStateRef.current.canGoBack,
+              canGoForward: tabStateRef.current.canGoForward,
+            });
+          }
         };
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (unmounted) return;
-        const msg = err?.message || String(err) || 'Failed to start headless Chromium';
+        const msg =
+          err instanceof Error ? err.message : String(err) || 'Failed to start headless Chromium';
         setErrorMessage(msg);
-        onError?.(msg);
+        onErrorRef.current?.(msg);
       }
     }
 
@@ -246,15 +441,24 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
 
     return () => {
       unmounted = true;
+      for (const [, resolver] of pendingCapturesRef.current.entries()) {
+        resolver(null);
+      }
+      pendingCapturesRef.current.clear();
       if (ws) {
         ws.close();
-        wsRef.current = null;
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+        }
       }
       if (createdSessionId) {
+        if (sessionRef.current?.id === createdSessionId) {
+          sessionRef.current = null;
+        }
         void BrowserClose(createdSessionId);
       }
     };
-  }, [threadId, initialUrl, onStateChange, onError]);
+  }, [sessionThreadKey, reconnectNonce]);
 
   // Debounced ResizeObserver to track container dimension changes
   useEffect(() => {
@@ -265,7 +469,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
-        if (width < 50 || height < 50) return;
+        if (width < 50 || height < 50) continue;
 
         if (resizeTimer !== null) {
           window.clearTimeout(resizeTimer);
@@ -293,22 +497,57 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
     };
   }, [send]);
 
-  // Pointer event helpers
-  const getCoordinates = (e: React.PointerEvent | React.WheelEvent) => {
+  // Cancel any pending rAF batches on unmount
+  useEffect(() => {
+    return () => {
+      if (moveRafRef.current !== null) cancelAnimationFrame(moveRafRef.current);
+      if (wheelRafRef.current !== null) cancelAnimationFrame(wheelRafRef.current);
+    };
+  }, []);
+
+  // Compute exact rendered image coordinates inside object-contain canvas
+  const getCoordinates = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
     const emulatedWidth = tabStateRef.current.width || canvas.width || 1280;
     const emulatedHeight = tabStateRef.current.height || canvas.height || 800;
-    const scaleX = emulatedWidth / (rect.width || 1);
-    const scaleY = emulatedHeight / (rect.height || 1);
-    return {
-      x: Math.max(0, Math.min(emulatedWidth, (e.clientX - rect.left) * scaleX)),
-      y: Math.max(0, Math.min(emulatedHeight, (e.clientY - rect.top) * scaleY)),
-    };
-  };
 
-  const getModifiers = (e: React.MouseEvent | React.KeyboardEvent) => {
+    const boxW = rect.width || 1;
+    const boxH = rect.height || 1;
+    const srcW = canvas.width || emulatedWidth;
+    const srcH = canvas.height || emulatedHeight;
+    const srcAspect = srcW / (srcH || 1);
+    const boxAspect = boxW / boxH;
+
+    let drawW = boxW;
+    let drawH = boxH;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (boxAspect > srcAspect) {
+      drawH = boxH;
+      drawW = boxH * srcAspect;
+      offsetX = (boxW - drawW) / 2;
+    } else {
+      drawW = boxW;
+      drawH = boxW / srcAspect;
+      offsetY = (boxH - drawH) / 2;
+    }
+
+    const relX = (clientX - rect.left - offsetX) / (drawW || 1);
+    const relY = (clientY - rect.top - offsetY) / (drawH || 1);
+    return {
+      x: Math.max(0, Math.min(emulatedWidth, relX * emulatedWidth)),
+      y: Math.max(0, Math.min(emulatedHeight, relY * emulatedHeight)),
+    };
+  }, []);
+
+  const getModifiers = (e: {
+    altKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    shiftKey: boolean;
+  }) => {
     let modifiers = 0;
     if (e.altKey) modifiers |= 1;
     if (e.ctrlKey) modifiers |= 2;
@@ -317,16 +556,104 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
     return modifiers;
   };
 
+  // Non-passive native wheel listener to block outer scroll & rAF-batch deltaMode-scaled wheel events
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const onWheel = (e: WheelEvent) => {
+      if (!isFocusedRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const { x, y } = getCoordinates(e.clientX, e.clientY);
+      let scale = 1;
+      if (e.deltaMode === 1) {
+        scale = 32;
+      } else if (e.deltaMode === 2) {
+        scale = tabStateRef.current.height || container.clientHeight || 800;
+      }
+
+      const dx = e.deltaX * scale;
+      const dy = e.deltaY * scale;
+      const modifiers = getModifiers(e);
+
+      if (pendingWheelRef.current) {
+        pendingWheelRef.current.x = x;
+        pendingWheelRef.current.y = y;
+        pendingWheelRef.current.deltaX += dx;
+        pendingWheelRef.current.deltaY += dy;
+        pendingWheelRef.current.modifiers = modifiers;
+      } else {
+        pendingWheelRef.current = { x, y, deltaX: dx, deltaY: dy, modifiers };
+      }
+
+      if (wheelRafRef.current === null) {
+        wheelRafRef.current = requestAnimationFrame(() => {
+          wheelRafRef.current = null;
+          const w = pendingWheelRef.current;
+          pendingWheelRef.current = null;
+          if (!w) return;
+          send({
+            type: 'mouse',
+            mouseType: 'mouseWheel',
+            x: w.x,
+            y: w.y,
+            deltaX: w.deltaX,
+            deltaY: w.deltaY,
+            modifiers: w.modifiers,
+          });
+        });
+      }
+    };
+
+    container.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      container.removeEventListener('wheel', onWheel);
+    };
+  }, [getCoordinates, send]);
+
   const mapButton = (b: number): string => {
     if (b === 0) return 'left';
     if (b === 1) return 'middle';
     if (b === 2) return 'right';
+    if (b === 3) return '3';
+    if (b === 4) return '4';
     return 'none';
   };
 
-  const handlePointerDown = (e: React.PointerEvent) => {
+  const flushPendingMove = () => {
+    if (moveRafRef.current !== null) {
+      cancelAnimationFrame(moveRafRef.current);
+      moveRafRef.current = null;
+    }
+    const m = pendingMoveRef.current;
+    pendingMoveRef.current = null;
+    if (m) {
+      send({
+        type: 'mouse',
+        mouseType: 'mouseMoved',
+        x: m.x,
+        y: m.y,
+        button: 'none',
+        buttons: m.buttons,
+        modifiers: m.modifiers,
+      });
+    }
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isFocused) return;
-    const { x, y } = getCoordinates(e);
+    if (e.button === 3 || e.button === 4) {
+      e.preventDefault();
+    }
+    flushPendingMove();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore if synthetic event cannot capture pointer
+    }
+    const { x, y } = getCoordinates(e.clientX, e.clientY);
     canvasRef.current?.focus();
     send({
       type: 'mouse',
@@ -340,9 +667,20 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
     });
   };
 
-  const handlePointerUp = (e: React.PointerEvent) => {
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isFocused) return;
-    const { x, y } = getCoordinates(e);
+    if (e.button === 3 || e.button === 4) {
+      e.preventDefault();
+    }
+    flushPendingMove();
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore release errors
+    }
+    const { x, y } = getCoordinates(e.clientX, e.clientY);
     send({
       type: 'mouse',
       mouseType: 'mouseReleased',
@@ -355,50 +693,66 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
     });
   };
 
-  const handlePointerMove = (e: React.PointerEvent) => {
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isFocused) return;
-    const { x, y } = getCoordinates(e);
-    send({
-      type: 'mouse',
-      mouseType: 'mouseMoved',
+    const { x, y } = getCoordinates(e.clientX, e.clientY);
+    pendingMoveRef.current = {
       x,
       y,
-      button: 'none',
       buttons: e.buttons,
       modifiers: getModifiers(e),
-    });
-  };
-
-  const handleWheel = (e: React.WheelEvent) => {
-    if (!isFocused) return;
-    const { x, y } = getCoordinates(e);
-    send({
-      type: 'mouse',
-      mouseType: 'mouseWheel',
-      x,
-      y,
-      deltaX: e.deltaX,
-      deltaY: e.deltaY,
-      modifiers: getModifiers(e),
-    });
+    };
+    if (moveRafRef.current === null) {
+      moveRafRef.current = requestAnimationFrame(() => {
+        moveRafRef.current = null;
+        const m = pendingMoveRef.current;
+        pendingMoveRef.current = null;
+        if (!m) return;
+        send({
+          type: 'mouse',
+          mouseType: 'mouseMoved',
+          x: m.x,
+          y: m.y,
+          button: 'none',
+          buttons: m.buttons,
+          modifiers: m.modifiers,
+        });
+      });
+    }
   };
 
   // Keyboard handlers
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!isFocused) return;
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
 
     // Handle paste shortcut (Ctrl+V / Cmd+V)
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
       return; // Handled by handlePaste
     }
 
+    if (PREVENT_KEYS.has(e.key) || PREVENT_KEYS.has(e.code)) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    const hasShortcutMod = e.ctrlKey || e.metaKey || e.altKey;
+    const text =
+      e.key === 'Enter'
+        ? '\r'
+        : hasShortcutMod
+          ? ''
+          : e.key.length === 1
+            ? e.key
+            : '';
+
     send({
       type: 'key',
       keyType: 'keyDown',
       key: e.key,
       code: e.code,
-      text: e.key.length === 1 ? e.key : '',
-      unmodifiedText: e.key.length === 1 ? e.key : '',
+      text,
+      unmodifiedText: text,
       windowsVirtualKeyCode: e.keyCode,
       nativeVirtualKeyCode: e.keyCode,
       modifiers: getModifiers(e),
@@ -407,6 +761,13 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
 
   const handleKeyUp = (e: React.KeyboardEvent) => {
     if (!isFocused) return;
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+
+    if (PREVENT_KEYS.has(e.key) || PREVENT_KEYS.has(e.code)) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
     send({
       type: 'key',
       keyType: 'keyUp',
@@ -432,7 +793,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
   return (
     <div
       ref={containerRef}
-      className={`relative w-full h-full min-h-0 overflow-hidden bg-black flex items-center justify-center ${className}`}
+      className={`relative w-full h-full min-h-0 overflow-hidden bg-[#0A0A0A] flex items-center justify-center ${className}`}
     >
       <canvas
         ref={canvasRef}
@@ -440,7 +801,6 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
         onPointerMove={handlePointerMove}
-        onWheel={handleWheel}
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
         onPaste={handlePaste}
@@ -454,10 +814,10 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
         }}
       />
 
-      {errorMessage && (
-        <div className="absolute inset-0 z-30 bg-[#16181d] flex flex-col items-center justify-center text-center p-6">
+      {!hideErrorOverlay && errorMessage && (
+        <div className="absolute inset-0 z-30 bg-[#0A0A0A] flex flex-col items-center justify-center text-center p-6">
           <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-3 text-red-400">
-            <span className="material-symbols-outlined text-[20px]">error_outline</span>
+            <CircleAlert size={20} className="text-red-400" />
           </div>
           <h4 className="text-[13.5px] font-semibold text-white/90 mb-1">
             Browser Unavailable
@@ -465,6 +825,14 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
           <p className="text-[12px] text-white/50 max-w-sm mb-4 leading-relaxed font-mono">
             {errorMessage}
           </p>
+          <button
+            type="button"
+            onClick={retry}
+            className="px-3.5 py-1.5 rounded-[8px] bg-white/10 hover:bg-white/18 text-white/90 text-[12px] font-medium flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer border border-white/10"
+          >
+            <RefreshCw size={13} />
+            <span>Retry</span>
+          </button>
         </div>
       )}
     </div>

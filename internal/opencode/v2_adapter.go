@@ -3,10 +3,10 @@ package opencode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,20 +24,23 @@ type V2Adapter struct {
 	emit     provider.Emitter
 	client   *http.Client
 
-	starting sync.Mutex
-	mu       sync.RWMutex
-	server   *server
-	api      *httpClient
-	stream   context.CancelFunc
+	starting    sync.Mutex
+	mu          sync.RWMutex
+	server      *server
+	api         *httpClient
+	stream      context.CancelFunc
+	mcpEndpoint string
+	mcpAuth     string
 
 	threads   map[string]*v2Thread
 	bySession map[string]*v2Thread
 	pending   map[string]string
 	forms     map[string]*pendingForm
 
-	limitsMu sync.Mutex
-	limits   map[string]int64
-	limitsAt time.Time
+	limitsMu       sync.Mutex
+	limits         map[string]int64
+	limitsAt       time.Time
+	limitsFetching chan struct{}
 }
 
 type v2Thread struct {
@@ -45,15 +48,16 @@ type v2Thread struct {
 	sessionID  string
 	permission domain.PermissionMode
 
-	mu       sync.Mutex
-	model    string
-	options  domain.ModelOptions
-	applied  string
-	turnID   string
-	stepRef  *v2ModelRef
-	toolName map[string]string
-	toolSeen map[string]bool
-	itemText map[string]string
+	mu        sync.Mutex
+	model     string
+	options   domain.ModelOptions
+	applied   string
+	turnID    string
+	stepRef   *v2ModelRef
+	turnUsage domain.Usage
+	toolName  map[string]string
+	toolSeen  map[string]bool
+	itemText  map[string]string
 }
 
 type pendingForm struct {
@@ -94,6 +98,7 @@ func (a *V2Adapter) liveAPI() *httpClient {
 				a.stream()
 			}
 			a.server, a.api, a.stream = nil, nil, nil
+			a.mcpEndpoint, a.mcpAuth = "", ""
 			return nil
 		default:
 		}
@@ -156,18 +161,34 @@ func (a *V2Adapter) onServerError(sessionID, errMsg string) {
 
 func (a *V2Adapter) onServerExit(tail string) {
 	a.mu.Lock()
+	stream := a.stream
 	a.server = nil
 	a.api = nil
-	var affected []*v2Thread
+	a.stream = nil
+	a.mcpEndpoint = ""
+	a.mcpAuth = ""
+	affected := make([]*v2Thread, 0, len(a.threads))
 	for _, t := range a.threads {
 		affected = append(affected, t)
 	}
+	a.threads = make(map[string]*v2Thread)
+	a.bySession = make(map[string]*v2Thread)
+	a.pending = make(map[string]string)
+	a.forms = make(map[string]*pendingForm)
 	a.mu.Unlock()
+
+	if stream != nil {
+		stream()
+	}
 
 	for _, t := range affected {
 		t.mu.Lock()
 		turnID := t.turnID
 		t.turnID = ""
+		t.turnUsage = domain.Usage{}
+		t.toolName = make(map[string]string)
+		t.toolSeen = make(map[string]bool)
+		t.itemText = make(map[string]string)
 		t.mu.Unlock()
 
 		if turnID != "" {
@@ -181,7 +202,82 @@ func (a *V2Adapter) onServerExit(tail string) {
 				Driver: domain.DriverOpenCode, Error: errMsg,
 			})
 		}
+		a.emit.Emit(domain.RuntimeEvent{
+			Kind: domain.EventSessionStopped, ThreadID: t.threadID, Driver: domain.DriverOpenCode,
+		})
 	}
+}
+
+func (a *V2Adapter) releaseUnusedServer() {
+	a.mu.Lock()
+	if len(a.threads) > 0 || a.server == nil {
+		a.mu.Unlock()
+		return
+	}
+	srv, stream := a.server, a.stream
+	a.server, a.api, a.stream = nil, nil, nil
+	a.mcpEndpoint, a.mcpAuth = "", ""
+	a.mu.Unlock()
+
+	if stream != nil {
+		stream()
+	}
+	if srv != nil {
+		srv.stop()
+	}
+}
+
+func (a *V2Adapter) ensureMCP(ctx context.Context, api *httpClient, mcpCfg *domain.MCPConfig) error {
+	if mcpCfg == nil || mcpCfg.Endpoint == "" {
+		return nil
+	}
+
+	a.mu.RLock()
+	same := a.mcpEndpoint == mcpCfg.Endpoint && a.mcpAuth == mcpCfg.AuthHeader
+	a.mu.RUnlock()
+	if same {
+		return nil
+	}
+
+	var headers map[string]string
+	if mcpCfg.AuthHeader != "" {
+		headers = map[string]string{
+			"Authorization": mcpCfg.AuthHeader,
+		}
+	}
+
+	name := strings.TrimSpace(mcpCfg.ServerName)
+	if name == "" {
+		name = "orchestrator"
+	}
+
+	req := AddMcpRequest{
+		Name: name,
+		Config: McpRemoteConfig{
+			Type:    "remote",
+			URL:     mcpCfg.Endpoint,
+			Enabled: true,
+			Headers: headers,
+			OAuth:   false,
+		},
+	}
+
+	if err := api.do(ctx, http.MethodPost, "/api/mcp", req, nil); err != nil {
+		if !strings.Contains(err.Error(), "404") {
+			return err
+		}
+		if fallbackErr := api.do(ctx, http.MethodPost, "/mcp", req, nil); fallbackErr != nil {
+			return fallbackErr
+		}
+	}
+
+	a.mu.Lock()
+	a.mcpEndpoint = mcpCfg.Endpoint
+	a.mcpAuth = mcpCfg.AuthHeader
+	a.mu.Unlock()
+
+	logger.Infof("OpenCode", "Configured v2 loopback MCP server at %s", mcpCfg.Endpoint)
+	return nil
 }
 
 func (a *V2Adapter) streamEvents(ctx context.Context, api *httpClient) {
@@ -358,6 +454,7 @@ func (a *V2Adapter) reconcileThreads(api *httpClient) {
 			continue
 		}
 		t.turnID = ""
+		t.turnUsage = domain.Usage{}
 		t.toolName = make(map[string]string)
 		t.toolSeen = make(map[string]bool)
 		t.itemText = make(map[string]string)
@@ -414,9 +511,9 @@ func modelKey(model, variant string) string {
 }
 
 func (a *V2Adapter) StartSession(ctx context.Context, in domain.SessionStartInput) (domain.Session, error) {
-	cwd := in.Cwd
+	cwd := strings.TrimSpace(in.Cwd)
 	if cwd == "" {
-		cwd, _ = os.Getwd()
+		return domain.Session{}, errors.New("working directory is required")
 	}
 	cwd = filepath.Clean(cwd)
 	in.Cwd = cwd
@@ -425,6 +522,14 @@ func (a *V2Adapter) StartSession(ctx context.Context, in domain.SessionStartInpu
 	if err != nil {
 		return domain.Session{}, err
 	}
+
+	if in.MCP != nil && in.MCP.Endpoint != "" && !in.PlanOnly {
+		if err := a.ensureMCP(ctx, api, in.MCP); err != nil {
+			a.releaseUnusedServer()
+			return domain.Session{}, fmt.Errorf("configure opencode mcp: %w", err)
+		}
+	}
+	go a.ensureLimits(api)
 
 	model := in.Model
 	if model == "" {
@@ -445,24 +550,31 @@ func (a *V2Adapter) StartSession(ctx context.Context, in domain.SessionStartInpu
 
 	if in.Resume != "" {
 		var existing v2Envelope[v2Session]
-		if err := api.do(ctx, http.MethodGet, "/api/session/"+url.PathEscape(in.Resume), nil, &existing); err == nil && existing.Data.ID != "" {
-			t.sessionID = existing.Data.ID
-			if in.Fork {
-				var forked v2Envelope[v2Session]
-				if err := api.do(ctx, http.MethodPost, "/api/session/"+url.PathEscape(t.sessionID)+"/fork", map[string]any{}, &forked); err == nil && forked.Data.ID != "" {
-					t.sessionID = forked.Data.ID
-				} else if err != nil {
-					logger.Errorf("OpenCode", "fork of %s failed: %v", t.sessionID, err)
-				}
+		if err := api.do(ctx, http.MethodGet, "/api/session/"+url.PathEscape(in.Resume), nil, &existing); err != nil {
+			a.releaseUnusedServer()
+			return domain.Session{}, fmt.Errorf("resume opencode v2 session %s: %w", in.Resume, err)
+		}
+		if existing.Data.ID == "" {
+			a.releaseUnusedServer()
+			return domain.Session{}, fmt.Errorf("resume opencode v2 session %s: session not found", in.Resume)
+		}
+		t.sessionID = existing.Data.ID
+		if in.Fork {
+			var forked v2Envelope[v2Session]
+			if err := api.do(ctx, http.MethodPost, "/api/session/"+url.PathEscape(t.sessionID)+"/fork", map[string]any{}, &forked); err != nil {
+				a.releaseUnusedServer()
+				return domain.Session{}, fmt.Errorf("fork opencode v2 session %s: %w", t.sessionID, err)
 			}
-			if len(rules) > 0 {
-				if err := api.do(ctx, http.MethodPatch, "/api/session/"+url.PathEscape(t.sessionID), map[string]any{"permissions": rules}, nil); err != nil {
-					logger.Errorf("OpenCode", "permission update for %s failed: %v", t.sessionID, err)
-				}
+			if forked.Data.ID != "" {
+				t.sessionID = forked.Data.ID
 			}
 		}
-	}
-	if t.sessionID == "" {
+		if len(rules) > 0 {
+			if err := api.do(ctx, http.MethodPatch, "/api/session/"+url.PathEscape(t.sessionID), map[string]any{"permissions": rules}, nil); err != nil {
+				logger.Errorf("OpenCode", "permission update for %s failed: %v", t.sessionID, err)
+			}
+		}
+	} else {
 		request := v2SessionCreate{
 			Title:       in.ThreadID,
 			Model:       v2ModelRefFor(model, variant),
@@ -474,6 +586,7 @@ func (a *V2Adapter) StartSession(ctx context.Context, in domain.SessionStartInpu
 		}
 		var created v2Envelope[v2Session]
 		if err := api.do(ctx, http.MethodPost, "/api/session", request, &created); err != nil {
+			a.releaseUnusedServer()
 			return domain.Session{}, err
 		}
 		t.sessionID = created.Data.ID
@@ -557,6 +670,7 @@ func (a *V2Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error
 
 	t.mu.Lock()
 	t.turnID = in.TurnID
+	t.turnUsage = domain.Usage{}
 	t.mu.Unlock()
 	a.emit.Emit(domain.RuntimeEvent{Kind: domain.EventTurnStarted, ThreadID: in.ThreadID, TurnID: in.TurnID, Driver: domain.DriverOpenCode})
 
@@ -564,6 +678,7 @@ func (a *V2Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error
 	if err := api.do(ctx, http.MethodPost, "/api/session/"+url.PathEscape(t.sessionID)+"/prompt", prompt, nil); err != nil {
 		t.mu.Lock()
 		t.turnID = ""
+		t.turnUsage = domain.Usage{}
 		t.mu.Unlock()
 		a.emit.Emit(domain.RuntimeEvent{
 			Kind: domain.EventTurnFailed, ThreadID: in.ThreadID, TurnID: in.TurnID,
@@ -583,6 +698,7 @@ func (a *V2Adapter) InterruptTurn(ctx context.Context, threadID string) error {
 	t.mu.Lock()
 	turnID := t.turnID
 	t.turnID = ""
+	t.turnUsage = domain.Usage{}
 	t.mu.Unlock()
 	if turnID != "" {
 		a.emit.Emit(domain.RuntimeEvent{
@@ -653,7 +769,8 @@ func (a *V2Adapter) RespondToQuestion(ctx context.Context, threadID, requestID s
 
 	a.emit.Emit(domain.RuntimeEvent{
 		Kind: domain.EventQuestionAnswered, ThreadID: threadID, Driver: domain.DriverOpenCode,
-		Text: strings.Join(answers, " / "),
+		Text:     strings.Join(answers, " / "),
+		Question: &domain.QuestionRequest{RequestID: requestID},
 	})
 	return nil
 }
@@ -671,6 +788,7 @@ func (a *V2Adapter) StopSession(ctx context.Context, threadID string) error {
 	if len(a.threads) == 0 && a.server != nil {
 		idle, stream = a.server, a.stream
 		a.server, a.api, a.stream = nil, nil, nil
+		a.mcpEndpoint, a.mcpAuth = "", ""
 	}
 	a.mu.Unlock()
 	if t == nil {
@@ -697,6 +815,7 @@ func (a *V2Adapter) StopAll(ctx context.Context) error {
 	a.mu.Lock()
 	srv, stream := a.server, a.stream
 	a.server, a.api, a.stream = nil, nil, nil
+	a.mcpEndpoint, a.mcpAuth = "", ""
 	a.threads = make(map[string]*v2Thread)
 	a.bySession = make(map[string]*v2Thread)
 	a.pending = make(map[string]string)
@@ -748,21 +867,66 @@ func (a *V2Adapter) contextLimit(ref *v2ModelRef) int64 {
 	}
 	key := ref.ProviderID + "/" + ref.ID
 	a.limitsMu.Lock()
-	defer a.limitsMu.Unlock()
 	if limit, ok := a.limits[key]; ok {
+		a.limitsMu.Unlock()
 		return limit
 	}
-	if time.Since(a.limitsAt) < limitRefetchAfter {
-		return 0
+	wait := a.limitsFetching
+	if wait == nil {
+		if time.Since(a.limitsAt) < limitRefetchAfter {
+			a.limitsMu.Unlock()
+			return 0
+		}
+		a.mu.RLock()
+		api := a.api
+		a.mu.RUnlock()
+		if api == nil {
+			a.limitsMu.Unlock()
+			return 0
+		}
+		wait = a.startLimitsFetchLocked(api)
 	}
+	a.limitsMu.Unlock()
+
+	select {
+	case <-wait:
+	case <-time.After(2 * time.Second):
+	}
+
+	a.limitsMu.Lock()
+	limit := a.limits[key]
+	a.limitsMu.Unlock()
+	return limit
+}
+
+func (a *V2Adapter) ensureLimits(api *httpClient) {
+	if api == nil {
+		return
+	}
+	a.limitsMu.Lock()
+	if len(a.limits) > 0 || a.limitsFetching != nil || time.Since(a.limitsAt) < limitRefetchAfter {
+		a.limitsMu.Unlock()
+		return
+	}
+	wait := a.startLimitsFetchLocked(api)
+	a.limitsMu.Unlock()
+	<-wait
+}
+
+func (a *V2Adapter) startLimitsFetchLocked(api *httpClient) chan struct{} {
 	a.limitsAt = time.Now()
-	a.mu.RLock()
-	api := a.api
-	a.mu.RUnlock()
-	if api != nil {
-		go a.fetchLimits(api)
-	}
-	return 0
+	done := make(chan struct{})
+	a.limitsFetching = done
+	go func() {
+		defer close(done)
+		a.fetchLimits(api)
+		a.limitsMu.Lock()
+		if a.limitsFetching == done {
+			a.limitsFetching = nil
+		}
+		a.limitsMu.Unlock()
+	}()
+	return done
 }
 
 func (a *V2Adapter) fetchLimits(api *httpClient) {

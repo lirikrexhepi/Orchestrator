@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { AIModel, CLIProvider, ModelSettings, ThinkingEffort, ThinkingMode } from './types';
 import { DEFAULT_MODELS, DEFAULT_PROVIDERS, toModel, toProvider } from './orchestratorData';
-import { ListProviders } from '../../../wailsjs/go/main/App';
+import { GetAccountModels, ListProviders } from '../../../wailsjs/go/main/App';
+import { domain } from '../../../wailsjs/go/models';
 
 export interface FocusedSession {
   threadId: string;
@@ -20,6 +21,8 @@ interface OrchestratorStore {
   selectedProviderId: string;
   selectedModelId: string;
   preferredModels: Record<string, string>;
+  preferredAccountModels: Record<string, string>;
+  preferredAccountEfforts: Record<string, string>;
   modelSettings: Record<string, ModelSettings>;
   messageText: string;
   isModelPickerOpen: boolean;
@@ -35,12 +38,16 @@ interface OrchestratorStore {
   accountProject: string;
   chosenAccounts: Record<string, string>;
   projectAccounts: Record<string, string>;
+  accountModels: Record<string, AIModel[]>;
   focusedSession: FocusedSession | null;
   pendingAccounts: Record<string, PendingAccount>;
 
   // Actions
   setAccountProject: (projectPath: string, defaults?: Record<string, string>) => void;
   selectAccount: (providerId: string, accountId: string) => void;
+  loadAccountModels: (providerId: string, accountId: string) => Promise<AIModel[]>;
+  /** Selects the account's pinned default model (loading that account's models first). */
+  applyAccountDefault: (providerId: string, accountId: string) => Promise<void>;
   accountFor: (providerId: string, projectPath?: string) => string;
   shownAccount: (providerId: string) => string;
   focusSession: (session: FocusedSession | null) => void;
@@ -55,13 +62,14 @@ interface OrchestratorStore {
   setProviders: (providers: CLIProvider[]) => void;
   setModels: (models: AIModel[]) => void;
   setPreferredModel: (providerId: string, modelId: string) => void;
+  setPreferredAccountModel: (providerId: string, accountId: string, modelId: string, effortId?: string) => void;
   addProvider: (provider: CLIProvider) => void;
   addModel: (model: AIModel) => void;
   selectProvider: (providerId: string) => void;
-  selectModel: (modelId: string) => void;
+  selectModel: (modelId: string, providerId?: string) => void;
   /** Selects without opening the effort picker, for changes the user did not
    *  make from the picker itself. */
-  selectModelSilently: (modelId: string) => void;
+  selectModelSilently: (modelId: string, providerId?: string) => void;
   setModelSettings: (modelId: string, settings: Partial<ModelSettings>) => void;
   setMessageText: (text: string) => void;
   setModelPickerOpen: (open: boolean) => void;
@@ -74,7 +82,7 @@ interface OrchestratorStore {
   getSelectedModel: () => AIModel | undefined;
   getSelectedProvider: () => CLIProvider | undefined;
   getConfiguringModel: () => AIModel | undefined;
-  getModelsForProvider: (providerId: string) => AIModel[];
+  getModelsForProvider: (providerId: string, accountId?: string) => AIModel[];
   getCurrentModelSettings: (modelId?: string) => ModelSettings;
 }
 
@@ -90,6 +98,8 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   selectedProviderId: '',
   selectedModelId: '',
   preferredModels: {},
+  preferredAccountModels: {},
+  preferredAccountEfforts: {},
   modelSettings: initialSettings,
   messageText: '',
   isModelPickerOpen: false,
@@ -120,28 +130,111 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   accountProject: '',
   chosenAccounts: {},
   projectAccounts: {},
+  accountModels: {},
   focusedSession: null,
   pendingAccounts: {},
 
   setAccountProject: (projectPath, defaults = {}) => {
+    const providerId = get().selectedProviderId;
+    const before = providerId ? get().shownAccount(providerId) : '';
     const same = samePath(get().accountProject, projectPath);
     set({
       accountProject: projectPath,
       chosenAccounts: same ? get().chosenAccounts : {},
       projectAccounts: { ...defaults },
     });
+    // The project can resolve a different account (e.g. "orchestrator uses
+    // NEON"); that account's own default model must then win.
+    if (providerId && !get().focusedSession) {
+      const after = get().shownAccount(providerId);
+      if (after !== before) void get().applyAccountDefault(providerId, after);
+    }
   },
 
-  selectAccount: (providerId, accountId) =>
-    set((state) => {
-      const focused = state.focusedSession;
-      if (!focused) return { chosenAccounts: { ...state.chosenAccounts, [providerId]: accountId } };
-      return { pendingAccounts: { ...state.pendingAccounts, [focused.threadId]: { providerId, account: accountId } } };
-    }),
+  selectAccount: (providerId, accountId) => {
+    const focused = get().focusedSession;
+    const nextChosen = { ...get().chosenAccounts, [providerId]: accountId };
+    if (!focused) {
+      set({ chosenAccounts: nextChosen });
+    } else {
+      set({
+        chosenAccounts: nextChosen,
+        pendingAccounts: { ...get().pendingAccounts, [focused.threadId]: { providerId, account: accountId } },
+      });
+    }
+    void get().applyAccountDefault(providerId, accountId);
+  },
+
+  applyAccountDefault: async (providerId, accountId) => {
+    const key = `${providerId}:${accountId}`;
+    const pick = (list: AIModel[]) => {
+      const { preferredAccountModels, preferredModels } = get();
+      const ids = [preferredAccountModels[key], preferredModels[providerId]].filter(Boolean);
+      for (const id of ids) {
+        const match = list.find((m) => m.id === id);
+        if (match) return match;
+      }
+      return undefined;
+    };
+    const stillShown = () =>
+      get().selectedProviderId === providerId && get().shownAccount(providerId) === accountId;
+    const select = (model: AIModel) => {
+      set({ selectedModelId: model.id, activeConfiguringModelId: model.id });
+      const effortId = get().preferredAccountEfforts[key];
+      if (!effortId) return;
+      const label = model.options
+        ?.find((opt) => opt.id === 'effort')
+        ?.choices?.find((choice) => choice.id === effortId)?.label;
+      if (label) get().setModelSettings(model.id, { effort: label });
+    };
+
+    // Apply right away when the account's list is already known, so the
+    // switch does not flash the previous account's model.
+    const known = pick(get().getModelsForProvider(providerId, accountId));
+    if (known && stillShown()) select(known);
+
+    const loaded = await get().loadAccountModels(providerId, accountId);
+    if (!stillShown() || loaded.length === 0) return;
+    const preferred = pick(loaded);
+    if (preferred) {
+      select(preferred);
+    } else if (!loaded.some((m) => m.id === get().selectedModelId)) {
+      select(loaded[0]);
+    }
+  },
+
+  loadAccountModels: async (providerId: string, accountId: string) => {
+    const key = `${providerId}:${accountId}`;
+    const cached = get().accountModels[key];
+    try {
+      const raw = await GetAccountModels(providerId, accountId);
+      if (raw && raw.length > 0) {
+        const dummySnapshot = { driver: providerId } as domain.ProviderSnapshot;
+        const parsed = raw.map((m) => toModel(dummySnapshot, m));
+        const uniqueParsed = parsed.filter((m, i, arr) => arr.findIndex((x) => x.id === m.id) === i);
+        set((state) => ({
+          accountModels: { ...state.accountModels, [key]: uniqueParsed },
+          // Only replace this provider's entries: Antigravity also lists
+          // Claude/GPT models, and dropping same-id models from other
+          // providers emptied Claude's own list.
+          models: [
+            ...state.models.filter(
+              (m) => !(m.providerId === providerId && uniqueParsed.some((p) => p.id === m.id)),
+            ),
+            ...uniqueParsed,
+          ],
+        }));
+        return uniqueParsed;
+      }
+    } catch (err) {
+      console.warn(`Failed to load models for ${providerId}:${accountId}`, err);
+    }
+    return cached ?? [];
+  },
 
   accountFor: (providerId, projectPath) => {
     const { accountProject, chosenAccounts } = get();
-    if (projectPath !== undefined && !samePath(accountProject, projectPath)) return '';
+    if (projectPath !== undefined && accountProject !== '' && !samePath(accountProject, projectPath)) return '';
     return chosenAccounts[providerId] || '';
   },
 
@@ -268,9 +361,21 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       const keep = models.find((model) => model.id === previous);
 
       const preferredModels: Record<string, string> = {};
+      const preferredAccountModels: Record<string, string> = {};
+      const preferredAccountEfforts: Record<string, string> = {};
       for (const snapshot of effectiveReady) {
         if (snapshot.settings?.model) {
           preferredModels[snapshot.driver] = snapshot.settings.model;
+        }
+        const accDefaults = snapshot.settings?.accountDefaults ?? {};
+        for (const [accId, def] of Object.entries(accDefaults)) {
+          if (def?.model) {
+            preferredAccountModels[`${snapshot.driver}:${accId}`] = def.model;
+          }
+          const eff = def?.options?.['effort'];
+          if (typeof eff === 'string' && eff !== '') {
+            preferredAccountEfforts[`${snapshot.driver}:${accId}`] = eff;
+          }
         }
       }
 
@@ -291,12 +396,20 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
         providers,
         models,
         preferredModels,
+        preferredAccountModels,
+        preferredAccountEfforts,
         modelSettings: settings,
         selectedModelId: selected?.id || '',
         selectedProviderId: selected?.providerId || providers[0]?.id || '',
         isLoadingProviders: false,
         providersError: snapshots.length === 0 ? 'No agent CLIs detected' : null,
       });
+      // First load: honour the shown account's pinned default rather than
+      // the provider-wide (Default account) one.
+      const initialProvider = get().selectedProviderId;
+      if (!keep && initialProvider) {
+        void get().applyAccountDefault(initialProvider, get().shownAccount(initialProvider));
+      }
     } catch (cause) {
       set({
         isLoadingProviders: false,
@@ -311,6 +424,17 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     set((state) => ({
       preferredModels: { ...state.preferredModels, [providerId]: modelId },
     })),
+
+  setPreferredAccountModel: (providerId, accountId, modelId, effortId) =>
+    set((state) => {
+      const key = `${providerId}:${accountId}`;
+      return {
+        preferredAccountModels: { ...state.preferredAccountModels, [key]: modelId },
+        ...(effortId !== undefined
+          ? { preferredAccountEfforts: { ...state.preferredAccountEfforts, [key]: effortId } }
+          : {}),
+      };
+    }),
 
   addProvider: (provider) =>
     set((state) => ({
@@ -333,8 +457,10 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     }),
 
   selectProvider: (providerId) => {
-    const providerModels = get().models.filter((m) => m.providerId === providerId);
-    const preferredId = get().preferredModels[providerId];
+    const accountId = get().shownAccount(providerId);
+    const providerModels = get().getModelsForProvider(providerId, accountId);
+    const preferredId =
+      get().preferredAccountModels[`${providerId}:${accountId}`] || get().preferredModels[providerId];
     const preferredModel = preferredId ? providerModels.find((m) => m.id === preferredId) : undefined;
     const newSelectedModelId = preferredModel?.id || providerModels[0]?.id || get().selectedModelId;
     set({
@@ -342,18 +468,23 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       selectedModelId: newSelectedModelId,
       activeConfiguringModelId: newSelectedModelId,
     });
+    void get().applyAccountDefault(providerId, accountId);
   },
 
-  selectModel: (modelId) => {
-    const model = get().models.find((m) => m.id === modelId);
+  selectModel: (modelId, providerId) => {
+    const models = get().models;
+    const targetProvider = providerId || get().selectedProviderId;
+    const model =
+      (targetProvider ? models.find((m) => m.id === modelId && m.providerId === targetProvider) : undefined) ||
+      models.find((m) => m.id === modelId);
     if (!model) return;
-    const { selectedModelId, isEffortPickerOpen } = get();
+    const { selectedModelId, selectedProviderId, isEffortPickerOpen } = get();
     const hasEfforts = Boolean(
       (model.effortLevels && model.effortLevels.length > 0) || model.supportsThinking,
     );
 
-    // Toggle effort modal: if clicking the active model and effort modal is open, close it
-    if (selectedModelId === modelId && isEffortPickerOpen) {
+    // Toggle effort modal: if clicking the active model on the same provider and effort modal is open, close it
+    if (selectedModelId === modelId && selectedProviderId === model.providerId && isEffortPickerOpen) {
       set({ isEffortPickerOpen: false });
     } else {
       set({
@@ -365,14 +496,21 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     }
   },
 
-  selectModelSilently: (modelId) => {
-    const model = get().models.find((m) => m.id === modelId);
+  selectModelSilently: (modelId, providerId) => {
+    const models = get().models;
+    const targetProvider = providerId || get().selectedProviderId;
+    const model =
+      (targetProvider ? models.find((m) => m.id === modelId && m.providerId === targetProvider) : undefined) ||
+      models.find((m) => m.id === modelId);
     if (!model) return;
     set({ selectedModelId: modelId, selectedProviderId: model.providerId });
   },
 
   openEffortForModel: (modelId) => {
-    const model = get().models.find((m) => m.id === modelId);
+    const { models, selectedProviderId } = get();
+    const model =
+      models.find((m) => m.id === modelId && m.providerId === selectedProviderId) ||
+      models.find((m) => m.id === modelId);
     const hasEfforts = Boolean(
       model && ((model.effortLevels && model.effortLevels.length > 0) || model.supportsThinking),
     );
@@ -435,8 +573,14 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     }),
 
   getSelectedModel: () => {
-    const { models, selectedModelId } = get();
-    return models.find((m) => m.id === selectedModelId) || models[0];
+    const { models, selectedModelId, selectedProviderId } = get();
+    return (
+      (selectedProviderId
+        ? models.find((m) => m.id === selectedModelId && m.providerId === selectedProviderId)
+        : undefined) ||
+      models.find((m) => m.id === selectedModelId) ||
+      models[0]
+    );
   },
 
   getSelectedProvider: () => {
@@ -445,13 +589,32 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   },
 
   getConfiguringModel: () => {
-    const { models, activeConfiguringModelId, selectedModelId } = get();
+    const { models, activeConfiguringModelId, selectedModelId, selectedProviderId } = get();
     const id = activeConfiguringModelId || selectedModelId;
-    return models.find((m) => m.id === id) || models[0];
+    return (
+      (selectedProviderId ? models.find((m) => m.id === id && m.providerId === selectedProviderId) : undefined) ||
+      models.find((m) => m.id === id) ||
+      models[0]
+    );
   },
 
-  getModelsForProvider: (providerId) => {
-    return get().models.filter((m) => m.providerId === providerId);
+  getModelsForProvider: (providerId, accountId) => {
+    const { providers, models, shownAccount, accountModels } = get();
+    const effectiveAccount = accountId || shownAccount(providerId);
+    const key = `${providerId}:${effectiveAccount}`;
+    let list: AIModel[] = [];
+    if (accountModels[key] && accountModels[key].length > 0) {
+      list = accountModels[key];
+    } else {
+      const provider = providers.find((p) => p.id === providerId);
+      const account = provider?.accounts?.find((a) => a.id === effectiveAccount);
+      if (account?.models && account.models.length > 0) {
+        list = account.models;
+      } else {
+        list = models.filter((m) => m.providerId === providerId);
+      }
+    }
+    return list.filter((m, i, arr) => arr.findIndex((x) => x.id === m.id) === i);
   },
 
   getCurrentModelSettings: (modelId) => {

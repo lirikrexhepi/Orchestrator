@@ -159,7 +159,7 @@ func (m *Manager) Open(threadID, cwd, title string, cols, rows int) (SessionInfo
 	m.sessions[sess.info.ID] = sess
 	m.mu.Unlock()
 
-	// Reader goroutine pumping bytes into the 64 KB ring buffer and broadcasting to WS subscribers
+	// Reader goroutine pumping bytes into the 256 KB ring buffer and broadcasting to WS subscribers
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -207,8 +207,23 @@ func (m *Manager) Get(id string) (SessionInfo, bool) {
 	return sess.info, true
 }
 
-// List returns all sessions for a thread, or all sessions if threadID is empty.
+// List returns all sessions belonging to the specified thread.
+// When threadID is empty, it returns an empty slice so sessions never leak across threads.
 func (m *Manager) List(threadID string) []SessionInfo {
+	if threadID == "" {
+		return []SessionInfo{}
+	}
+	return m.listFiltered(func(info SessionInfo) bool {
+		return info.ThreadID == threadID
+	})
+}
+
+// ListAll returns all active or recent terminal sessions across all threads.
+func (m *Manager) ListAll() []SessionInfo {
+	return m.listFiltered(nil)
+}
+
+func (m *Manager) listFiltered(match func(SessionInfo) bool) []SessionInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -218,7 +233,7 @@ func (m *Manager) List(threadID string) []SessionInfo {
 		info := sess.info
 		sess.mu.RUnlock()
 
-		if threadID == "" || info.ThreadID == threadID {
+		if match == nil || match(info) {
 			result = append(result, info)
 		}
 	}
@@ -268,6 +283,10 @@ func (m *Manager) Resize(id string, cols, rows int) error {
 	}
 
 	sess.mu.Lock()
+	if sess.info.Cols == cols && sess.info.Rows == rows {
+		sess.mu.Unlock()
+		return nil
+	}
 	sess.info.Cols = cols
 	sess.info.Rows = rows
 	running := sess.info.Running && !sess.closed

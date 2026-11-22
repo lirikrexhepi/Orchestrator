@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -109,8 +112,9 @@ func (t *tab) info() SessionInfo {
 
 // Manager lazily manages a single headless Chromium instance and multiplexes tabs via CDP.
 type Manager struct {
-	profileDir    string
-	isTempProfile bool
+	profileDir     string
+	isTempProfile  bool
+	anchorTargetID string
 
 	mu         sync.Mutex
 	proc       *process.Process
@@ -135,14 +139,18 @@ func (m *Manager) ensureChromiumLocked(ctx context.Context) error {
 		return ErrBrowserClosed
 	}
 	if m.cdp != nil && m.proc != nil {
-		select {
-		case <-m.proc.Done():
-			// Process died unexpectedly, clean up state
+		if !m.cdp.Alive() {
 			m.stopChromiumLocked()
-		case <-m.cdp.Done():
-			m.stopChromiumLocked()
-		default:
-			return nil
+		} else {
+			select {
+			case <-m.proc.Done():
+				// Process died unexpectedly, clean up state
+				m.stopChromiumLocked()
+			case <-m.cdp.Done():
+				m.stopChromiumLocked()
+			default:
+				return nil
+			}
 		}
 	}
 
@@ -165,12 +173,129 @@ func (m *Manager) ensureChromiumLocked(ctx context.Context) error {
 		return fmt.Errorf("failed to create browser profile directory: %w", err)
 	}
 
+	// Clean stale SingletonLock / SingletonSocket / SingletonCookie before launch when no process is tracked.
+	if m.proc == nil && !m.isTempProfile {
+		if cleanStaleProfileLocks(profile) {
+			logger.Infof("BrowserManager", "Removed stale Chromium lock files in %s", profile)
+		}
+	}
+
+	wsURL, lockFailure, err := m.launchChromiumLocked(ctx, execPath, profile)
+	if err != nil && lockFailure && !m.isTempProfile {
+		logger.Warnf("BrowserManager", "Chromium exited with profile lock error (%v), cleaning locks and retrying...", err)
+		_ = cleanStaleProfileLocks(profile)
+		wsURL, lockFailure, err = m.launchChromiumLocked(ctx, execPath, profile)
+		if err != nil && lockFailure {
+			// Persistent profile is genuinely locked by another active Chromium instance; fall back cleanly to a temp profile.
+			tempDir, tempErr := os.MkdirTemp("", "orchestrator-chrome-profile-*")
+			if tempErr == nil {
+				logger.Warnf("BrowserManager", "Persistent profile %s remains locked, falling back to temp profile %s", profile, tempDir)
+				m.isTempProfile = true
+				m.profileDir = tempDir
+				wsURL, _, err = m.launchChromiumLocked(ctx, execPath, tempDir)
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+
+	cdpClient, err := DialCDP(ctx, wsURL)
+	if err != nil {
+		m.stopChromiumLocked()
+		return fmt.Errorf("failed to connect to chromium CDP: %w", err)
+	}
+	m.cdp = cdpClient
+
+	// Query and establish an internal anchor page target so headless Chrome never exits when user tabs close
+	var targetsResult struct {
+		TargetInfos []struct {
+			TargetID string `json:"targetId"`
+			Type     string `json:"type"`
+		} `json:"targetInfos"`
+	}
+	targetsCtx, targetsCancel := context.WithTimeout(ctx, 3*time.Second)
+	_ = m.cdp.Call(targetsCtx, "", "Target.getTargets", nil, &targetsResult)
+	targetsCancel()
+
+	for _, info := range targetsResult.TargetInfos {
+		if info.Type == "page" {
+			m.anchorTargetID = info.TargetID
+			break
+		}
+	}
+	if m.anchorTargetID == "" {
+		var createAnchor struct {
+			TargetID string `json:"targetId"`
+		}
+		createCtx, createCancel := context.WithTimeout(ctx, 3*time.Second)
+		_ = m.cdp.Call(createCtx, "", "Target.createTarget", map[string]any{"url": "about:blank"}, &createAnchor)
+		createCancel()
+		m.anchorTargetID = createAnchor.TargetID
+	}
+
+	logger.Infof("BrowserManager", "Headless Chromium started (pid=%d, cdp=%s, anchor=%s)", m.proc.PID(), wsURL, m.anchorTargetID)
+
+	// Watch for unexpected Chromium/CDP exit while tabs are open so viewers never hang black/spinning.
+	watchedProc := m.proc
+	watchedCDP := m.cdp
+	go func() {
+		select {
+		case <-watchedProc.Done():
+		case <-watchedCDP.Done():
+		}
+		m.mu.Lock()
+		if m.cdp != watchedCDP && m.proc != watchedProc {
+			m.mu.Unlock()
+			return
+		}
+		stderrTail := ""
+		if watchedProc != nil {
+			stderrTail = strings.TrimSpace(watchedProc.StderrTail())
+		}
+		openTabs := make([]*tab, 0, len(m.tabs))
+		for _, t := range m.tabs {
+			openTabs = append(openTabs, t)
+		}
+		m.mu.Unlock()
+
+		if len(openTabs) == 0 {
+			return
+		}
+		logger.Warnf("BrowserManager", "Headless Chromium exited unexpectedly with %d open tab(s) (stderr: %s)", len(openTabs), stderrTail)
+		errMsg := "Headless Chromium exited unexpectedly"
+		if stderrTail != "" {
+			errMsg += ": " + stderrTail
+		}
+		for _, t := range openTabs {
+			t.mu.Lock()
+			t.loading = false
+			subs := make([]chan tabEvent, 0, len(t.subscribers))
+			for ch := range t.subscribers {
+				subs = append(subs, ch)
+			}
+			t.mu.Unlock()
+			m.broadcastState(t)
+			for _, ch := range subs {
+				select {
+				case ch <- tabEvent{err: errMsg}:
+				default:
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (m *Manager) launchChromiumLocked(ctx context.Context, execPath, profile string) (string, bool, error) {
 	wsURLCh := make(chan string, 1)
 	var once sync.Once
 
 	flags := []string{
 		"--headless=new",
 		"--remote-debugging-port=0",
+		"--remote-allow-origins=*",
 		"--user-data-dir=" + profile,
 		"--disable-gpu",
 		"--no-first-run",
@@ -197,39 +322,86 @@ func (m *Manager) ensureChromiumLocked(ctx context.Context) error {
 		},
 	}
 
-	proc, err := process.Start(ctx, spec)
+	startAt := time.Now()
+	// Chromium's lifetime is managed by Manager (idle timer / CloseAll / DieWithParent),
+	// never by the short-lived caller ctx of a single Open() RPC (whose defer cancel()
+	// would otherwise kill Chromium as soon as Open returns).
+	proc, err := process.Start(context.Background(), spec)
 	if err != nil {
-		return fmt.Errorf("failed to start headless chromium: %w", err)
+		return "", false, fmt.Errorf("failed to start headless chromium: %w", err)
 	}
 	m.proc = proc
 
-	var wsURL string
 	select {
 	case u := <-wsURLCh:
-		wsURL = u
+		return u, false, nil
 	case <-proc.Done():
+		stderrTail := proc.StderrTail()
+		exitErr := proc.ExitError()
+		quickExit := time.Since(startAt) <= 2*time.Second
+		lockErr := isProfileLockError(stderrTail) || (quickExit && hasProfileLockFiles(profile))
 		m.stopChromiumLocked()
-		return fmt.Errorf("chromium exited prematurely: %v (stderr: %s)", proc.ExitError(), proc.StderrTail())
+		return "", lockErr, fmt.Errorf("chromium exited prematurely: %v (stderr: %s)", exitErr, stderrTail)
 	case <-time.After(15 * time.Second):
+		stderrTail := proc.StderrTail()
 		m.stopChromiumLocked()
-		return fmt.Errorf("timed out waiting for DevTools WebSocket URL from chromium (stderr: %s)", proc.StderrTail())
+		return "", false, fmt.Errorf("timed out waiting for DevTools WebSocket URL from chromium (stderr: %s)", stderrTail)
 	case <-ctx.Done():
 		m.stopChromiumLocked()
-		return ctx.Err()
+		return "", false, ctx.Err()
 	}
+}
 
-	cdpClient, err := DialCDP(ctx, wsURL)
-	if err != nil {
-		m.stopChromiumLocked()
-		return fmt.Errorf("failed to connect to chromium CDP: %w", err)
+var profileLockFiles = []string{"SingletonLock", "SingletonSocket", "SingletonCookie"}
+
+func hasProfileLockFiles(profileDir string) bool {
+	if profileDir == "" {
+		return false
 	}
-	m.cdp = cdpClient
+	for _, name := range profileLockFiles {
+		if _, err := os.Lstat(filepath.Join(profileDir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
 
-	logger.Infof("BrowserManager", "Headless Chromium started (pid=%d, cdp=%s)", proc.PID(), wsURL)
-	return nil
+func cleanStaleProfileLocks(profileDir string) bool {
+	if profileDir == "" {
+		return false
+	}
+	singletonPath := filepath.Join(profileDir, "SingletonLock")
+	if target, err := os.Readlink(singletonPath); err == nil && target != "" {
+		if isLiveSingletonTarget(target) {
+			return false
+		}
+	}
+	removed := false
+	for _, name := range profileLockFiles {
+		p := filepath.Join(profileDir, name)
+		if _, err := os.Lstat(p); err == nil {
+			if rmErr := os.Remove(p); rmErr == nil {
+				removed = true
+			}
+		}
+	}
+	return removed
+}
+
+func isProfileLockError(stderrTail string) bool {
+	if stderrTail == "" {
+		return false
+	}
+	msg := strings.ToLower(stderrTail)
+	return strings.Contains(msg, "singletonlock") ||
+		strings.Contains(msg, "processsingleton") ||
+		strings.Contains(msg, "profile appears to be in use") ||
+		strings.Contains(msg, "in use by another") ||
+		strings.Contains(msg, "cannot create a lock")
 }
 
 func (m *Manager) stopChromiumLocked() {
+	m.anchorTargetID = ""
 	if m.idleTimer != nil {
 		m.idleTimer.Stop()
 		m.idleTimer = nil
@@ -287,7 +459,7 @@ func (m *Manager) Open(ctx context.Context, threadID, initialURL string, width, 
 		return SessionInfo{}, err
 	}
 
-	// 1. Create target
+	// 1. Create target with auto-recovery retry on dead CDP connection
 	var createResult struct {
 		TargetID string `json:"targetId"`
 	}
@@ -295,7 +467,25 @@ func (m *Manager) Open(ctx context.Context, threadID, initialURL string, width, 
 		"url": "about:blank",
 	}
 	if err := m.cdp.Call(ctx, "", "Target.createTarget", createTargetParams, &createResult); err != nil {
-		return SessionInfo{}, fmt.Errorf("failed to create target: %w", err)
+		stderrTail := ""
+		if m.proc != nil {
+			stderrTail = m.proc.StderrTail()
+		}
+		if isClosedCDPError(err) || !m.cdp.Alive() {
+			logger.Warnf("BrowserManager", "Target.createTarget failed with closed CDP (%v), resetting and retrying once... (stderr: %s)", err, stderrTail)
+			m.stopChromiumLocked()
+			if recErr := m.ensureChromiumLocked(ctx); recErr != nil {
+				return SessionInfo{}, fmt.Errorf("failed to recover chromium after cdp error: %w (stderr: %s)", recErr, stderrTail)
+			}
+			if retryErr := m.cdp.Call(ctx, "", "Target.createTarget", createTargetParams, &createResult); retryErr != nil {
+				if m.proc != nil {
+					stderrTail = m.proc.StderrTail()
+				}
+				return SessionInfo{}, fmt.Errorf("failed to create target after recovery: %w (stderr: %s)", retryErr, stderrTail)
+			}
+		} else {
+			return SessionInfo{}, fmt.Errorf("failed to create target: %w (stderr: %s)", err, stderrTail)
+		}
 	}
 
 	// 2. Attach with flatten: true
@@ -352,7 +542,20 @@ func (m *Manager) Open(ctx context.Context, threadID, initialURL string, width, 
 		go func() {
 			navCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			_ = m.Navigate(navCtx, tabID, initialURL)
+			if navErr := m.Navigate(navCtx, tabID, initialURL); navErr != nil {
+				t.mu.RLock()
+				subs := make([]chan tabEvent, 0, len(t.subscribers))
+				for ch := range t.subscribers {
+					subs = append(subs, ch)
+				}
+				t.mu.RUnlock()
+				for _, ch := range subs {
+					select {
+					case ch <- tabEvent{err: navErr.Error()}:
+					default:
+					}
+				}
+			}
 		}()
 	}
 
@@ -376,7 +579,9 @@ func (m *Manager) handleTabCDPEvent(t *tab, method string, params json.RawMessag
 			cdp := m.cdp
 			m.mu.Unlock()
 			if cdp != nil && ackID != nil {
-				_ = cdp.Call(context.Background(), sessID, "Page.screencastFrameAck", map[string]any{
+				ackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = cdp.Call(ackCtx, sessID, "Page.screencastFrameAck", map[string]any{
 					"sessionId": ackID,
 				}, nil)
 			}
@@ -444,13 +649,25 @@ func (m *Manager) handleTabCDPEvent(t *tab, method string, params json.RawMessag
 	case "Page.frameStoppedLoading":
 		t.mu.Lock()
 		t.loading = false
+		hasFrame := len(t.lastFrame) > 0
+		paused := t.paused
 		t.mu.Unlock()
 		m.refreshNavHistory(t)
 		m.broadcastState(t)
+		if !hasFrame && !paused {
+			go m.pushFallbackFrame(t)
+		}
 
 	case "Page.loadEventFired":
+		t.mu.RLock()
+		hasFrame := len(t.lastFrame) > 0
+		paused := t.paused
+		t.mu.RUnlock()
 		m.refreshNavHistory(t)
 		m.broadcastState(t)
+		if !hasFrame && !paused {
+			go m.pushFallbackFrame(t)
+		}
 
 	case "Page.windowOpen":
 		var ev struct {
@@ -519,6 +736,43 @@ func (m *Manager) broadcastState(t *tab) {
 	}
 }
 
+func (m *Manager) pushFallbackFrame(t *tab) {
+	m.mu.Lock()
+	cdp := m.cdp
+	m.mu.Unlock()
+	if cdp == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	var res struct {
+		Data string `json:"data"`
+	}
+	if err := cdp.Call(ctx, t.sessionID, "Page.captureScreenshot", map[string]any{
+		"format":  "jpeg",
+		"quality": 82,
+	}, &res); err != nil || res.Data == "" {
+		return
+	}
+	jpegBytes, err := base64.StdEncoding.DecodeString(res.Data)
+	if err != nil || len(jpegBytes) == 0 {
+		return
+	}
+	t.mu.Lock()
+	t.lastFrame = jpegBytes
+	subscribers := make([]chan tabEvent, 0, len(t.subscribers))
+	for ch := range t.subscribers {
+		subscribers = append(subscribers, ch)
+	}
+	t.mu.Unlock()
+	for _, ch := range subscribers {
+		select {
+		case ch <- tabEvent{isBinary: true, binary: jpegBytes}:
+		default:
+		}
+	}
+}
+
 // Navigate tells a tab to navigate to a URL.
 func (m *Manager) Navigate(ctx context.Context, id, url string) error {
 	m.mu.Lock()
@@ -538,7 +792,27 @@ func (m *Manager) Navigate(ctx context.Context, id, url string) error {
 	t.mu.Unlock()
 	m.broadcastState(t)
 
-	return cdp.Call(ctx, t.sessionID, "Page.navigate", map[string]any{"url": url}, nil)
+	var navRes struct {
+		ErrorText string `json:"errorText"`
+	}
+	err := cdp.Call(ctx, t.sessionID, "Page.navigate", map[string]any{"url": url}, &navRes)
+	if err != nil {
+		logger.Warnf("BrowserManager", "Page.navigate failed for tab=%s url=%q: %v", id, url, err)
+		t.mu.Lock()
+		t.loading = false
+		t.mu.Unlock()
+		m.broadcastState(t)
+		return err
+	}
+	if navRes.ErrorText != "" && navRes.ErrorText != "net::ERR_ABORTED" {
+		logger.Warnf("BrowserManager", "Page.navigate errorText for tab=%s url=%q: %s", id, url, navRes.ErrorText)
+		t.mu.Lock()
+		t.loading = false
+		t.mu.Unlock()
+		m.broadcastState(t)
+		return fmt.Errorf("navigation failed: %s", navRes.ErrorText)
+	}
+	return nil
 }
 
 // Back navigates backward in history.
@@ -607,6 +881,23 @@ func (m *Manager) Reload(ctx context.Context, id string) error {
 	return cdp.Call(ctx, t.sessionID, "Page.reload", map[string]any{"ignoreCache": false}, nil)
 }
 
+func screencastParams(width, height int, dpr float64) map[string]any {
+	if dpr < 1.0 {
+		dpr = 1.0
+	} else if dpr > 2.0 {
+		dpr = 2.0
+	}
+	maxW := clamp(int(math.Round(float64(width)*dpr)), 200, 2560)
+	maxH := clamp(int(math.Round(float64(height)*dpr)), 160, 1600)
+	return map[string]any{
+		"format":        "jpeg",
+		"quality":       82,
+		"everyNthFrame": 1,
+		"maxWidth":      maxW,
+		"maxHeight":     maxH,
+	}
+}
+
 // Resize changes the viewport dimensions and device scale factor of the tab.
 func (m *Manager) Resize(ctx context.Context, id string, width, height int, dpr float64) error {
 	m.mu.Lock()
@@ -630,17 +921,33 @@ func (m *Manager) Resize(ctx context.Context, id string, width, height int, dpr 
 	}
 
 	t.mu.Lock()
+	changed := t.width != width || t.height != height || t.dpr != dpr
 	t.width = width
 	t.height = height
 	t.dpr = dpr
+	subCount := len(t.subscribers)
+	paused := t.paused
+	sessID := t.sessionID
 	t.mu.Unlock()
 
-	return cdp.Call(ctx, t.sessionID, "Emulation.setDeviceMetricsOverride", map[string]any{
+	if !changed {
+		return nil
+	}
+
+	if err := cdp.Call(ctx, sessID, "Emulation.setDeviceMetricsOverride", map[string]any{
 		"width":             width,
 		"height":            height,
 		"deviceScaleFactor": dpr,
 		"mobile":            false,
-	}, nil)
+	}, nil); err != nil {
+		return err
+	}
+
+	if subCount > 0 && !paused {
+		_ = cdp.Call(ctx, sessID, "Page.stopScreencast", nil, nil)
+		_ = cdp.Call(ctx, sessID, "Page.startScreencast", screencastParams(width, height, dpr), nil)
+	}
+	return nil
 }
 
 // SetPaused enables or halts screencast delivery on this tab.
@@ -660,21 +967,55 @@ func (m *Manager) SetPaused(ctx context.Context, id string, paused bool) error {
 	t.mu.Lock()
 	t.paused = paused
 	subCount := len(t.subscribers)
+	params := screencastParams(t.width, t.height, t.dpr)
+	sessID := t.sessionID
 	t.mu.Unlock()
 
 	if paused {
-		return cdp.Call(ctx, t.sessionID, "Page.stopScreencast", nil, nil)
+		return cdp.Call(ctx, sessID, "Page.stopScreencast", nil, nil)
 	}
 
 	if subCount > 0 {
-		return cdp.Call(ctx, t.sessionID, "Page.startScreencast", map[string]any{
-			"format":        "jpeg",
-			"quality":       82,
-			"everyNthFrame": 1,
-		}, nil)
+		return cdp.Call(ctx, sessID, "Page.startScreencast", params, nil)
 	}
 
 	return nil
+}
+
+// CaptureScreenshot captures a full-resolution PNG screenshot of the tab and returns base64-encoded PNG data.
+func (m *Manager) CaptureScreenshot(ctx context.Context, id string) (string, error) {
+	m.mu.Lock()
+	t, ok := m.tabs[id]
+	cdp := m.cdp
+	m.mu.Unlock()
+
+	if !ok || t == nil {
+		return "", ErrTabNotFound
+	}
+	if cdp == nil {
+		return "", ErrBrowserClosed
+	}
+
+	var res struct {
+		Data string `json:"data"`
+	}
+	if err := cdp.Call(ctx, t.sessionID, "Page.captureScreenshot", map[string]any{
+		"format": "png",
+	}, &res); err != nil {
+		return "", err
+	}
+	return res.Data, nil
+}
+
+func normalizeMouseButton(button string) string {
+	switch button {
+	case "3":
+		return "back"
+	case "4":
+		return "forward"
+	default:
+		return button
+	}
 }
 
 // DispatchMouse sends mouse events into the CDP tab.
@@ -691,11 +1032,26 @@ func (m *Manager) DispatchMouse(ctx context.Context, id string, ev MouseEvent) e
 		return ErrBrowserClosed
 	}
 
+	btn := normalizeMouseButton(ev.Button)
+	switch ev.Type {
+	case "mousePressed":
+		if btn == "back" || ((btn == "" || btn == "none") && (ev.Buttons&8) != 0) {
+			return m.Back(ctx, id)
+		}
+		if btn == "forward" || ((btn == "" || btn == "none") && (ev.Buttons&16) != 0) {
+			return m.Forward(ctx, id)
+		}
+	case "mouseReleased":
+		if btn == "back" || btn == "forward" {
+			return nil
+		}
+	}
+
 	params := map[string]any{
 		"type":       ev.Type,
 		"x":          ev.X,
 		"y":          ev.Y,
-		"button":     ev.Button,
+		"button":     btn,
 		"buttons":    ev.Buttons,
 		"clickCount": ev.ClickCount,
 		"deltaX":     ev.DeltaX,
@@ -717,6 +1073,21 @@ func (m *Manager) DispatchKey(ctx context.Context, id string, ev KeyEvent) error
 	}
 	if cdp == nil {
 		return ErrBrowserClosed
+	}
+
+	if ev.Type == "keyDown" && (ev.Key == "Enter" || ev.Code == "Enter" || ev.Code == "NumpadEnter") {
+		if ev.Text == "" {
+			ev.Text = "\r"
+		}
+		if ev.UnmodifiedText == "" {
+			ev.UnmodifiedText = "\r"
+		}
+		if ev.WindowsVirtualKeyCode == 0 {
+			ev.WindowsVirtualKeyCode = 13
+		}
+		if ev.NativeVirtualKeyCode == 0 {
+			ev.NativeVirtualKeyCode = 13
+		}
 	}
 
 	params := map[string]any{
@@ -869,6 +1240,7 @@ func (m *Manager) Subscribe(id string) (SessionInfo, []byte, chan tabEvent, func
 	subCount := len(t.subscribers)
 	paused := t.paused
 	sessID := t.sessionID
+	scParams := screencastParams(t.width, t.height, t.dpr)
 	t.mu.Unlock()
 
 	// Start screencast if first subscriber and not paused
@@ -876,11 +1248,7 @@ func (m *Manager) Subscribe(id string) (SessionInfo, []byte, chan tabEvent, func
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			_ = cdp.Call(ctx, sessID, "Page.startScreencast", map[string]any{
-				"format":        "jpeg",
-				"quality":       82,
-				"everyNthFrame": 1,
-			}, nil)
+			_ = cdp.Call(ctx, sessID, "Page.startScreencast", scParams, nil)
 		}()
 	}
 
@@ -911,4 +1279,15 @@ func clamp(v, minV, maxV int) int {
 		return maxV
 	}
 	return v
+}
+
+func isClosedCDPError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrCDPClosed) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "closed") || strings.Contains(msg, "eof") || strings.Contains(msg, "broken pipe")
 }

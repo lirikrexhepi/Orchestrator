@@ -1,8 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import { MaterialIcon } from '../common/icons';
-import { OutputPanel } from './WorkRow';
-import { OrbitLoader } from './OrbitLoader';
+import { CheckCircleFilled, MaterialIcon, RunningCircleIcon, XCircleFilled } from '../common/icons';
 import { formatTokens, ContextUsage } from './contextUsage';
 import {
   SessionCheck,
@@ -10,6 +9,7 @@ import {
   RepoChangeGroup,
   FileRepoScope,
   groupChangesByRepo,
+  normalizeRepoPath,
 } from './sessionInspector';
 import { ThreadFileChange } from './threadChanges';
 import { DARK_TONE, LIGHT_TONE, Tone } from './SubagentMenu';
@@ -23,10 +23,158 @@ export interface SessionInspectorSectionsProps {
   mcps: McpServerUsage[];
   workspaceCwd?: string;
   onOpenChanges?: (group?: RepoChangeGroup) => void;
-  onOpenFile?: (path: string) => void;
+  onOpenFile?: (path: string, group?: RepoChangeGroup) => void;
 }
 
-const TRANSITION = { duration: 0.2, ease: [0.32, 0.72, 0, 1] } as const;
+const TRANSITION = { duration: 0.22, ease: [0.32, 0.72, 0, 1] } as const;
+
+const ContextRingIcon: React.FC<{ ratio: number; className?: string }> = ({ ratio, className = '' }) => {
+  const clamped = Math.max(0.05, Math.min(1, ratio));
+  const r = 6;
+  const circ = 2 * Math.PI * r;
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" className={`shrink-0 ${className}`}>
+      <circle cx="8" cy="8" r={r} stroke="currentColor" strokeOpacity="0.22" strokeWidth="1.75" />
+      <circle
+        cx="8"
+        cy="8"
+        r={r}
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeDasharray={`${circ * clamped} ${circ}`}
+        transform="rotate(-90 8 8)"
+      />
+    </svg>
+  );
+};
+
+const SectionRow: React.FC<{
+  tone: Tone;
+  icon: React.ReactNode;
+  label: React.ReactNode;
+  trailing?: React.ReactNode;
+  open: boolean;
+  onToggle: () => void;
+}> = ({ tone, icon, label, trailing, open, onToggle }) => (
+  <button
+    type="button"
+    onClick={onToggle}
+    aria-expanded={open}
+    className={`group flex h-8 w-full items-center gap-2.5 rounded-[10px] px-2 text-left transition-colors cursor-pointer select-none ${tone.hover}`}
+  >
+    <span className={`flex w-4 shrink-0 items-center justify-center ${tone.muted}`}>{icon}</span>
+    <span className={`min-w-0 flex-1 truncate whitespace-nowrap text-[12.5px] font-medium tracking-tight font-(family-name:--app-font) ${tone.title}`}>
+      {label}
+    </span>
+    {trailing}
+    <span className={`-mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${tone.close}`}>
+      <MaterialIcon name="expand_more" size={15} className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+    </span>
+  </button>
+);
+
+const ChecksCapsule: React.FC<{
+  checks: SessionCheck[];
+  isLight: boolean;
+}> = ({ checks, isLight }) => {
+  const [hovered, setHovered] = useState<{ index: number; check: SessionCheck; x: number; y: number } | null>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const [tooltipLeft, setTooltipLeft] = useState<number>(0);
+
+  useLayoutEffect(() => {
+    if (!hovered) return;
+    const width = tooltipRef.current?.offsetWidth ?? 160;
+    const margin = 12;
+    const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+    const centered = hovered.x - width / 2;
+    setTooltipLeft(Math.min(Math.max(margin, centered), maxLeft));
+  }, [hovered]);
+
+  return (
+    <div
+      onMouseLeave={() => setHovered(null)}
+      className={`relative flex items-center gap-1.5 px-2 py-1 rounded-full border transition-colors select-none shrink-0 ${
+        isLight
+          ? 'bg-black/[0.05] border-black/[0.08] shadow-[inset_0_1px_1px_rgba(0,0,0,0.04)]'
+          : 'bg-[#1c1c1f]/90 border-white/[0.08] shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)] backdrop-blur-sm'
+      }`}
+    >
+      {checks.slice(0, 6).map((c, i) => (
+        <div
+          key={c.id || i}
+          className="relative flex items-center justify-center"
+          onMouseEnter={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            setHovered({ index: i, check: c, x: rect.left + rect.width / 2, y: rect.top });
+          }}
+        >
+          <div className="relative flex items-center justify-center transition-transform duration-150 hover:scale-110">
+            {c.status === 'running' ? (
+              <RunningCircleIcon size={17} className={isLight ? 'text-[#F59E0B]' : 'text-[#FBBF24] drop-shadow-sm'} />
+            ) : c.status === 'failed' ? (
+              <XCircleFilled size={17} className="text-[#FF453A] drop-shadow-sm" />
+            ) : (
+              <CheckCircleFilled size={17} className={isLight ? 'text-[#22C55E]' : 'text-[#30D158] drop-shadow-sm'} />
+            )}
+          </div>
+        </div>
+      ))}
+
+      {checks.length > 6 && (
+        <span className="text-[10px] font-semibold tabular-nums opacity-60 px-0.5">
+          +{checks.length - 6}
+        </span>
+      )}
+
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {hovered && (
+              <div
+                key="checks-tooltip-anchor"
+                ref={tooltipRef}
+                style={{
+                  position: 'fixed',
+                  left: tooltipLeft,
+                  top: hovered.y - 8,
+                  transform: 'translateY(-100%)',
+                  zIndex: 9999,
+                }}
+                className="pointer-events-none whitespace-nowrap"
+              >
+                <motion.div
+                  initial={{ opacity: 0, y: 4, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 2, scale: 0.96 }}
+                  transition={{ duration: 0.12 }}
+                  className={`px-2.5 py-1 rounded-[8px] text-[11px] font-medium font-(family-name:--app-font) tracking-tight shadow-xl flex items-center border ${
+                    isLight
+                      ? 'bg-white/95 text-neutral-900 border-black/10 shadow-black/10'
+                      : 'bg-[#222225]/95 text-white/90 border-white/10 shadow-[0_8px_24px_rgba(0,0,0,0.6)] backdrop-blur-md'
+                  }`}
+                >
+                  <span className="font-mono text-[10.5px] opacity-90 max-w-[240px] truncate">
+                    {hovered.check.label || hovered.check.command}
+                  </span>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>,
+          document.body,
+        )}
+    </div>
+  );
+};
+
+function formatMcpStatus(status?: string): string {
+  if (!status) return '';
+  const lower = status.toLowerCase();
+  if (lower === 'completed' || lower === 'done') return 'Completed';
+  if (lower === 'running' || lower === 'in_progress' || lower === 'pending') return 'Running';
+  if (lower === 'error' || lower === 'failed') return 'Failed';
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
 
 export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> = ({
   isLight,
@@ -40,17 +188,15 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
   onOpenFile,
 }) => {
   const tone: Tone = isLight ? LIGHT_TONE : DARK_TONE;
-  const rowHover = isLight ? 'hover:bg-black/[0.04]' : 'hover:bg-white/[0.04]';
+  const checkPassIconTone = isLight ? 'text-[#22C55E]' : 'text-[#30D158]';
+  const checkFailIconTone = isLight ? 'text-rose-500' : 'text-[#FF453A]';
 
   const [openChanges, setOpenChanges] = useState(true);
-  const [openChecks, setOpenChecks] = useState(true);
   const [openContext, setOpenContext] = useState(true);
   const [openMcps, setOpenMcps] = useState(true);
 
   const [expandedRepos, setExpandedRepos] = useState<Record<string, boolean>>({});
-  const [expandedChecks, setExpandedChecks] = useState<Record<string, boolean>>({});
   const [expandedServers, setExpandedServers] = useState<Record<string, boolean>>({});
-  const [showAllChecks, setShowAllChecks] = useState(false);
 
   const repoGroups = useMemo(
     () => groupChangesByRepo(changes, repoScopes, workspaceCwd),
@@ -59,17 +205,16 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
 
   // Avoid duplicating WorkspaceSection's top-level Changes row:
   // Only show the inspector Changes multi-repo breakdown when files were touched across >1 repo/branch or outside the workspace root
+  const normWorkspace = workspaceCwd ? normalizeRepoPath(workspaceCwd).toLowerCase() : '';
   const shouldShowChanges =
     changes.length > 0 &&
     (repoGroups.length > 1 ||
-      repoGroups.some((g) => !g.isGit || (workspaceCwd && g.root !== workspaceCwd)));
-
-  const totalAdd = useMemo(() => changes.reduce((sum, c) => sum + c.additions, 0), [changes]);
-  const totalDel = useMemo(() => changes.reduce((sum, c) => sum + c.deletions, 0), [changes]);
+      repoGroups.some(
+        (g) => !g.isGit || (normWorkspace && normalizeRepoPath(g.root).toLowerCase() !== normWorkspace),
+      ));
 
   const failedChecks = useMemo(() => checks.filter((c) => c.status === 'failed').length, [checks]);
   const runningChecks = useMemo(() => checks.filter((c) => c.status === 'running').length, [checks]);
-  const passedChecks = useMemo(() => checks.filter((c) => c.status === 'passed').length, [checks]);
 
   const cumulativeTokens = useMemo(() => {
     if (!contextUsage) return 0;
@@ -84,8 +229,6 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
   const hasContextContent =
     Boolean(contextUsage && (contextUsage.tokens > 0 || cumulativeTokens > 0));
 
-  const visibleChecks = showAllChecks ? checks : checks.slice(0, 5);
-
   const sessionTokenRows = useMemo(() => {
     if (!contextUsage) return [];
     return [
@@ -96,41 +239,34 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
     ];
   }, [contextUsage]);
 
+  const contextRatio =
+    contextUsage && contextUsage.tokens > 0 && contextUsage.window && contextUsage.window > 0
+      ? Math.min(1, contextUsage.tokens / contextUsage.window)
+      : 0;
+  const contextPct = Math.round(contextRatio * 100);
+
+  if (!shouldShowChanges && checks.length === 0 && !hasContextContent && mcps.length === 0) {
+    return null;
+  }
+
   return (
-    <div className="flex min-h-0 flex-col font-(family-name:--app-font)">
+    <div className="flex min-h-0 flex-col gap-0.5 px-1.5 pb-1.5 font-(family-name:--app-font)">
       {/* Changes Section (only shown when multi-repo or outside workspace root) */}
       {shouldShowChanges && (
-        <div className={`flex min-h-0 flex-col p-2 border-t ${tone.divider}`}>
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => setOpenChanges((v) => !v)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') setOpenChanges((v) => !v);
-            }}
-            className="flex items-center gap-3 px-2 pb-1.5 pt-1.5 cursor-pointer select-none group/hdr"
-          >
-            <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>
-              Changes
-            </span>
-            <span className={`h-px flex-1 ${tone.divider} border-t`} />
-            <div className="flex items-center gap-1.5 text-[11px] tabular-nums">
-              <span className={tone.faint}>
-                {changes.length} {changes.length === 1 ? 'file' : 'files'}
+        <div className="flex min-h-0 flex-col">
+          <div className={`mx-2 my-1 border-t ${tone.divider}`} />
+          <SectionRow
+            tone={tone}
+            icon={<MaterialIcon name="account_tree" size={15} />}
+            label="Repos"
+            open={openChanges}
+            onToggle={() => setOpenChanges((v) => !v)}
+            trailing={
+              <span className={`text-[11.5px] tabular-nums shrink-0 ${tone.muted}`}>
+                {repoGroups.length}
               </span>
-              {(totalAdd > 0 || totalDel > 0) && (
-                <span className="flex items-center gap-1 ml-0.5 font-medium">
-                  {totalAdd > 0 && <span className="text-emerald-500">+{totalAdd}</span>}
-                  {totalDel > 0 && <span className="text-rose-500">−{totalDel}</span>}
-                </span>
-              )}
-              <MaterialIcon
-                name="expand_more"
-                size={14}
-                className={`transition-transform duration-200 ${openChanges ? 'rotate-180' : ''} ${tone.faint}`}
-              />
-            </div>
-          </div>
+            }
+          />
 
           <AnimatePresence initial={false}>
             {openChanges && (
@@ -139,57 +275,42 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
                 animate={{ height: 'auto', opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
                 transition={TRANSITION}
-                className="flex flex-col gap-0.5 overflow-hidden pt-1"
+                className="flex flex-col gap-0.5 overflow-hidden px-1"
               >
                 {repoGroups.map((group) => {
                   const isExpanded = Boolean(expandedRepos[group.key]);
                   return (
                     <div key={group.key} className="flex flex-col">
-                      <div
-                        role="button"
-                        tabIndex={0}
+                      <button
+                        type="button"
                         onClick={() =>
                           setExpandedRepos((prev) => ({ ...prev, [group.key]: !prev[group.key] }))
                         }
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            setExpandedRepos((prev) => ({ ...prev, [group.key]: !prev[group.key] }));
-                          }
-                        }}
-                        className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-[10px] ${rowHover} transition-colors cursor-pointer select-none`}
+                        className={`flex h-7 w-full items-center gap-2 px-2 rounded-[8px] ${tone.hover} transition-colors cursor-pointer select-none text-left`}
                       >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <MaterialIcon
-                            name={group.isGit ? 'account_tree' : 'folder'}
-                            size={14}
-                            className={`${tone.muted} shrink-0`}
-                          />
-                          <span className={`text-[12.5px] font-medium truncate max-w-[120px] ${tone.title}`}>
-                            {group.name}
+                        <MaterialIcon
+                          name={group.isGit ? 'account_tree' : 'folder'}
+                          size={13}
+                          className={`${tone.muted} shrink-0`}
+                        />
+                        <span className={`min-w-0 flex-1 truncate text-[12px] font-medium ${tone.body}`}>
+                          {group.name}
+                        </span>
+                        {group.branch && (
+                          <span className={`truncate max-w-[82px] text-[10.5px] ${tone.faint}`}>
+                            {group.branch}
                           </span>
-                          {group.branch && (
-                            <span className="px-1.5 py-0.2 rounded text-[10px] bg-sky-500/10 text-sky-400 border border-sky-500/20 truncate max-w-[90px] font-mono leading-tight">
-                              {group.branch}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 text-[11px] tabular-nums shrink-0">
-                          {group.additions > 0 && (
-                            <span className="text-emerald-500">+{group.additions}</span>
-                          )}
-                          {group.deletions > 0 && (
-                            <span className="text-rose-500">−{group.deletions}</span>
-                          )}
-                          <span className={tone.faint}>
-                            {group.fileCount} {group.fileCount === 1 ? 'file' : 'files'}
-                          </span>
-                          <MaterialIcon
-                            name="expand_more"
-                            size={14}
-                            className={`transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''} ${tone.faint}`}
-                          />
-                        </div>
-                      </div>
+                        )}
+                        <span className="flex items-center gap-1.5 text-[11px] font-mono tabular-nums shrink-0">
+                          {group.additions > 0 && <span className="text-emerald-500">+{group.additions}</span>}
+                          {group.deletions > 0 && <span className="text-rose-500">−{group.deletions}</span>}
+                        </span>
+                        <MaterialIcon
+                          name="expand_more"
+                          size={14}
+                          className={`transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''} ${tone.faint}`}
+                        />
+                      </button>
 
                       <AnimatePresence initial={false}>
                         {isExpanded && (
@@ -198,46 +319,30 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
                             animate={{ height: 'auto', opacity: 1 }}
                             exit={{ height: 0, opacity: 0 }}
                             transition={TRANSITION}
-                            className="flex flex-col overflow-hidden pt-0.5 pl-4 pr-1"
+                            className="flex flex-col overflow-hidden pt-0.5 pl-4 pr-1 gap-0.5"
                           >
-                            <div className="flex flex-col gap-0.5">
-                              {group.files.map((file) => {
-                                const basename = file.path.split(/[/\\]/).pop() || file.path;
-                                return (
-                                  <div
-                                    key={file.key}
-                                    role="button"
-                                    tabIndex={0}
-                                    onClick={() => {
-                                      if (onOpenFile) onOpenFile(file.path);
-                                      else if (onOpenChanges) onOpenChanges(group);
-                                    }}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter' || e.key === ' ') {
-                                        if (onOpenFile) onOpenFile(file.path);
-                                        else if (onOpenChanges) onOpenChanges(group);
-                                      }
-                                    }}
-                                    className={`flex items-center justify-between text-[11px] py-1 px-2 rounded-[8px] ${rowHover} cursor-pointer transition-colors`}
-                                  >
-                                    <span
-                                      className={`truncate flex-1 font-mono text-[11px] ${tone.body}`}
-                                      title={file.path}
-                                    >
-                                      {basename}
-                                    </span>
-                                    <span className="flex items-center gap-1.5 text-[10.5px] tabular-nums shrink-0 ml-2">
-                                      {file.additions > 0 && (
-                                        <span className="text-emerald-500">+{file.additions}</span>
-                                      )}
-                                      {file.deletions > 0 && (
-                                        <span className="text-rose-500">−{file.deletions}</span>
-                                      )}
-                                    </span>
-                                  </div>
-                                );
-                              })}
-                            </div>
+                            {group.files.map((file) => {
+                              const basename = file.path.split(/[/\\]/).pop() || file.path;
+                              return (
+                                <button
+                                  key={file.key}
+                                  type="button"
+                                  onClick={() => {
+                                    if (onOpenFile) onOpenFile(file.path, group);
+                                    else if (onOpenChanges) onOpenChanges(group);
+                                  }}
+                                  className={`flex h-7 w-full items-center justify-between text-left text-[11.5px] px-2 rounded-[8px] ${tone.hover} cursor-pointer transition-colors`}
+                                >
+                                  <span className={`truncate flex-1 ${tone.body}`} title={file.path}>
+                                    {basename}
+                                  </span>
+                                  <span className="flex items-center gap-1.5 text-[10.5px] font-mono tabular-nums shrink-0 ml-2">
+                                    {file.additions > 0 && <span className="text-emerald-500">+{file.additions}</span>}
+                                    {file.deletions > 0 && <span className="text-rose-500">−{file.deletions}</span>}
+                                  </span>
+                                </button>
+                              );
+                            })}
                             {onOpenChanges && (
                               <button
                                 type="button"
@@ -245,10 +350,10 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
                                   e.stopPropagation();
                                   onOpenChanges(group);
                                 }}
-                                className={`mt-1 flex items-center gap-1.5 px-2 py-1 rounded-[8px] text-[11px] font-medium cursor-pointer transition-colors self-start ${rowHover} ${tone.muted}`}
+                                className={`flex h-7 items-center gap-1.5 px-2 rounded-[8px] text-[11px] font-medium cursor-pointer transition-colors self-start ${tone.hover} ${tone.muted}`}
                               >
                                 <MaterialIcon name="difference" size={13} />
-                                <span>View full diff</span>
+                                <span>View diff</span>
                               </button>
                             )}
                           </motion.div>
@@ -263,303 +368,40 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
         </div>
       )}
 
-      {/* Checks Section */}
+      {/* Checks Section (non-expanding, latest batch only) */}
       {checks.length > 0 && (
-        <div className={`flex min-h-0 flex-col p-2 border-t ${tone.divider}`}>
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => setOpenChecks((v) => !v)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') setOpenChecks((v) => !v);
-            }}
-            className="flex items-center gap-3 px-2 pb-1.5 pt-1.5 cursor-pointer select-none group/hdr"
-          >
-            <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>
+        <div className="flex min-h-0 flex-col">
+          <div className={`mx-2 my-1 border-t ${tone.divider}`} />
+          <div className="flex h-8 w-full items-center gap-2.5 rounded-[10px] px-2 select-none">
+            <span className={`flex w-4 shrink-0 items-center justify-center ${tone.muted}`}>
+              {failedChecks > 0 ? (
+                <XCircleFilled size={17} className={checkFailIconTone} />
+              ) : runningChecks > 0 ? (
+                <RunningCircleIcon size={17} className={isLight ? 'text-[#F59E0B]' : 'text-[#FBBF24]'} />
+              ) : (
+                <CheckCircleFilled size={17} className={checkPassIconTone} />
+              )}
+            </span>
+            <span className={`min-w-0 flex-1 truncate whitespace-nowrap text-[12.5px] font-medium tracking-tight font-(family-name:--app-font) ${tone.title}`}>
               Checks
             </span>
-            <span className={`h-px flex-1 ${tone.divider} border-t`} />
-            <div className="flex items-center gap-1.5 text-[11px] tabular-nums">
-              {failedChecks > 0 ? (
-                <span className="text-rose-400 font-medium">{failedChecks} failed</span>
-              ) : runningChecks > 0 ? (
-                <span className="text-amber-400 font-medium animate-pulse">{runningChecks} running</span>
-              ) : (
-                <span className={tone.faint}>
-                  {passedChecks}/{checks.length} passed
-                </span>
-              )}
-              <MaterialIcon
-                name="expand_more"
-                size={14}
-                className={`transition-transform duration-200 ${openChecks ? 'rotate-180' : ''} ${tone.faint}`}
-              />
-            </div>
+            <ChecksCapsule checks={checks} isLight={isLight} />
           </div>
-
-          <AnimatePresence initial={false}>
-            {openChecks && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={TRANSITION}
-                className="flex flex-col gap-0.5 overflow-hidden pt-1"
-              >
-                {visibleChecks.map((check) => {
-                  const isExpanded = Boolean(expandedChecks[check.id]);
-                  const hasOutput = Boolean(check.output && check.output.trim().length > 0);
-                  return (
-                    <div key={check.id} className="flex flex-col">
-                      <div
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => {
-                          if (hasOutput) {
-                            setExpandedChecks((prev) => ({ ...prev, [check.id]: !prev[check.id] }));
-                          }
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            if (hasOutput) {
-                              setExpandedChecks((prev) => ({ ...prev, [check.id]: !prev[check.id] }));
-                            }
-                          }
-                        }}
-                        className={`flex items-center justify-between gap-2 px-2 py-1.5 rounded-[10px] ${rowHover} transition-colors select-none ${
-                          hasOutput ? 'cursor-pointer' : 'cursor-default'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0 flex-1">
-                          {check.status === 'running' ? (
-                            <OrbitLoader size={12} />
-                          ) : check.status === 'failed' ? (
-                            <MaterialIcon name="cancel" size={14} className="text-rose-400 shrink-0" />
-                          ) : (
-                            <MaterialIcon name="check_circle" size={14} className="text-emerald-400 shrink-0" />
-                          )}
-                          <span
-                            className={`truncate font-mono text-[11px] ${tone.body}`}
-                            title={check.command}
-                          >
-                            {check.label}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0 text-[11px]">
-                          <span
-                            className={`capitalize ${
-                              check.status === 'failed'
-                                ? 'text-rose-400 font-medium'
-                                : check.status === 'running'
-                                  ? 'text-amber-400 font-medium'
-                                  : 'text-emerald-400'
-                            }`}
-                          >
-                            {check.status === 'passed'
-                              ? 'Passed'
-                              : check.status === 'failed'
-                                ? 'Failed'
-                                : 'Running'}
-                          </span>
-                          {hasOutput && (
-                            <MaterialIcon
-                              name="expand_more"
-                              size={14}
-                              className={`transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''} ${tone.faint}`}
-                            />
-                          )}
-                        </div>
-                      </div>
-
-                      {hasOutput && (
-                        <AnimatePresence initial={false}>
-                          {isExpanded && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: 'auto', opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={TRANSITION}
-                              className="overflow-hidden pt-1 pb-1.5 px-2"
-                            >
-                              <OutputPanel text={check.output!} />
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      )}
-                    </div>
-                  );
-                })}
-
-                {checks.length > 5 && (
-                  <button
-                    type="button"
-                    onClick={() => setShowAllChecks((v) => !v)}
-                    className={`mt-1 py-1 px-2 rounded-[8px] self-center text-[11px] font-medium cursor-pointer transition-colors ${tone.faint} hover:${tone.title} ${rowHover}`}
-                  >
-                    {showAllChecks ? 'Show less' : `Show ${checks.length - 5} more checks`}
-                  </button>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      )}
-
-      {/* Context & Session Usage Section */}
-      {hasContextContent && contextUsage && (
-        <div className={`flex min-h-0 flex-col p-2 border-t ${tone.divider}`}>
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => setOpenContext((v) => !v)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') setOpenContext((v) => !v);
-            }}
-            className="flex items-center gap-3 px-2 pb-1.5 pt-1.5 cursor-pointer select-none group/hdr"
-          >
-            <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>
-              Context & Usage
-            </span>
-            <span className={`h-px flex-1 ${tone.divider} border-t`} />
-            <div className="flex items-center gap-1.5 text-[11px] tabular-nums">
-              {contextUsage.tokens > 0 && contextUsage.window ? (
-                <span className={tone.faint}>
-                  {Math.round((contextUsage.tokens / contextUsage.window) * 100)}%
-                </span>
-              ) : cumulativeTokens > 0 ? (
-                <span className={tone.faint}>{formatTokens(cumulativeTokens)}</span>
-              ) : null}
-              <MaterialIcon
-                name="expand_more"
-                size={14}
-                className={`transition-transform duration-200 ${openContext ? 'rotate-180' : ''} ${tone.faint}`}
-              />
-            </div>
-          </div>
-
-          <AnimatePresence initial={false}>
-            {openContext && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={TRANSITION}
-                className="flex flex-col overflow-hidden pt-1 px-2"
-              >
-                {/* Active Context Bar: thin 3px neutral monochrome hairline track */}
-                {contextUsage.tokens > 0 && (
-                  <div className="flex flex-col pb-2.5">
-                    {(() => {
-                      const windowSize = contextUsage.window || 0;
-                      const ratio = windowSize > 0 ? Math.min(1, contextUsage.tokens / windowSize) : 0;
-                      const pct = Math.round(ratio * 100);
-                      const barColor =
-                        pct >= 90
-                          ? 'bg-rose-400/80'
-                          : pct >= 80
-                            ? 'bg-amber-400/80'
-                            : isLight
-                              ? 'bg-black/75'
-                              : 'bg-white/75';
-                      const trackBg = isLight ? 'bg-black/[0.08]' : 'bg-white/[0.08]';
-
-                      return (
-                        <>
-                          <div className="flex items-center justify-between text-[11.5px]">
-                            <span className={`font-medium ${tone.body}`}>{pct}% used</span>
-                            <span className={`tabular-nums ${tone.faint}`}>
-                              {formatTokens(contextUsage.tokens)}
-                              {windowSize > 0 ? ` / ${formatTokens(windowSize)}` : ''}
-                            </span>
-                          </div>
-                          <div className={`h-[3px] w-full rounded-full ${trackBg} overflow-hidden mt-1.5`}>
-                            <div
-                              className={`h-full rounded-full transition-all duration-300 ${barColor}`}
-                              style={{ width: `${Math.max(2, Math.min(100, pct))}%` }}
-                            />
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </div>
-                )}
-
-                {/* Cumulative Session Usage Breakdown: crisp understated rows with 5px muted dots */}
-                {cumulativeTokens > 0 && (
-                  <div className={`flex flex-col pt-2 ${contextUsage.tokens > 0 ? `border-t ${tone.divider}` : ''}`}>
-                    <div className="flex items-center justify-between text-[11.5px] pb-1 px-1">
-                      <span className={`font-medium ${tone.muted}`}>Session usage</span>
-                      <span className={`tabular-nums ${tone.faint}`}>{formatTokens(cumulativeTokens)} tokens</span>
-                    </div>
-
-                    <div className="flex flex-col gap-0.5">
-                      {sessionTokenRows.map((row) => {
-                        if (row.count <= 0 && cumulativeTokens > 0) return null;
-                        const share = cumulativeTokens > 0 ? (row.count / cumulativeTokens) * 100 : 0;
-                        const shareText = share > 0 && share < 0.1 ? '<0.1%' : `${share.toFixed(1)}%`;
-                        return (
-                          <div
-                            key={row.label}
-                            className={`flex items-center justify-between text-[11.5px] py-1 px-2 rounded-[8px] ${rowHover} transition-colors`}
-                          >
-                            <div className="flex items-center gap-2 min-w-0">
-                              <span className={`w-[5px] h-[5px] rounded-full shrink-0 ${isLight ? 'bg-black/35' : 'bg-white/40'}`} />
-                              <span className={`truncate ${tone.muted}`}>{row.label}</span>
-                            </div>
-                            <div className="flex items-center gap-2 tabular-nums shrink-0">
-                              <span className={tone.body}>{formatTokens(row.count)}</span>
-                              <span className={`text-[10px] w-10 text-right ${tone.faint}`}>{shareText}</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    {contextUsage.sessionCostUsd !== undefined && contextUsage.sessionCostUsd > 0 && (
-                      <div className={`flex items-center justify-between text-[11px] pt-2 mt-1.5 px-2 border-t ${tone.divider} ${tone.faint}`}>
-                        <span>Estimated cost</span>
-                        <span className="tabular-nums font-mono font-medium">
-                          {contextUsage.sessionCostUsd < 0.01
-                            ? '<$0.01'
-                            : `$${contextUsage.sessionCostUsd.toFixed(2)}`}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
         </div>
       )}
 
       {/* MCPs Section */}
       {mcps.length > 0 && (
-        <div className={`flex min-h-0 flex-col p-2 border-t ${tone.divider}`}>
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => setOpenMcps((v) => !v)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') setOpenMcps((v) => !v);
-            }}
-            className="flex items-center gap-3 px-2 pb-1.5 pt-1.5 cursor-pointer select-none group/hdr"
-          >
-            <span className={`shrink-0 whitespace-nowrap text-[12.5px] font-medium font-(family-name:--app-font) ${tone.muted}`}>
-              MCPs
-            </span>
-            <span className={`h-px flex-1 ${tone.divider} border-t`} />
-            <div className="flex items-center gap-1.5 text-[11px] tabular-nums">
-              <span className={tone.faint}>
-                {mcps.length} used
-              </span>
-              <MaterialIcon
-                name="expand_more"
-                size={14}
-                className={`transition-transform duration-200 ${openMcps ? 'rotate-180' : ''} ${tone.faint}`}
-              />
-            </div>
-          </div>
+        <div className="flex min-h-0 flex-col">
+          <div className={`mx-2 my-1 border-t ${tone.divider}`} />
+          <SectionRow
+            tone={tone}
+            icon={<MaterialIcon name="hub" size={15} />}
+            label="MCPs"
+            open={openMcps}
+            onToggle={() => setOpenMcps((v) => !v)}
+            trailing={<span className={`text-[11.5px] tabular-nums ${tone.muted}`}>{mcps.length} used</span>}
+          />
 
           <AnimatePresence initial={false}>
             {openMcps && (
@@ -568,48 +410,35 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
                 animate={{ height: 'auto', opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
                 transition={TRANSITION}
-                className="flex flex-col gap-0.5 overflow-hidden pt-1"
+                className="flex flex-col gap-0.5 overflow-hidden"
               >
                 {mcps.map((mcp) => {
                   const isExpanded = Boolean(expandedServers[mcp.server]);
                   return (
                     <div key={mcp.server} className="flex flex-col">
-                      <div
-                        role="button"
-                        tabIndex={0}
+                      <button
+                        type="button"
                         onClick={() =>
                           setExpandedServers((prev) => ({
                             ...prev,
                             [mcp.server]: !prev[mcp.server],
                           }))
                         }
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            setExpandedServers((prev) => ({
-                              ...prev,
-                              [mcp.server]: !prev[mcp.server],
-                            }));
-                          }
-                        }}
-                        className={`flex items-center justify-between gap-2 px-2 py-1.5 rounded-[10px] ${rowHover} transition-colors cursor-pointer select-none`}
+                        className={`flex h-7 w-full items-center gap-2 rounded-[8px] px-2 text-left ${tone.hover} transition-colors cursor-pointer select-none`}
                       >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <MaterialIcon name="hub" size={14} className={`${tone.muted} shrink-0`} />
-                          <span className={`text-[12.5px] font-medium truncate ${tone.title}`}>
-                            {mcp.server}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 text-[11px] tabular-nums shrink-0">
-                          <span className={tone.faint}>
-                            {mcp.calls} {mcp.calls === 1 ? 'call' : 'calls'}
-                          </span>
-                          <MaterialIcon
-                            name="expand_more"
-                            size={14}
-                            className={`transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''} ${tone.faint}`}
-                          />
-                        </div>
-                      </div>
+                        <MaterialIcon name="hub" size={14} className={`${tone.muted} shrink-0`} />
+                        <span className={`min-w-0 flex-1 truncate text-[12px] font-medium ${tone.body}`}>
+                          {mcp.server}
+                        </span>
+                        <span className={`text-[11px] tabular-nums shrink-0 ${tone.faint}`}>
+                          {mcp.calls} {mcp.calls === 1 ? 'call' : 'calls'}
+                        </span>
+                        <MaterialIcon
+                          name="expand_more"
+                          size={14}
+                          className={`-mr-0.5 transition-transform duration-200 shrink-0 ${isExpanded ? 'rotate-180' : ''} ${tone.faint}`}
+                        />
+                      </button>
 
                       <AnimatePresence initial={false}>
                         {isExpanded && (
@@ -618,33 +447,162 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
                             animate={{ height: 'auto', opacity: 1 }}
                             exit={{ height: 0, opacity: 0 }}
                             transition={TRANSITION}
-                            className="flex flex-col overflow-hidden pt-0.5 pl-4 pr-1 gap-0.5"
+                            className="overflow-hidden"
                           >
-                            {mcp.items.map((item, idx) => (
-                              <div
-                                key={idx}
-                                className={`flex items-center gap-2 text-[11px] py-0.5 px-2 font-mono ${tone.muted}`}
-                              >
-                                <span className={`w-1 h-1 rounded-full shrink-0 ${isLight ? 'bg-black/30' : 'bg-white/30'}`} />
-                                <span className={`font-medium ${tone.body}`}>{item.action}</span>
-                                {item.target && (
-                                  <span className="truncate flex-1 opacity-70" title={item.target}>
-                                    {item.target}
-                                  </span>
-                                )}
-                                {item.status && (
-                                  <span className="text-[9.5px] uppercase opacity-50 shrink-0">
-                                    {item.status}
-                                  </span>
-                                )}
-                              </div>
-                            ))}
+                            <div className={`mx-2 my-0.5 flex flex-col gap-0.5 border-l ${tone.divider} pl-2.5`}>
+                              {mcp.items.map((item, idx) => {
+                                const statusLabel = formatMcpStatus(item.status);
+                                return (
+                                  <div
+                                    key={idx}
+                                    className={`flex h-6 items-center justify-between gap-2 text-[11.5px] font-(family-name:--app-font) ${tone.muted}`}
+                                  >
+                                    <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                                      <span className={`truncate font-medium ${tone.body}`}>{item.action}</span>
+                                      {item.target && (
+                                        <span className={`truncate ${tone.faint}`} title={item.target}>
+                                          {item.target}
+                                        </span>
+                                      )}
+                                    </span>
+                                    {statusLabel && (
+                                      <span
+                                        className={`text-[11px] shrink-0 ${
+                                          statusLabel === 'Failed'
+                                            ? tone.danger
+                                            : statusLabel === 'Running'
+                                              ? 'text-amber-400'
+                                              : tone.faint
+                                        }`}
+                                      >
+                                        {statusLabel}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </motion.div>
                         )}
                       </AnimatePresence>
                     </div>
                   );
                 })}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
+
+      {/* Context & Session Usage Section */}
+      {hasContextContent && contextUsage && (
+        <div className="flex min-h-0 flex-col">
+          <div className={`mx-2 my-1 border-t ${tone.divider}`} />
+          <SectionRow
+            tone={tone}
+            icon={<ContextRingIcon ratio={contextUsage.window && contextUsage.window > 0 ? contextRatio : 0.35} />}
+            label="Context"
+            open={openContext}
+            onToggle={() => setOpenContext((v) => !v)}
+            trailing={
+              contextUsage.tokens > 0 && contextUsage.window && contextUsage.window > 0 ? (
+                <span className={`text-[11.5px] tabular-nums ${tone.muted}`}>{contextPct}%</span>
+              ) : contextUsage.tokens > 0 ? (
+                <span className={`text-[11.5px] tabular-nums ${tone.muted}`}>{formatTokens(contextUsage.tokens)}</span>
+              ) : cumulativeTokens > 0 ? (
+                <span className={`text-[11.5px] tabular-nums ${tone.muted}`}>{formatTokens(cumulativeTokens)}</span>
+              ) : undefined
+            }
+          />
+
+          <AnimatePresence initial={false}>
+            {openContext && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={TRANSITION}
+                className="flex flex-col gap-2 overflow-hidden px-2 pt-0.5 pb-1.5"
+              >
+                {contextUsage.tokens > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    {(() => {
+                      const windowSize = contextUsage.window || 0;
+                      if (windowSize <= 0) {
+                        return (
+                          <div className="flex items-center justify-between text-[11.5px]">
+                            <span className={tone.muted}>Window</span>
+                            <span className={`tabular-nums ${tone.body}`}>{formatTokens(contextUsage.tokens)} tokens</span>
+                          </div>
+                        );
+                      }
+                      const barColor =
+                        contextPct >= 90
+                          ? 'bg-rose-400/85'
+                          : contextPct >= 80
+                            ? 'bg-amber-400/85'
+                            : isLight
+                              ? 'bg-black/70'
+                              : 'bg-white/75';
+                      const trackBg = isLight ? 'bg-black/[0.08]' : 'bg-white/[0.08]';
+
+                      return (
+                        <>
+                          <div className="flex items-center justify-between text-[11.5px] tabular-nums">
+                            <span className={tone.body}>Window</span>
+                            <span className={tone.faint}>
+                              {formatTokens(contextUsage.tokens)} / {formatTokens(windowSize)}
+                            </span>
+                          </div>
+                          <div className={`h-[3px] w-full rounded-full ${trackBg} overflow-hidden`}>
+                            <div
+                              className={`h-full rounded-full transition-all duration-300 ${barColor}`}
+                              style={{ width: `${Math.max(2, Math.min(100, contextPct))}%` }}
+                            />
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                {cumulativeTokens > 0 && (
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center justify-between text-[11px] pb-0.5">
+                      <span className={tone.muted}>Session</span>
+                      <span className={`tabular-nums ${tone.faint}`}>{formatTokens(cumulativeTokens)} tokens</span>
+                    </div>
+
+                    {sessionTokenRows.map((row) => {
+                      if (row.count <= 0) return null;
+                      const share = cumulativeTokens > 0 ? (row.count / cumulativeTokens) * 100 : 0;
+                      const shareText = share > 0 && share < 0.1 ? '<0.1%' : `${share.toFixed(1)}%`;
+                      return (
+                        <div
+                          key={row.label}
+                          className="flex h-6 items-center justify-between text-[11.5px]"
+                        >
+                          <span className={`truncate ${tone.muted}`}>{row.label}</span>
+                          <div className="flex items-center gap-2 tabular-nums shrink-0">
+                            <span className={tone.body}>{formatTokens(row.count)}</span>
+                            <span className={`text-[10.5px] w-10 text-right ${tone.faint}`}>{shareText}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {contextUsage.sessionCostUsd !== undefined && contextUsage.sessionCostUsd > 0 && (
+                      <div className="flex h-6 items-center justify-between text-[11px]">
+                        <span className={tone.muted}>Estimated cost</span>
+                        <span className={`tabular-nums font-medium ${tone.body}`}>
+                          {contextUsage.sessionCostUsd < 0.01
+                            ? '<$0.01'
+                            : `$${contextUsage.sessionCostUsd.toFixed(2)}`}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>

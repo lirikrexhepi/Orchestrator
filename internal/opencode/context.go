@@ -25,19 +25,63 @@ func (a *Adapter) contextLimit(t *thread, providerID, modelID string) int64 {
 	}
 	key := providerID + "/" + modelID
 	a.limitsMu.Lock()
-	defer a.limitsMu.Unlock()
 	if limit, ok := a.limits[t.serverKey][key]; ok {
+		a.limitsMu.Unlock()
 		return limit
 	}
+	wait := a.limitsFetching[t.serverKey]
+	if wait == nil {
+		if time.Since(a.limitsAt[t.serverKey]) < limitRefetchAfter {
+			a.limitsMu.Unlock()
+			return 0
+		}
+		wait = a.startLimitsFetchLocked(t.serverKey, t.api)
+	}
+	a.limitsMu.Unlock()
+
+	select {
+	case <-wait:
+	case <-time.After(2 * time.Second):
+	}
+
+	a.limitsMu.Lock()
+	limit := a.limits[t.serverKey][key]
+	a.limitsMu.Unlock()
+	return limit
+}
+
+func (a *Adapter) ensureLimits(serverKey string, api *httpClient) {
+	if api == nil {
+		return
+	}
+	a.limitsMu.Lock()
+	if len(a.limits[serverKey]) > 0 || a.limitsFetching[serverKey] != nil || time.Since(a.limitsAt[serverKey]) < limitRefetchAfter {
+		a.limitsMu.Unlock()
+		return
+	}
+	wait := a.startLimitsFetchLocked(serverKey, api)
+	a.limitsMu.Unlock()
+	<-wait
+}
+
+func (a *Adapter) startLimitsFetchLocked(serverKey string, api *httpClient) chan struct{} {
 	if a.limitsAt == nil {
 		a.limitsAt = make(map[string]time.Time)
 	}
-	if time.Since(a.limitsAt[t.serverKey]) < limitRefetchAfter {
-		return 0
+	if a.limitsFetching == nil {
+		a.limitsFetching = make(map[string]chan struct{})
 	}
-	a.limitsAt[t.serverKey] = time.Now()
-	go a.fetchLimits(t.serverKey, t.api)
-	return 0
+	a.limitsAt[serverKey] = time.Now()
+	done := make(chan struct{})
+	a.limitsFetching[serverKey] = done
+	go func() {
+		defer close(done)
+		a.fetchLimits(serverKey, api)
+		a.limitsMu.Lock()
+		delete(a.limitsFetching, serverKey)
+		a.limitsMu.Unlock()
+	}()
+	return done
 }
 
 func (a *Adapter) fetchLimits(serverKey string, api *httpClient) {

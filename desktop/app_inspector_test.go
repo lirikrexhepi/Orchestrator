@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -131,5 +133,123 @@ func TestResolveFileRepos(t *testing.T) {
 	}
 	if filepath.Clean(slashScope.Root) != filepath.Clean(gitDir1) {
 		t.Errorf("expected root %q for slash path, got %q", gitDir1, slashScope.Root)
+	}
+}
+
+func TestResolveFileRepos_WindowsDriveNormalizationAndMultiRepo(t *testing.T) {
+	if got := normalizeFilePath(""); got != "" {
+		t.Fatalf("expected empty normalized path, got %q", got)
+	}
+	if got := normalizeFilePath("c:/users/demo/repo/"); runtime.GOOS == "windows" && got != `C:\users\demo\repo` {
+		t.Fatalf("expected C:\\users\\demo\\repo, got %q", got)
+	}
+	if got := normalizeFilePath("/d:/workspace/proj/"); runtime.GOOS == "windows" && got != `D:\workspace\proj` {
+		t.Fatalf("expected D:\\workspace\\proj, got %q", got)
+	}
+
+	initRepo := func(dir, branch string) {
+		t.Helper()
+		cmdInit := exec.Command("git", "init")
+		cmdInit.Dir = dir
+		if out, err := cmdInit.CombinedOutput(); err != nil {
+			t.Fatalf("git init failed: %v (%s)", err, string(out))
+		}
+		for _, args := range [][]string{
+			{"config", "user.name", "test"},
+			{"config", "user.email", "test@example.com"},
+		} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			_ = cmd.Run()
+		}
+		f := filepath.Join(dir, "README.md")
+		if err := os.WriteFile(f, []byte("hello"), 0o644); err != nil {
+			t.Fatalf("write failed: %v", err)
+		}
+		for _, args := range [][]string{
+			{"add", "."},
+			{"commit", "-m", "init"},
+			{"checkout", "-b", branch},
+		} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v failed: %v (%s)", args, err, string(out))
+			}
+		}
+	}
+
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+	nonGit := t.TempDir()
+
+	initRepo(repoA, "feat/repo-a")
+	initRepo(repoB, "feat/repo-b")
+
+	fileA := filepath.Join(repoA, "src", "main.go")
+	_ = os.MkdirAll(filepath.Dir(fileA), 0o755)
+	_ = os.WriteFile(fileA, []byte("package main"), 0o644)
+
+	fileB := filepath.Join(repoB, "index.ts")
+	_ = os.WriteFile(fileB, []byte("export {}"), 0o644)
+
+	fileNonGit := filepath.Join(nonGit, "notes.txt")
+	_ = os.WriteFile(fileNonGit, []byte("notes"), 0o644)
+
+	var lowerDriveA, slashTrailingB, lowerNonGit string
+	if runtime.GOOS == "windows" && len(repoA) >= 2 && repoA[1] == ':' {
+		lowerDriveA = strings.ToLower(fileA[:1]) + fileA[1:]
+		slashTrailingB = filepath.ToSlash(repoB) + "/"
+		lowerNonGit = strings.ToLower(nonGit[:1]) + nonGit[1:] + `\`
+	} else {
+		lowerDriveA = fileA
+		slashTrailingB = repoB + "/"
+		lowerNonGit = nonGit + "/"
+	}
+
+	app := &App{}
+	res := app.ResolveFileRepos([]string{
+		fileA,
+		lowerDriveA,
+		fileB,
+		slashTrailingB,
+		fileNonGit,
+		lowerNonGit,
+	})
+
+	expectedRootA := normalizeFilePath(repoA)
+	expectedRootB := normalizeFilePath(repoB)
+	expectedNonGit := normalizeFilePath(nonGit)
+
+	if res[fileA].Root != expectedRootA || res[lowerDriveA].Root != expectedRootA {
+		t.Fatalf("repoA roots did not canonicalize identically: fileA=%q lower=%q want=%q", res[fileA].Root, res[lowerDriveA].Root, expectedRootA)
+	}
+	if res[fileA].Branch != "feat/repo-a" || !res[fileA].IsGit {
+		t.Fatalf("unexpected repoA metadata: %+v", res[fileA])
+	}
+
+	if res[fileB].Root != expectedRootB || res[slashTrailingB].Root != expectedRootB {
+		t.Fatalf("repoB roots did not canonicalize identically: fileB=%q trailing=%q want=%q", res[fileB].Root, res[slashTrailingB].Root, expectedRootB)
+	}
+	if res[fileB].Branch != "feat/repo-b" || !res[fileB].IsGit {
+		t.Fatalf("unexpected repoB metadata: %+v", res[fileB])
+	}
+
+	if res[fileNonGit].Root != expectedNonGit || res[lowerNonGit].Root != expectedNonGit {
+		t.Fatalf("nonGit roots did not canonicalize identically: file=%q lower=%q want=%q", res[fileNonGit].Root, res[lowerNonGit].Root, expectedNonGit)
+	}
+	if res[fileNonGit].IsGit {
+		t.Fatalf("expected nonGit IsGit=false, got true")
+	}
+
+	if runtime.GOOS == "windows" {
+		for k, scope := range res {
+			if len(scope.Root) >= 2 && scope.Root[1] == ':' && (scope.Root[0] < 'A' || scope.Root[0] > 'Z') {
+				t.Errorf("expected uppercase Windows drive letter for %q, got %q", k, scope.Root)
+			}
+			if strings.HasSuffix(scope.Root, `\`) && len(scope.Root) > 3 {
+				t.Errorf("expected no trailing slash for %q, got %q", k, scope.Root)
+			}
+		}
 	}
 }

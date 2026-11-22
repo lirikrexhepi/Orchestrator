@@ -100,13 +100,28 @@ function mapCheckStatus(status?: string, exitCode?: number): 'running' | 'passed
 }
 
 export function extractSessionChecks(blocks: AgentStreamBlock[]): SessionCheck[] {
-  const checks: SessionCheck[] = [];
+  // Only return the latest batch of testing (the most recent turn that ran checks),
+  // rather than accumulating every historical check across the entire session timeline.
+  let latestBatch: SessionCheck[] = [];
+  let currentBatch: SessionCheck[] = [];
+
+  const flushBatch = () => {
+    if (currentBatch.length > 0) {
+      latestBatch = currentBatch;
+      currentBatch = [];
+    }
+  };
 
   for (const block of blocks) {
+    if (block.type === 'user') {
+      flushBatch();
+      continue;
+    }
+
     if (block.type === 'tool_bash') {
       const bash = block as BashToolBlockData;
       if (bash.command && isCheckCommand(bash.command)) {
-        checks.push({
+        currentBatch.push({
           id: bash.id,
           label: deriveCheckLabel(bash.command),
           command: bash.command,
@@ -121,7 +136,7 @@ export function extractSessionChecks(blocks: AgentStreamBlock[]): SessionCheck[]
         if (item.type === 'bash') {
           const cmd = item.target || item.details || '';
           if (cmd && isCheckCommand(cmd)) {
-            checks.push({
+            currentBatch.push({
               id: item.id || `${group.id}-item-${idx}`,
               label: deriveCheckLabel(cmd),
               command: cmd,
@@ -137,7 +152,7 @@ export function extractSessionChecks(blocks: AgentStreamBlock[]): SessionCheck[]
         if (entry.kind === 'tool') {
           const cmd = entry.target || '';
           if (cmd && isCheckCommand(cmd)) {
-            checks.push({
+            currentBatch.push({
               id: entry.id || `${agent.id}-entry-${idx}`,
               label: deriveCheckLabel(cmd),
               command: cmd,
@@ -150,8 +165,8 @@ export function extractSessionChecks(blocks: AgentStreamBlock[]): SessionCheck[]
     }
   }
 
-  // Return newest-first so the latest verification sits at the top
-  return checks.reverse();
+  flushBatch();
+  return latestBatch;
 }
 
 const ORCHESTRATOR_ACTIONS =
@@ -180,15 +195,23 @@ export function inferMcpServer(actionOrName: string, target?: string): string {
   return 'mcp';
 }
 
+function formatServerName(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return 'MCP';
+  if (trimmed.toLowerCase() === 'mcp') return 'MCP';
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
 export function extractMcpUsage(blocks: AgentStreamBlock[]): McpServerUsage[] {
   const serverMap = new Map<string, McpCallItem[]>();
   const delegatedChildIds = new Set<string>();
 
   const record = (server: string, item: McpCallItem) => {
-    let list = serverMap.get(server);
+    const key = formatServerName(server);
+    let list = serverMap.get(key);
     if (!list) {
       list = [];
-      serverMap.set(server, list);
+      serverMap.set(key, list);
     }
     list.push(item);
   };
@@ -198,8 +221,8 @@ export function extractMcpUsage(blocks: AgentStreamBlock[]): McpServerUsage[] {
       const group = block as ToolGroupBlockData;
       for (const item of group.items) {
         if (item.type === 'mcp') {
-          const server = inferMcpServer(item.action, item.target);
-          if (server === 'orchestrator' && item.target) {
+          const server = item.mcpServer || inferMcpServer(item.action, item.target);
+          if (server.toLowerCase() === 'orchestrator' && item.target) {
             delegatedChildIds.add(item.target);
           }
           record(server, {
@@ -242,6 +265,14 @@ export function extractMcpUsage(blocks: AgentStreamBlock[]): McpServerUsage[] {
   return result;
 }
 
+export function normalizeRepoPath(p: string): string {
+  let out = p.trim().replace(/\\/g, '/');
+  if (/^\/[A-Za-z]:\//.test(out)) out = out.slice(1);
+  out = out.replace(/^([A-Za-z]):/, (_, drive: string) => `${drive.toLowerCase()}:`);
+  if (out.length > 3) out = out.replace(/\/+$/, '');
+  return out;
+}
+
 export function groupChangesByRepo(
   changes: ThreadFileChange[],
   scopes: Record<string, FileRepoScope>,
@@ -250,18 +281,21 @@ export function groupChangesByRepo(
   const groupsByKey = new Map<string, RepoChangeGroup>();
   const order: string[] = [];
 
-  const normKey = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+  const normKey = (p: string) => normalizeRepoPath(p).toLowerCase();
+  const normalizedFallback = fallbackCwd ? normalizeRepoPath(fallbackCwd) : '';
 
   const scopeLookup = new Map<string, FileRepoScope>();
   for (const [p, scope] of Object.entries(scopes || {})) {
     scopeLookup.set(normKey(p), scope);
-    const trimmed = p.replace(/^\/[A-Za-z]:\//, (m) => m.slice(1));
-    scopeLookup.set(normKey(trimmed), scope);
   }
 
   for (const change of changes) {
     const key = normKey(change.path);
-    const scope = scopeLookup.get(key);
+    let scope = scopeLookup.get(key);
+    if (!scope && normalizedFallback && !/^(?:[A-Za-z]:\/|\/|\\\\)/.test(change.path)) {
+      const joined = `${normalizedFallback}/${change.path.replace(/^\.\//, '')}`;
+      scope = scopeLookup.get(normKey(joined));
+    }
 
     let root: string;
     let name: string;
@@ -269,14 +303,14 @@ export function groupChangesByRepo(
     let isGit: boolean;
 
     if (scope) {
-      root = scope.root;
-      name = scope.name || (root.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? 'Repository');
+      root = normalizeRepoPath(scope.root);
+      name = scope.name || (root.split('/').filter(Boolean).pop() ?? 'Repository');
       branch = scope.branch;
       isGit = scope.isGit;
     } else {
-      root = fallbackCwd || 'Workspace';
-      name = fallbackCwd
-        ? (fallbackCwd.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? fallbackCwd)
+      root = normalizedFallback || 'Workspace';
+      name = normalizedFallback
+        ? (normalizedFallback.split('/').filter(Boolean).pop() ?? normalizedFallback)
         : 'Workspace';
       branch = undefined;
       isGit = false;

@@ -59,6 +59,7 @@ func RunStdioBridge(ctx context.Context, endpoint, authHeader string, r io.Reade
 		return err
 	}
 
+	var metaMu sync.Mutex
 	var sessionID string
 	var protocolVersion string
 	var handshakeDone bool
@@ -66,11 +67,14 @@ func RunStdioBridge(ctx context.Context, endpoint, authHeader string, r io.Reade
 
 	defer func() {
 		wg.Wait()
-		if sessionID != "" {
+		metaMu.Lock()
+		sid := sessionID
+		metaMu.Unlock()
+		if sid != "" {
 			delReq, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, endpoint, nil)
 			if err == nil {
 				delReq.Header.Set("Authorization", authHeader)
-				delReq.Header.Set("Mcp-Session-Id", sessionID)
+				delReq.Header.Set("Mcp-Session-Id", sid)
 				resp, err := client.Do(delReq)
 				if err == nil {
 					_ = resp.Body.Close()
@@ -89,11 +93,15 @@ func RunStdioBridge(ctx context.Context, endpoint, authHeader string, r io.Reade
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", authHeader)
-		if sessionID != "" {
-			req.Header.Set("Mcp-Session-Id", sessionID)
+		metaMu.Lock()
+		sid := sessionID
+		pv := protocolVersion
+		metaMu.Unlock()
+		if sid != "" {
+			req.Header.Set("Mcp-Session-Id", sid)
 		}
-		if protocolVersion != "" {
-			req.Header.Set("Mcp-Protocol-Version", protocolVersion)
+		if pv != "" {
+			req.Header.Set("Mcp-Protocol-Version", pv)
 		}
 
 		resp, err := client.Do(req)
@@ -105,11 +113,17 @@ func RunStdioBridge(ctx context.Context, endpoint, authHeader string, r io.Reade
 		}
 		defer resp.Body.Close()
 
-		if resp.Header.Get("Mcp-Session-Id") != "" {
-			sessionID = resp.Header.Get("Mcp-Session-Id")
-		}
-		if resp.Header.Get("Mcp-Protocol-Version") != "" {
-			protocolVersion = resp.Header.Get("Mcp-Protocol-Version")
+		newSID := resp.Header.Get("Mcp-Session-Id")
+		newPV := resp.Header.Get("Mcp-Protocol-Version")
+		if newSID != "" || newPV != "" {
+			metaMu.Lock()
+			if newSID != "" {
+				sessionID = newSID
+			}
+			if newPV != "" {
+				protocolVersion = newPV
+			}
+			metaMu.Unlock()
 		}
 
 		if resp.StatusCode == http.StatusAccepted {

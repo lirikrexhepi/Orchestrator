@@ -42,8 +42,7 @@ func (a *App) TerminalOpen(threadID, cwd, title string, cols, rows int) (termina
 	return a.terminals.Open(threadID, targetCwd, title, cols, rows)
 }
 
-// TerminalList returns all active or recent terminal sessions for the given thread,
-// or all sessions if threadID is empty.
+// TerminalList returns all active or recent terminal sessions for the given thread.
 func (a *App) TerminalList(threadID string) []terminal.SessionInfo {
 	if a.terminals == nil {
 		return []terminal.SessionInfo{}

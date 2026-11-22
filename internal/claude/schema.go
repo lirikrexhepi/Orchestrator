@@ -70,11 +70,12 @@ type Envelope struct {
 // the CLI reports subscription quota. Fields beyond the window type and reset are
 // optional: an unconstrained account reports status and reset with no percentage.
 type RateLimitInfo struct {
-	Status        string `json:"status,omitempty"`
-	RateLimitType string `json:"rateLimitType,omitempty"`
-	ResetsAt      int64  `json:"resetsAt,omitempty"`
-	UsedPercent   *int   `json:"usedPercent,omitempty"`
-	RemainingPct  *int   `json:"remainingPercent,omitempty"`
+	Status        string   `json:"status,omitempty"`
+	RateLimitType string   `json:"rateLimitType,omitempty"`
+	ResetsAt      int64    `json:"resetsAt,omitempty"`
+	UsedPercent   *int     `json:"usedPercent,omitempty"`
+	RemainingPct  *int     `json:"remainingPercent,omitempty"`
+	Utilization   *float64 `json:"utilization,omitempty"`
 }
 
 type InputMessage struct {

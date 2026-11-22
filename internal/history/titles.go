@@ -153,7 +153,7 @@ func (r *Recorder) SetTitle(threadID, title, source string, turn int) (TitleStat
 		meta.Workspace.Title = title
 	}
 	state := titleState(meta, index, root)
-	snapshot := *meta
+	snapshot := cloneMeta(meta)
 	r.mu.Unlock()
 
 	if err := r.store.SaveMeta(snapshot); err != nil {

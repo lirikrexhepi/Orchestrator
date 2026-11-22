@@ -113,6 +113,7 @@ func TestMCPStartSessionProcessFailureCleanup(t *testing.T) {
 
 	in := domain.SessionStartInput{
 		ThreadID: "t-fail",
+		Cwd:      t.TempDir(),
 		MCP: &domain.MCPConfig{
 			Endpoint:   "http://127.0.0.1:1234/mcp",
 			AuthHeader: "Bearer token",

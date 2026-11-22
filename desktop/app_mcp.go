@@ -54,7 +54,15 @@ func (b *appMCPBackend) ListThreads(ctx context.Context, limit int) ([]mcp.Threa
 	}
 	tasks := b.app.workspaces.AllTasks()
 	sort.Slice(tasks, func(i, j int) bool {
-		return tasks[i].CreatedAt > tasks[j].CreatedAt
+		ti := tasks[i].UpdatedAt
+		if ti == 0 {
+			ti = tasks[i].CreatedAt
+		}
+		tj := tasks[j].UpdatedAt
+		if tj == 0 {
+			tj = tasks[j].CreatedAt
+		}
+		return ti > tj
 	})
 	if limit > 0 && len(tasks) > limit {
 		tasks = tasks[:limit]
@@ -187,7 +195,10 @@ func (b *appMCPBackend) DelegateTask(ctx context.Context, req mcp.DelegateReques
 		perm = domain.PermissionDefault
 	}
 
+	childThreadID := b.app.spawner.NextThreadID()
+
 	request := session.SpawnRequest{
+		ThreadID:       childThreadID,
 		Title:          req.Title,
 		Prompt:         req.Prompt,
 		Driver:         req.Driver,
@@ -212,11 +223,24 @@ func (b *appMCPBackend) DelegateTask(ctx context.Context, req mcp.DelegateReques
 		Hidden:         true,
 	}
 
+	var cancelBridge chan struct{}
+	if req.CallerThreadID != "" && b.app.manager != nil {
+		events, unsubscribe := b.app.manager.Bus().Subscribe()
+		cancelBridge = make(chan struct{})
+		go b.bridgeChildEvents(req.CallerThreadID, childThreadID, events, unsubscribe, cancelBridge)
+	}
+
 	res, err := b.app.spawner.Spawn(ctx, []session.SpawnRequest{request}, opts)
 	if err != nil {
+		if cancelBridge != nil {
+			close(cancelBridge)
+		}
 		return mcp.DelegateResult{}, err
 	}
 	if len(res.Tasks) == 0 {
+		if cancelBridge != nil {
+			close(cancelBridge)
+		}
 		return mcp.DelegateResult{}, fmt.Errorf("no task was spawned")
 	}
 
@@ -234,10 +258,6 @@ func (b *appMCPBackend) DelegateTask(ctx context.Context, req mcp.DelegateReques
 		_ = b.app.sessionService.CreateSession(ctx, task.ThreadID, task.Title, task.Dir(taskCwd), string(task.Driver), task.Model, branch)
 	}
 
-	if req.CallerThreadID != "" && b.app.manager != nil {
-		go b.bridgeChildEvents(req.CallerThreadID, task.ThreadID)
-	}
-
 	return mcp.DelegateResult{
 		ThreadID: task.ThreadID,
 		Title:    task.Title,
@@ -249,121 +269,176 @@ func (b *appMCPBackend) DelegateTask(ctx context.Context, req mcp.DelegateReques
 	}, nil
 }
 
-func (b *appMCPBackend) bridgeChildEvents(parentThreadID, childThreadID string) {
+const subagentTextFlushInterval = 150 * time.Millisecond
+
+func (b *appMCPBackend) bridgeChildEvents(parentThreadID, childThreadID string, events <-chan domain.RuntimeEvent, unsubscribe func(), cancel <-chan struct{}) {
+	defer unsubscribe()
 	if b.app == nil || b.app.manager == nil {
 		return
 	}
-	events, unsubscribe := b.app.manager.Bus().Subscribe()
-	defer unsubscribe()
 
 	var lastAssistantText string
 	deltaTexts := make(map[string]string)
-	startTime := time.Now()
+	dirtyItems := make(map[string]int64)
+	var dirtyOrder []string
 
-	for event := range events {
-		if event.ThreadID != childThreadID {
-			continue
+	ticker := time.NewTicker(subagentTextFlushInterval)
+	defer ticker.Stop()
+
+	flushText := func() {
+		if len(dirtyOrder) == 0 {
+			return
 		}
+		for _, itemID := range dirtyOrder {
+			at, ok := dirtyItems[itemID]
+			if !ok {
+				continue
+			}
+			text := deltaTexts[itemID]
+			if text == "" {
+				continue
+			}
+			b.app.manager.RecordBridgedEvent(domain.RuntimeEvent{
+				Kind:         domain.EventSubagentMessage,
+				ThreadID:     parentThreadID,
+				ParentToolID: childThreadID,
+				ItemID:       itemID,
+				Text:         text,
+				At:           at,
+			})
+		}
+		clear(dirtyItems)
+		dirtyOrder = dirtyOrder[:0]
+	}
 
-		switch event.Kind {
-		case domain.EventAgentMessage:
-			if event.Text != "" {
-				itemID := event.ItemID
-				if itemID == "" {
-					itemID = event.TurnID + "-msg"
+	turnStart := time.Now()
+	turnActive := true
+
+	for {
+		select {
+		case <-cancel:
+			return
+		case <-ticker.C:
+			flushText()
+		case event, ok := <-events:
+			if !ok {
+				flushText()
+				return
+			}
+			if event.ThreadID != childThreadID {
+				continue
+			}
+
+			switch event.Kind {
+			case domain.EventTurnStarted:
+				turnStart = time.Now()
+				lastAssistantText = ""
+				turnActive = true
+
+			case domain.EventAgentMessage:
+				if event.Text != "" {
+					itemID := event.ItemID
+					if itemID == "" {
+						itemID = event.TurnID + "-msg"
+					}
+					if event.Delta {
+						deltaTexts[itemID] += event.Text
+					} else {
+						deltaTexts[itemID] = event.Text
+					}
+					lastAssistantText = deltaTexts[itemID]
+					if _, exists := dirtyItems[itemID]; !exists {
+						dirtyOrder = append(dirtyOrder, itemID)
+					}
+					dirtyItems[itemID] = event.At
+					if !event.Delta {
+						flushText()
+					}
 				}
-				if event.Delta {
-					deltaTexts[itemID] += event.Text
-				} else {
-					deltaTexts[itemID] = event.Text
+
+			case domain.EventToolCall:
+				flushText()
+				if event.Tool != nil {
+					b.app.manager.RecordBridgedEvent(domain.RuntimeEvent{
+						Kind:         domain.EventSubagentToolCall,
+						ThreadID:     parentThreadID,
+						ParentToolID: childThreadID,
+						Tool:         event.Tool,
+						At:           event.At,
+					})
 				}
-				text := deltaTexts[itemID]
-				lastAssistantText = text
 
+			case domain.EventToolResult:
+				flushText()
+				if event.Tool != nil {
+					b.app.manager.RecordBridgedEvent(domain.RuntimeEvent{
+						Kind:         domain.EventSubagentToolDone,
+						ThreadID:     parentThreadID,
+						ParentToolID: childThreadID,
+						Tool:         event.Tool,
+						At:           event.At,
+					})
+				}
+
+			case domain.EventTurnCompleted:
+				flushText()
+				turnActive = false
+				dur := time.Since(turnStart).Milliseconds()
+				finalOutput := strings.TrimSpace(lastAssistantText)
 				b.app.manager.RecordBridgedEvent(domain.RuntimeEvent{
-					Kind:         domain.EventSubagentMessage,
+					Kind:         domain.EventToolResult,
 					ThreadID:     parentThreadID,
 					ParentToolID: childThreadID,
-					ItemID:       itemID,
-					Text:         text,
-					At:           event.At,
+					Tool: &domain.ToolCall{
+						ID:         childThreadID,
+						Status:     domain.ToolCompleted,
+						Output:     finalOutput,
+						DurationMs: dur,
+					},
+					At: time.Now().UnixMilli(),
 				})
-			}
 
-		case domain.EventToolCall:
-			if event.Tool != nil {
+			case domain.EventTurnFailed:
+				flushText()
+				turnActive = false
+				dur := time.Since(turnStart).Milliseconds()
+				errText := event.Error
+				if errText == "" {
+					errText = "Turn failed"
+				}
 				b.app.manager.RecordBridgedEvent(domain.RuntimeEvent{
-					Kind:         domain.EventSubagentToolCall,
+					Kind:         domain.EventToolResult,
 					ThreadID:     parentThreadID,
 					ParentToolID: childThreadID,
-					Tool:         event.Tool,
-					At:           event.At,
+					Tool: &domain.ToolCall{
+						ID:         childThreadID,
+						Status:     domain.ToolFailed,
+						Output:     errText,
+						DurationMs: dur,
+					},
+					At: time.Now().UnixMilli(),
 				})
+
+			case domain.EventSessionStopped:
+				flushText()
+				if turnActive {
+					turnActive = false
+					dur := time.Since(turnStart).Milliseconds()
+					b.app.manager.RecordBridgedEvent(domain.RuntimeEvent{
+						Kind:         domain.EventToolResult,
+						ThreadID:     parentThreadID,
+						ParentToolID: childThreadID,
+						Tool: &domain.ToolCall{
+							ID:         childThreadID,
+							Status:     domain.ToolFailed,
+							Output:     "Session stopped",
+							DurationMs: dur,
+						},
+						At: time.Now().UnixMilli(),
+					})
+				}
+				return
 			}
-
-		case domain.EventToolResult:
-			if event.Tool != nil {
-				b.app.manager.RecordBridgedEvent(domain.RuntimeEvent{
-					Kind:         domain.EventSubagentToolDone,
-					ThreadID:     parentThreadID,
-					ParentToolID: childThreadID,
-					Tool:         event.Tool,
-					At:           event.At,
-				})
-			}
-
-		case domain.EventTurnCompleted:
-			dur := time.Since(startTime).Milliseconds()
-			finalOutput := strings.TrimSpace(lastAssistantText)
-			b.app.manager.RecordBridgedEvent(domain.RuntimeEvent{
-				Kind:         domain.EventToolResult,
-				ThreadID:     parentThreadID,
-				ParentToolID: childThreadID,
-				Tool: &domain.ToolCall{
-					ID:         childThreadID,
-					Status:     domain.ToolCompleted,
-					Output:     finalOutput,
-					DurationMs: dur,
-				},
-				At: time.Now().UnixMilli(),
-			})
-			return
-
-		case domain.EventTurnFailed:
-			dur := time.Since(startTime).Milliseconds()
-			errText := event.Error
-			if errText == "" {
-				errText = "Turn failed"
-			}
-			b.app.manager.RecordBridgedEvent(domain.RuntimeEvent{
-				Kind:         domain.EventToolResult,
-				ThreadID:     parentThreadID,
-				ParentToolID: childThreadID,
-				Tool: &domain.ToolCall{
-					ID:         childThreadID,
-					Status:     domain.ToolFailed,
-					Output:     errText,
-					DurationMs: dur,
-				},
-				At: time.Now().UnixMilli(),
-			})
-			return
-
-		case domain.EventSessionStopped:
-			dur := time.Since(startTime).Milliseconds()
-			b.app.manager.RecordBridgedEvent(domain.RuntimeEvent{
-				Kind:         domain.EventToolResult,
-				ThreadID:     parentThreadID,
-				ParentToolID: childThreadID,
-				Tool: &domain.ToolCall{
-					ID:         childThreadID,
-					Status:     domain.ToolFailed,
-					Output:     "Session stopped",
-					DurationMs: dur,
-				},
-				At: time.Now().UnixMilli(),
-			})
-			return
 		}
 	}
 }

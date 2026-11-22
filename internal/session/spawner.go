@@ -12,13 +12,13 @@ import (
 
 	"composer/internal/domain"
 	"composer/internal/git"
-	"composer/internal/logger"
 )
 
 // SpawnRequest is one task the orchestrator asked for. Driver and model are
 // optional per task; when empty the plan-wide choice in SpawnOptions applies.
 type SpawnRequest struct {
-	Title   string              `json:"title"`
+	ThreadID string              `json:"threadId,omitempty"`
+	Title    string              `json:"title"`
 	Prompt  string              `json:"prompt"`
 	Driver  domain.DriverKind   `json:"driver,omitempty"`
 	Account string              `json:"account,omitempty"`
@@ -84,6 +84,12 @@ func NewSpawner(manager *Manager, workspaces *Workspaces) *Spawner {
 	return &Spawner{manager: manager, workspaces: workspaces}
 }
 
+// NextThreadID reserves a unique task thread ID before spawning so listeners
+// can subscribe to early events without racing Spawn.
+func (s *Spawner) NextThreadID() string {
+	return "task-" + strconv.FormatUint(s.seq.Add(1), 10) + "-" + strconv.FormatInt(time.Now().UnixMilli(), 36)
+}
+
 // SetTracker attaches history recording.
 func (s *Spawner) SetTracker(tracker SpawnTracker) {
 	s.mu.Lock()
@@ -107,11 +113,21 @@ func (s *Spawner) Spawn(ctx context.Context, requests []SpawnRequest, opts Spawn
 	}
 
 	cwd := opts.Cwd
-	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
+	if cwd == "" && opts.WorkspaceID != "" {
+		if existing := s.workspaces.Get(opts.WorkspaceID); existing != nil {
+			cwd = existing.Cwd
 		}
-		logger.Warnf("Session", "Spawn without a directory; falling back to process directory %q", cwd)
+	}
+	if cwd == "" {
+		for _, request := range requests {
+			if request.Cwd != "" {
+				cwd = request.Cwd
+				break
+			}
+		}
+	}
+	if cwd == "" {
+		return SpawnResult{}, fmt.Errorf("working directory is required")
 	}
 
 	s.mu.Lock()
@@ -181,7 +197,10 @@ func (s *Spawner) spawnOne(
 	cwd string,
 	repo *git.Repo,
 ) (*domain.Task, error) {
-	threadID := "task-" + strconv.FormatUint(s.seq.Add(1), 10) + "-" + strconv.FormatInt(time.Now().UnixMilli(), 36)
+	threadID := request.ThreadID
+	if threadID == "" {
+		threadID = s.NextThreadID()
+	}
 
 	// Each task may target its own agent; the plan-wide selection is the default.
 	driver := request.Driver

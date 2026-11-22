@@ -237,7 +237,7 @@ func TestResumeSessionLoadAndFallback(t *testing.T) {
 		}
 	}
 
-	// Case 2: Load fails -> falls back to session/new
+	// Case 2: Load fails -> returns explicit error instead of falling back to session/new
 	{
 		srv := &fakeServer{loadErr: errors.New("not found")}
 		s := &session{
@@ -250,11 +250,14 @@ func TestResumeSessionLoadAndFallback(t *testing.T) {
 		a, _, _, _ := setupFakeServerPair(t, s, srv)
 		in := domain.SessionStartInput{ThreadID: "t-res-2", Resume: "bad-sess"}
 
-		if err := a.initSession(context.Background(), s, in); err != nil {
-			t.Fatalf("initSession fallback failed: %v", err)
+		if err := a.initSession(context.Background(), s, in); err == nil {
+			t.Fatalf("expected initSession to fail when session/load fails")
 		}
-		if s.sessionID != "sess-new-123" {
-			t.Errorf("fallback sessionID = %q, want 'sess-new-123'", s.sessionID)
+		srv.mu.Lock()
+		calledNew := len(srv.newParams.MCPServers) > 0 || srv.newParams.Cwd != ""
+		srv.mu.Unlock()
+		if calledNew {
+			t.Fatalf("must not fall back to session/new when session/load fails")
 		}
 	}
 }
@@ -611,5 +614,248 @@ func TestInitSessionMCPServers(t *testing.T) {
 		if hMap["name"] != "Authorization" || hMap["value"] != "Bearer secret-token-123" {
 			t.Errorf("header = %v", hMap)
 		}
+	}
+}
+
+func TestStartSessionRequiresCwd(t *testing.T) {
+	a := NewAdapter(domain.ProviderSettings{BinaryPath: "cmd"}, &eventRecorder{})
+	if _, err := a.StartSession(context.Background(), domain.SessionStartInput{ThreadID: "t-nocwd"}); err == nil {
+		t.Fatal("expected error when Cwd is empty")
+	}
+}
+
+func TestAuthenticateAndDynamicThoughtAndModes(t *testing.T) {
+	var authCalls []string
+	var configCalls []sessionSetConfigParams
+	var mu sync.Mutex
+
+	rClient, wServer := io.Pipe()
+	rServer, wClient := io.Pipe()
+
+	serverConn := jsonrpc.NewConn(rServer, wServer, func(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch method {
+		case "initialize":
+			return initializeResult{
+				ProtocolVersion: 1,
+				AuthMethods:     []acpAuthMethod{{ID: "oauth-personal", Name: "Google"}},
+			}, nil
+		case "authenticate":
+			var p authenticateParams
+			_ = json.Unmarshal(raw, &p)
+			authCalls = append(authCalls, p.MethodID)
+			return nil, nil
+		case "session/new":
+			return sessionNewResult{
+				SessionID: "sess-dyn",
+				ConfigOptions: []acpConfigOption{
+					{ID: "model", Category: "model"},
+					{ID: "reasoning_effort", Category: "thought_level"},
+				},
+				Modes: json.RawMessage(`{"currentModeId":"default","availableModes":[{"id":"default"},{"id":"plan"}]}`),
+			}, nil
+		case "session/set_config_option":
+			var cfg sessionSetConfigParams
+			_ = json.Unmarshal(raw, &cfg)
+			configCalls = append(configCalls, cfg)
+			return nil, nil
+		}
+		return nil, nil
+	})
+	defer serverConn.Close(nil)
+
+	rec := &eventRecorder{}
+	a := NewAdapter(domain.ProviderSettings{}, rec)
+	s := &session{
+		threadID:   "t-dyn",
+		account:    "work",
+		authMethod: "oauth-personal",
+		cwd:        `C:\project`,
+		model:      "gemini-2.5-pro-high",
+		permission: domain.PermissionAcceptEdits,
+		tools:      make(map[string]bool),
+		baselines:  make(map[string]string),
+		pending:    make(map[string]*pendingApproval),
+	}
+	clientConn := jsonrpc.NewConn(rClient, wClient, a.makeHandler(s))
+	defer clientConn.Close(nil)
+	s.conn = clientConn
+	a.mu.Lock()
+	a.sessions[s.threadID] = s
+	a.mu.Unlock()
+
+	if err := a.initSession(context.Background(), s, domain.SessionStartInput{
+		ThreadID:   "t-dyn",
+		Cwd:        `C:\project`,
+		Model:      "gemini-2.5-pro-high",
+		Permission: domain.PermissionAcceptEdits,
+	}); err != nil {
+		t.Fatalf("initSession failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(authCalls) != 1 || authCalls[0] != "oauth-personal" {
+		t.Fatalf("authCalls = %v, want [oauth-personal]", authCalls)
+	}
+	var gotThoughtID, gotMode string
+	for _, cfg := range configCalls {
+		if cfg.ConfigID == "reasoning_effort" && cfg.Value == "high" {
+			gotThoughtID = cfg.ConfigID
+		}
+		if cfg.ConfigID == "mode" {
+			gotMode = cfg.Value
+		}
+	}
+	if gotThoughtID != "reasoning_effort" {
+		t.Fatalf("expected dynamic thought_level config ID 'reasoning_effort', got %+v", configCalls)
+	}
+	if gotMode != "default" {
+		t.Fatalf("expected AcceptEdits to map to 'default' (avoiding 'accept-edits'), got %q", gotMode)
+	}
+}
+
+func TestQuestionPermissionNeverAutoApprovedUnderBypass(t *testing.T) {
+	srv := &fakeServer{}
+	s := &session{
+		threadID:   "t-q",
+		account:    "work",
+		permission: domain.PermissionBypass,
+		sessionID:  "sess-q",
+		tools:      make(map[string]bool),
+		baselines:  make(map[string]string),
+		pending:    make(map[string]*pendingApproval),
+	}
+
+	questionReply := make(chan string, 1)
+	srv.onPrompt = func(conn *jsonrpc.Conn, params sessionPromptParams) (sessionPromptResult, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var res requestPermissionResult
+		err := conn.Call(ctx, "session/request_permission", requestPermissionParams{
+			SessionID: "sess-q",
+			ToolCall: acpToolCallPermission{
+				ToolCallID: "interaction_123",
+				Title:      "ask_question",
+				Kind:       "interaction",
+				RawInput:   map[string]any{"question": "Pick color", "options": []any{"Red", "Blue"}},
+			},
+			Options: []acpPermissionOption{
+				{OptionID: "opt-red", Name: "Red", Kind: "allow_once"},
+				{OptionID: "opt-blue", Name: "Blue", Kind: "allow_once"},
+			},
+		}, &res)
+		if err != nil {
+			return sessionPromptResult{}, err
+		}
+		questionReply <- res.Outcome.OptionID
+		return sessionPromptResult{StopReason: "end_turn"}, nil
+	}
+
+	a, _, _, rec := setupFakeServerPair(t, s, srv)
+	if err := a.SendTurn(context.Background(), domain.SendTurnInput{
+		ThreadID: "t-q",
+		TurnID:   "turn-q1",
+		Text:     "Ask me",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ev := rec.wait(t, func(e domain.RuntimeEvent) bool {
+		return e.Kind == domain.EventQuestionAsked
+	})
+	if ev.Question == nil || ev.Question.RequestID != "interaction_123" || ev.Account != "work" {
+		t.Fatalf("unexpected question event: %+v", ev)
+	}
+
+	if err := a.RespondToQuestion(context.Background(), "t-q", "interaction_123", []string{"Blue"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case opt := <-questionReply:
+		if opt != "opt-blue" {
+			t.Fatalf("selected option = %q, want opt-blue", opt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for question reply")
+	}
+
+	rec.wait(t, func(e domain.RuntimeEvent) bool {
+		return e.Kind == domain.EventTurnCompleted && e.TurnID == "turn-q1"
+	})
+}
+
+func TestConcurrentTurnSettlementDoesNotClobberOrDuplicate(t *testing.T) {
+	srv := &fakeServer{}
+	turn1Entered := make(chan struct{})
+	turn1Release := make(chan struct{})
+
+	srv.onPrompt = func(conn *jsonrpc.Conn, params sessionPromptParams) (sessionPromptResult, error) {
+		var text string
+		if len(params.Prompt) > 0 {
+			if m, ok := params.Prompt[0].(map[string]any); ok {
+				text, _ = m["text"].(string)
+			}
+		}
+		if text == "first" {
+			close(turn1Entered)
+			<-turn1Release
+			return sessionPromptResult{StopReason: "cancelled"}, nil
+		}
+		return sessionPromptResult{StopReason: "end_turn"}, nil
+	}
+
+	s := &session{
+		threadID:  "t-conc",
+		account:   "work",
+		sessionID: "sess-conc",
+		tools:     make(map[string]bool),
+		baselines: make(map[string]string),
+		pending:   make(map[string]*pendingApproval),
+	}
+	a, _, _, rec := setupFakeServerPair(t, s, srv)
+
+	if err := a.SendTurn(context.Background(), domain.SendTurnInput{
+		ThreadID: "t-conc",
+		TurnID:   "turn-1",
+		Text:     "first",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-turn1Entered
+
+	// Release turn-1 shortly after cancel arrives so turn-2 proceeds cleanly.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(turn1Release)
+	}()
+
+	if err := a.SendTurn(context.Background(), domain.SendTurnInput{
+		ThreadID: "t-conc",
+		TurnID:   "turn-2",
+		Text:     "second",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec.wait(t, func(e domain.RuntimeEvent) bool {
+		return e.Kind == domain.EventTurnCompleted && e.TurnID == "turn-2"
+	})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var turn1Terminals, turn2Terminals int
+	for _, e := range rec.events {
+		if e.Kind == domain.EventTurnCompleted || e.Kind == domain.EventTurnFailed {
+			if e.TurnID == "turn-1" {
+				turn1Terminals++
+			} else if e.TurnID == "turn-2" {
+				turn2Terminals++
+			}
+		}
+	}
+	if turn1Terminals != 1 || turn2Terminals != 1 {
+		t.Fatalf("expected 1 terminal event per turn, got turn1=%d turn2=%d", turn1Terminals, turn2Terminals)
 	}
 }

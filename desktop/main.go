@@ -4,7 +4,6 @@ import (
 	"embed"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"composer/internal/devserver"
@@ -85,20 +84,15 @@ func main() {
 		startState = options.Maximised
 	}
 
-	// Allow embedded web previews and git web portals inside the internal browser iframe
-	existingBrowserArgs := os.Getenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
-	if !strings.Contains(existingBrowserArgs, "--disable-web-security") {
-		os.Setenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", strings.TrimSpace(existingBrowserArgs+" --disable-web-security"))
-	}
-
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:            "Orchestrator Beta",
-		WindowStartState: startState,
-		Width:            1440,
-		Height:           900,
-		MinWidth:         900,
-		MinHeight:        600,
+		Title:                    "Orchestrator Beta",
+		WindowStartState:         startState,
+		Width:                    1440,
+		Height:                   900,
+		MinWidth:                 900,
+		MinHeight:                600,
+		EnableDefaultContextMenu: true,
 		// The wallpaper is the interface here, so the OS title bar is dropped and
 		// the scene runs edge to edge. The app draws its own drag strip and window
 		// controls, since a frameless window has neither.

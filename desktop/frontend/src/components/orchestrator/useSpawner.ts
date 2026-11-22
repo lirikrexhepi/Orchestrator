@@ -279,6 +279,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
   const lastSentOptions = useRef<Record<string, string>>({});
   const onBackgroundCompleteRef = useRef(options?.onBackgroundComplete);
   onBackgroundCompleteRef.current = options?.onBackgroundComplete;
+  const loadEarlierRef = useRef<(threadId: string) => Promise<void>>(async () => {});
   tasksRef.current = tasks;
   backgroundRef.current = backgroundTasks;
 
@@ -398,6 +399,23 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       const currentTask = tasksRef.current.find((t) => t.threadId === threadId);
       if (currentTask?.isDraft) return undefined;
 
+      const desired = modelId
+        ? store.models.find((m) => m.id === modelId && m.providerId === store.selectedProviderId) ??
+          store.models.find((m) => m.id === modelId) ??
+          store.getSelectedModel()
+        : undefined;
+      const prevDriver = currentTask?.driver;
+      const prevModelId = currentTask?.model;
+      const prevModelName =
+        store.models.find((m) => m.id === prevModelId)?.name || prevModelId;
+
+      const providerChanges = Boolean(desired && desired.providerId !== (prevDriver || desired.providerId));
+      const pendingAccount = desired ? store.pendingAccount(threadId, desired.providerId) : '';
+      const wantedAccount =
+        desired && providerChanges ? pendingAccount || store.shownAccount(desired.providerId) : pendingAccount;
+      const accountChanges =
+        Boolean(wantedAccount) && !providerChanges && wantedAccount !== (currentTask?.account || 'default');
+
       if (currentTask && currentTask.workspaceId && currentTask.isLive === false) {
         // Imported outside chats are read-only context: messaging one starts a
         // fresh agent in the same folder with the transcript attached, rather
@@ -506,37 +524,29 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
             return undefined;
           }
         }
-        try {
-          // Only this chat's agent is started, not every task of its session.
-          await ResumeHistoryThread(currentTask.workspaceId, threadId);
+        // When switching CLI provider or account on an idle history task,
+        // skip ResumeHistoryThread on the old CLI and hand off directly via
+        // SwitchTaskAccountWithOptions.
+        if (desired && (providerChanges || accountChanges)) {
           threads.current.add(threadId);
-          setTasks((prev) =>
-            prev.map((t) =>
-              t.workspaceId === currentTask.workspaceId
-                ? { ...t, isLive: true, importedFrom: undefined }
-                : t,
-            ),
-          );
-        } catch (cause) {
-          setError(cause instanceof Error ? cause.message : String(cause));
-          return undefined;
+        } else {
+          try {
+            // Only this chat's agent is started, not every task of its session.
+            await ResumeHistoryThread(currentTask.workspaceId, threadId);
+            threads.current.add(threadId);
+            setTasks((prev) =>
+              prev.map((t) =>
+                t.threadId === threadId
+                  ? { ...t, isLive: true, importedFrom: undefined }
+                  : t,
+              ),
+            );
+          } catch (cause) {
+            setError(cause instanceof Error ? cause.message : String(cause));
+            return undefined;
+          }
         }
       }
-
-      const desired = modelId
-        ? store.models.find((m) => m.id === modelId) ?? store.getSelectedModel()
-        : undefined;
-      const prevDriver = currentTask?.driver;
-      const prevModelId = currentTask?.model;
-      const prevModelName =
-        store.models.find((m) => m.id === prevModelId)?.name || prevModelId;
-
-      const providerChanges = Boolean(desired && desired.providerId !== (prevDriver || desired.providerId));
-      const pendingAccount = desired ? store.pendingAccount(threadId, desired.providerId) : '';
-      const wantedAccount =
-        desired && providerChanges ? pendingAccount || store.shownAccount(desired.providerId) : pendingAccount;
-      const accountChanges =
-        Boolean(wantedAccount) && !providerChanges && wantedAccount !== (currentTask?.account || 'default');
 
       if (desired && currentTask && (providerChanges || accountChanges)) {
         // Cross-provider switch reuses the same thread: the card, its size,
@@ -568,6 +578,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
                   ...task,
                   isBusy: true,
                   isLive: true,
+                  importedFrom: undefined,
                   blocks: [
                     ...task.blocks,
                     {
@@ -636,6 +647,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
                   ...task,
                   isBusy: true,
                   isLive: true,
+                  importedFrom: undefined,
                   blocks: [
                     ...task.blocks,
                     ...(notice
@@ -760,6 +772,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
                   ...task,
                   isBusy: true,
                   isLive: true,
+                  importedFrom: undefined,
                   blocks: [...task.blocks, userBlock(trimmed, `user-${Date.now()}`, files, Date.now())],
                 }
               : task,
@@ -990,7 +1003,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
           }
         }
 
-        const loaded = await LoadHistoryTail(targetWorkspaceId, 1500000);
+        const loaded = await LoadHistory(targetWorkspaceId);
         const meta = loaded.meta;
         const rawTranscripts = (loaded.transcripts ?? {}) as Record<string, RuntimeEvent[]>;
         const truncated = (loaded.truncated ?? {}) as Record<string, number>;
@@ -1052,6 +1065,9 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
 
         const threadEvents = (transcripts[t.threadId] ?? []) as RuntimeEvent[];
         const recorded = [...threadEvents].reverse().find((event) => event.model);
+        const hasEarlier = Object.entries(truncated).some(
+          ([k, bytes]) => bytes > 0 && (k === t.threadId || rootThreadId(k) === t.threadId),
+        );
         const taskObj: SpawnedTask = {
           threadId: t.threadId,
           cardKey: t.threadId,
@@ -1066,7 +1082,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
           isBusy: false,
           workspaceId: targetWorkspaceId,
           isLive: false,
-          hasEarlier: Boolean(truncated[t.threadId]),
+          hasEarlier,
           importedFrom: (meta.workspace as any)?.importedFrom,
           projectName: folderName,
           projectPath: cwd,
@@ -1079,6 +1095,12 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
 
         const newIndex = tasks.length;
         setTasks((prev) => [...prev, taskObj]);
+        if (hasEarlier) {
+          const tid = t.threadId;
+          window.setTimeout(() => {
+            void loadEarlierRef.current(tid);
+          }, 150);
+        }
         return newIndex;
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -1098,11 +1120,41 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
     try {
       const loaded = await LoadHistory(workspaceId);
       const rawTranscripts = (loaded.transcripts ?? {}) as Record<string, RuntimeEvent[]>;
-      const blocks = threadBlocks(loaded.meta, rawTranscripts, threadId);
+      const { transcripts: fullTranscripts } = normalizeSessionTasks(
+        loaded.meta.tasks ? [...loaded.meta.tasks] : [],
+        rawTranscripts,
+      );
+      const fullEvents = (fullTranscripts[threadId] ?? []) as RuntimeEvent[];
+      const fullBlocks = threadBlocks(loaded.meta, rawTranscripts, threadId);
+      const fullContext = latestContext(fullEvents);
+      const fullLastTurnMs = lastTurnDuration(fullEvents);
+      const knownIds = new Set(fullBlocks.map((b) => b.id));
       setTasks((previous) =>
-        previous.map((item) =>
-          item.threadId === threadId ? { ...item, blocks, hasEarlier: false, loadingEarlier: false } : item,
-        ),
+        previous.map((item) => {
+          if (item.threadId !== threadId) return item;
+          let lastOverlap = -1;
+          for (let i = item.blocks.length - 1; i >= 0; i--) {
+            if (knownIds.has(item.blocks[i].id)) {
+              lastOverlap = i;
+              break;
+            }
+          }
+          const extraLive =
+            lastOverlap >= 0
+              ? item.blocks.slice(lastOverlap + 1).filter((b) => !knownIds.has(b.id))
+              : item.isLive || item.isBusy
+                ? item.blocks.filter((b) => !knownIds.has(b.id))
+                : [];
+          const mergedBlocks = extraLive.length > 0 ? [...fullBlocks, ...extraLive] : fullBlocks;
+          return {
+            ...item,
+            blocks: mergedBlocks,
+            hasEarlier: false,
+            loadingEarlier: false,
+            context: !item.isBusy && fullContext ? fullContext : (item.context ?? fullContext),
+            lastTurnMs: fullLastTurnMs ?? item.lastTurnMs,
+          };
+        }),
       );
     } catch (cause) {
       setTasks((previous) =>
@@ -1111,6 +1163,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   }, []);
+  loadEarlierRef.current = loadEarlier;
 
   const deleteTurn = useCallback(async (threadId: string, turnId: string) => {
     try {

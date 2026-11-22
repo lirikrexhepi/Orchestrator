@@ -30,19 +30,13 @@ func resumeCwd(config, sessionID, cwd string) (string, error) {
 	if len(matches) == 0 {
 		return cwd, fmt.Errorf("claude session %s not found under %s", sessionID, filepath.Join(config, "projects"))
 	}
-	own := projectDirName(cwd)
-	for _, path := range matches {
-		if strings.EqualFold(filepath.Base(filepath.Dir(path)), own) {
-			return cwd, nil
-		}
+	if cwd != "" {
+		return cwd, nil
 	}
 	for _, path := range matches {
 		recorded := transcriptCwd(path)
 		if recorded == "" {
 			continue
-		}
-		if samePath(recorded, cwd) {
-			return cwd, nil
 		}
 		if info, err := os.Stat(recorded); err == nil && info.IsDir() {
 			return recorded, nil

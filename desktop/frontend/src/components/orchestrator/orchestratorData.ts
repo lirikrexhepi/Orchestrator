@@ -13,7 +13,12 @@ export function toProvider(snapshot: domain.ProviderSnapshot): CLIProvider {
   return {
     id: snapshot.driver,
     name: snapshot.displayName,
-    accounts: (snapshot.accounts ?? []).map((account) => ({ id: account.id, name: account.name })),
+    accounts: (snapshot.accounts ?? []).map((account) => ({
+      id: account.id,
+      name: account.name,
+      authMode: account.authMode,
+      models: (account.models ?? []).map((m) => toModel(snapshot, m)),
+    })),
     icon: providerIcon(snapshot.driver),
     availability: snapshot.availability,
     version: snapshot.version,
@@ -40,7 +45,7 @@ export function toModel(snapshot: domain.ProviderSnapshot, model: domain.Model):
   const effort = options.find((option) => option.id === EFFORT_OPTION);
   const thinking = options.find((option) => option.id === THINKING_OPTION);
   const defaultChoice = effort?.choices?.find((choice) => choice.default);
-  const displayName = formatModelDisplayName(model.displayName || model.id);
+  const displayName = model.displayName || formatModelDisplayName(model.id);
 
   return {
     id: model.id,

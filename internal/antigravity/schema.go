@@ -28,13 +28,58 @@ type acpClientInfo struct {
 }
 
 type initializeResult struct {
-	ProtocolVersion int            `json:"protocolVersion,omitempty"`
-	ServerInfo      *acpServerInfo `json:"serverInfo,omitempty"`
+	ProtocolVersion   int                   `json:"protocolVersion,omitempty"`
+	ServerInfo        *acpServerInfo        `json:"serverInfo,omitempty"`
+	AgentCapabilities *acpAgentCapabilities `json:"agentCapabilities,omitempty"`
+	AuthMethods       []acpAuthMethod       `json:"authMethods,omitempty"`
+	Authenticated     bool                  `json:"authenticated,omitempty"`
+}
+
+type acpAgentCapabilities struct {
+	SessionCapabilities      *acpSessionCapabilities `json:"sessionCapabilities,omitempty"`
+	SessionCapabilitiesSnake *acpSessionCapabilities `json:"session_capabilities,omitempty"`
+}
+
+type acpSessionCapabilities struct {
+	Resume json.RawMessage `json:"resume,omitempty"`
+}
+
+func (r initializeResult) supportsResume() bool {
+	if r.AgentCapabilities == nil {
+		return false
+	}
+	if r.AgentCapabilities.SessionCapabilities != nil && len(r.AgentCapabilities.SessionCapabilities.Resume) > 0 && string(r.AgentCapabilities.SessionCapabilities.Resume) != "null" {
+		return true
+	}
+	if r.AgentCapabilities.SessionCapabilitiesSnake != nil && len(r.AgentCapabilities.SessionCapabilitiesSnake.Resume) > 0 && string(r.AgentCapabilities.SessionCapabilitiesSnake.Resume) != "null" {
+		return true
+	}
+	return false
+}
+
+type acpAuthMethod struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+type authenticateParams struct {
+	MethodID string `json:"methodId"`
 }
 
 type acpServerInfo struct {
 	Name    string `json:"name,omitempty"`
 	Version string `json:"version,omitempty"`
+}
+
+type acpSessionModes struct {
+	CurrentModeID  string               `json:"currentModeId,omitempty"`
+	AvailableModes []acpSessionModeInfo `json:"availableModes,omitempty"`
+}
+
+type acpSessionModeInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
 }
 
 type sessionNewParams struct {

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { DefaultModels } from './useDefaultModels';
 import { useProviderAccounts } from './useProviderAccounts';
 import { ClaudeUpdateState } from '../orchestrator/useClaudeUpdate';
@@ -9,6 +9,7 @@ export interface ProvidersSectionProps {
   defaultModels: DefaultModels;
   claudeUpdate: ClaudeUpdateState;
   isLight: boolean;
+  active?: boolean;
 }
 
 /**
@@ -20,9 +21,16 @@ export const ProvidersSection: React.FC<ProvidersSectionProps> = ({
   defaultModels,
   claudeUpdate,
   isLight,
+  active = true,
 }) => {
   const accounts = useProviderAccounts();
-  const usage = useUsage(true);
+  const [visible, setVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden));
+  useEffect(() => {
+    const onVisibility = () => setVisible(!document.hidden);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+  const usage = useUsage(active && visible);
 
   return (
     <>

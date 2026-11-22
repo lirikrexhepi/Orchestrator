@@ -2,7 +2,7 @@ package terminal
 
 import "sync"
 
-const defaultScrollbackBytes = 64 * 1024
+const defaultScrollbackBytes = 256 * 1024
 
 // RingBuffer is a thread-safe fixed-capacity byte ring buffer.
 type RingBuffer struct {

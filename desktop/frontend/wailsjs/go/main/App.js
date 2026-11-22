@@ -18,6 +18,10 @@ export function AddAccount(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddAccount'](arg1, arg2, arg3);
 }
 
+export function AddAntigravityAccount(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AddAntigravityAccount'](arg1, arg2, arg3);
+}
+
 export function AddProject(arg1) {
   return window['go']['main']['App']['AddProject'](arg1);
 }
@@ -36,6 +40,10 @@ export function BrowserEndpoint() {
 
 export function BrowserOpen(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['BrowserOpen'](arg1, arg2, arg3, arg4);
+}
+
+export function CaptureAntigravityProfile(arg1) {
+  return window['go']['main']['App']['CaptureAntigravityProfile'](arg1);
 }
 
 export function ChooseAttachments() {
@@ -96,6 +104,10 @@ export function DeleteTurn(arg1, arg2) {
 
 export function DiscardAttachment(arg1) {
   return window['go']['main']['App']['DiscardAttachment'](arg1);
+}
+
+export function GetAccountModels(arg1, arg2) {
+  return window['go']['main']['App']['GetAccountModels'](arg1, arg2);
 }
 
 export function GetAgentTasks(arg1) {
@@ -404,6 +416,10 @@ export function RespondToApproval(arg1, arg2, arg3) {
 
 export function RespondToQuestion(arg1, arg2, arg3) {
   return window['go']['main']['App']['RespondToQuestion'](arg1, arg2, arg3);
+}
+
+export function RestoreAntigravityDefault() {
+  return window['go']['main']['App']['RestoreAntigravityDefault']();
 }
 
 export function ResumeHistory(arg1) {

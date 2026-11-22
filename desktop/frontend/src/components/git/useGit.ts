@@ -124,6 +124,15 @@ export function useGit(isOpen: boolean, root?: string): GitState {
   );
 
   useEffect(() => {
+    lanesKey.current = '';
+    diffKey.current = '';
+    setActiveLanePath(null);
+    setSelectedFile(null);
+    setDiffs([]);
+    setDiffError(null);
+  }, [root]);
+
+  useEffect(() => {
     if (!isOpen) return;
     void refresh();
   }, [isOpen, refresh]);

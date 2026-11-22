@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -180,9 +179,7 @@ func (c *Coordinator) ensureSession(ctx context.Context, cfg Config) error {
 	driver := domain.DriverKind(cfg.Driver)
 	cwd := cfg.Cwd
 	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
-		}
+		return fmt.Errorf("working directory is required")
 	}
 
 	account, err := c.manager.ResolveAccount(driver, cwd, cfg.Account)

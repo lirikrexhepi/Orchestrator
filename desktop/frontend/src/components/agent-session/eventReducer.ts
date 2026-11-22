@@ -2,7 +2,7 @@ import { domain } from '../../../wailsjs/go/models';
 import { AgentStreamBlock, UserMessageFile } from './types';
 import { ToolGroupItem } from './ToolGroup';
 import { DiffLine } from './EditTool';
-import { isSubagentEvent, trackSubagents } from './subagents';
+import { isSpawnTool, isSubagentEvent, isTrackedSubagentTool, trackSubagents } from './subagents';
 import { chatRefTitle, isChatRefPath } from '../common/chatDrag';
 
 export type RuntimeEvent = domain.RuntimeEvent;
@@ -262,7 +262,15 @@ function determineAction(
  */
 export function reduceEvent(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStreamBlock[] {
   const tracked = trackSubagents(blocks, event);
-  return isSubagentEvent(event) ? tracked : reduceMain(tracked, event);
+  if (isSubagentEvent(event)) return tracked;
+  if (
+    event.tool &&
+    (event.kind === 'tool.call' || event.kind === 'tool.result') &&
+    (isSpawnTool(event.tool.name) || isTrackedSubagentTool(tracked, event.tool.id))
+  ) {
+    return tracked;
+  }
+  return reduceMain(tracked, event);
 }
 
 function reduceMain(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStreamBlock[] {
@@ -306,15 +314,23 @@ function appendNotice(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStr
   const label = (event.text ?? '').trim();
   if (!label) return blocks;
   const icon = (event as unknown as { icon?: string }).icon || undefined;
-  const last = blocks[blocks.length - 1];
-  if (last?.type === 'notice' && last.label === label) {
-    if (icon && !last.icon) {
-      const updated = [...blocks];
-      updated[updated.length - 1] = { ...last, icon };
-      return updated;
+
+  // Deduplicate against an identical notice already placed optimistically right
+  // before or after the latest user turn (e.g. model/account switch notices).
+  const searchFloor = Math.max(0, blocks.length - 6);
+  for (let i = blocks.length - 1; i >= searchFloor; i--) {
+    const b = blocks[i];
+    if (b.type === 'notice' && b.label === label) {
+      if (icon && !b.icon) {
+        const updated = [...blocks];
+        updated[i] = { ...b, icon };
+        return updated;
+      }
+      return blocks;
     }
-    return blocks;
+    if (b.type === 'text' && !b.isStreaming) break;
   }
+
   return [...blocks, { type: 'notice', id: `notice-${event.seq || Date.now()}`, label, icon }];
 }
 
@@ -357,7 +373,13 @@ function resolveApproval(blocks: AgentStreamBlock[], event: RuntimeEvent): Agent
 
   return blocks.map((b) => {
     if (b.type === 'approval_request' && (!reqID || b.requestID === reqID)) {
-      const isDenied = decision === 'reject' || decision === 'deny' || decision === 'cancel';
+      const normalized = (decision || '').trim().toLowerCase();
+      const isDenied =
+        normalized === 'reject' ||
+        normalized === 'deny' ||
+        normalized === 'denied' ||
+        normalized === 'cancel' ||
+        normalized === 'abort';
       return {
         ...b,
         status: isDenied ? 'denied' : 'resolved',
@@ -381,13 +403,20 @@ function questionOptionDescription(opt: any): string | undefined {
   return undefined;
 }
 
-function toQuestionItems(raw: any[]): Array<{ question: string; options: any[] }> {
+function toQuestionItems(raw: any[]): Array<{ question: string; options: any[]; isMultiSelect?: boolean }> {
   return (raw ?? [])
     .map((entry: any) => {
       const header = typeof entry?.header === 'string' ? entry.header.trim() : '';
       const body = typeof entry?.question === 'string' ? entry.question.trim() : '';
       const text = body && header && body !== header ? `${header}: ${body}` : body || header;
-      return { question: text, options: Array.isArray(entry?.options) ? entry.options : [] };
+      const isMultiSelect = Boolean(
+        entry?.isMultiSelect || entry?.is_multi_select || entry?.multiSelect || entry?.multiple,
+      );
+      return {
+        question: text,
+        options: Array.isArray(entry?.options) ? entry.options : [],
+        ...(isMultiSelect ? { isMultiSelect: true } : {}),
+      };
     })
     // A tool declaration with choices but no actual prompt is not a question.
     // Rendering one produces the misleading “The agent has a question” card.
@@ -416,7 +445,11 @@ function upsertQuestion(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentS
   const rawItems = toQuestionItems(Array.isArray(q.questions) ? q.questions : []);
   if (rawItems.length === 0) return blocks;
 
-  const items = rawItems.map((it) => ({ question: it.question, options: buildQuestionOptions(it.options) }));
+  const items = rawItems.map((it) => ({
+    question: it.question,
+    options: buildQuestionOptions(it.options),
+    ...(it.isMultiSelect ? { isMultiSelect: true } : {}),
+  }));
   const first = items[0];
 
   const block: AgentStreamBlock = {
@@ -577,13 +610,13 @@ function appendText(
   // Find the block this event continues.
   let index = -1;
   if (itemId) {
-    for (let i = blocks.length - 1; i >= Math.max(0, blocks.length - 12); i--) {
+    for (let i = blocks.length - 1; i >= 0; i--) {
       const b = blocks[i];
+      if (b.type === 'user') break;
       if ((b.type === 'text' || b.type === 'thinking') && b.type === kind && b.itemId === itemId) {
         index = i;
         break;
       }
-      if (b.type === 'user') break;
     }
   } else {
     const last = blocks[blocks.length - 1];
@@ -639,58 +672,85 @@ function closeThinking(blocks: AgentStreamBlock[]): AgentStreamBlock[] {
   return next ?? blocks;
 }
 
+function isMcpAppUri(uri: unknown): uri is string {
+  return typeof uri === 'string' && (uri.startsWith('ui://') || uri.startsWith('http://') || uri.startsWith('https://'));
+}
+
 export function extractMcpAppInfo(tool: domain.ToolCall): { resourceUri?: string; htmlContent?: string } | null {
   if (!tool) return null;
+  const isMcp = tool.category === 'mcp' || /^(mcp__|mcp:)/i.test(tool.name || '');
+  if (!isMcp) return null;
 
   const rawInput = (tool.input && typeof tool.input === 'object' ? tool.input : {}) as Record<string, any>;
+  const mcpAppInput = rawInput._mcpApp && typeof rawInput._mcpApp === 'object' ? rawInput._mcpApp : null;
 
-  // 1. Direct input resourceUri (standard MCP Apps spec or host-injected)
-  const directInputUri = rawInput.resourceUri || rawInput._meta?.ui?.resourceUri || rawInput.ui?.resourceUri;
-  if (typeof directInputUri === 'string' && (directInputUri.startsWith('ui://') || directInputUri.startsWith('http://') || directInputUri.startsWith('https://'))) {
-    return { resourceUri: directInputUri };
+  // 1. Explicit MCP App UI metadata in tool input
+  const directInputUri =
+    rawInput._meta?.ui?.resourceUri ||
+    rawInput.ui?.resourceUri ||
+    rawInput.resourceUri ||
+    mcpAppInput?.resourceUri ||
+    mcpAppInput?.embedUrl ||
+    rawInput.embedUrl;
+  const directInputHtml =
+    typeof mcpAppInput?.html === 'string' && mcpAppInput.html.trim()
+      ? mcpAppInput.html.trim()
+      : typeof mcpAppInput?.htmlContent === 'string' && mcpAppInput.htmlContent.trim()
+        ? mcpAppInput.htmlContent.trim()
+        : undefined;
+
+  if (isMcpAppUri(directInputUri) || directInputHtml) {
+    return {
+      ...(isMcpAppUri(directInputUri) ? { resourceUri: directInputUri } : {}),
+      ...(directInputHtml ? { htmlContent: directInputHtml } : {}),
+    };
   }
 
-  // 2. Direct input HTML content (if provided directly)
-  if (typeof rawInput.html === 'string' && rawInput.html.trim().length > 0) {
-    return { htmlContent: rawInput.html.trim() };
-  }
-
-  // 3. Inspect output
+  // 2. Structured JSON metadata in MCP tool output (never raw HTML heuristics)
   const output = (typeof tool.output === 'string' ? tool.output : '').trim();
-
-  // 3a. Raw HTML detection (like T3Code visual renders)
-  if (output.startsWith('<!DOCTYPE html') || output.startsWith('<html') || (output.includes('<head') && output.includes('<body'))) {
-    return { htmlContent: output };
-  }
-
-  // 3b. JSON payload parsing
   if ((output.startsWith('{') && output.endsWith('}')) || (output.startsWith('[') && output.endsWith(']'))) {
     try {
       const parsedOutput = JSON.parse(output);
+      const mcpAppOut =
+        parsedOutput?._mcpApp && typeof parsedOutput._mcpApp === 'object' ? parsedOutput._mcpApp : null;
       const uri =
         parsedOutput?._meta?.ui?.resourceUri ||
         parsedOutput?.result?._meta?.ui?.resourceUri ||
         parsedOutput?.ui?.resourceUri ||
-        parsedOutput?.resourceUri;
-      if (typeof uri === 'string' && (uri.startsWith('ui://') || uri.startsWith('http://') || uri.startsWith('https://'))) {
-        return { resourceUri: uri };
+        mcpAppOut?.resourceUri ||
+        mcpAppOut?.embedUrl ||
+        parsedOutput?.embedUrl ||
+        parsedOutput?.resourceUri ||
+        (typeof parsedOutput?.uri === 'string' && parsedOutput.uri.startsWith('ui://') ? parsedOutput.uri : undefined);
+      const outHtml =
+        typeof mcpAppOut?.html === 'string' && mcpAppOut.html.trim()
+          ? mcpAppOut.html.trim()
+          : typeof mcpAppOut?.htmlContent === 'string' && mcpAppOut.htmlContent.trim()
+            ? mcpAppOut.htmlContent.trim()
+            : undefined;
+      if (isMcpAppUri(uri) || outHtml) {
+        return {
+          ...(isMcpAppUri(uri) ? { resourceUri: uri } : {}),
+          ...(outHtml ? { htmlContent: outHtml } : {}),
+        };
       }
       const contents = parsedOutput?.contents || parsedOutput?.result?.contents;
       if (Array.isArray(contents) && contents.length > 0) {
         const first = contents[0];
-        if (typeof first?.mimeType === 'string' && first.mimeType.includes('html') && typeof first?.text === 'string') {
+        const hasUiMeta = Boolean(
+          parsedOutput?._meta?.ui ||
+            parsedOutput?.result?._meta?.ui ||
+            first?._meta?.ui ||
+            (typeof first?.uri === 'string' && first.uri.startsWith('ui://')) ||
+            (typeof first?.mimeType === 'string' && first.mimeType.includes('mcp-app')),
+        );
+        if (hasUiMeta && typeof first?.mimeType === 'string' && first.mimeType.includes('html') && typeof first?.text === 'string') {
           return { resourceUri: first.uri, htmlContent: first.text };
         }
       }
     } catch {
       // ignore JSON parse failure
     }
-  }
-
-  // 3c. Direct regex search for ui:// in output
-  const uiMatch = output.match(/(ui:\/\/[^\s"'`<>]+)/i);
-  if (uiMatch && uiMatch[1]) {
-    return { resourceUri: uiMatch[1] };
   }
 
   return null;
@@ -723,7 +783,8 @@ function upsertTool(blocks: AgentStreamBlock[], event: RuntimeEvent): AgentStrea
     (candidate) =>
       candidate.id === id ||
       candidate.id === `mcp-${tool.id}` ||
-      (candidate.type === 'tool_group' && candidate.memberIds?.includes(tool.id)),
+      (candidate.type === 'tool_group' &&
+        (candidate.memberIds?.includes(tool.id) || candidate.items?.some((item) => item.id === tool.id))),
   );
 
   // A result event carries only id/status/output — the tool name and its input
@@ -1013,12 +1074,9 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
         if (item.id !== tool.id) return item;
         const nextInput = asRecord(tool.input);
         const cmd = field(nextInput, COMMAND_KEYS);
-        const { type: newType, action: newAction } = determineAction(
-          tool.name || item.action,
-          cmd,
-          item.driver || existing.driver,
-          tool.category,
-        );
+        const { type: newType, action: newAction } = tool.name
+          ? determineAction(tool.name, cmd, item.driver || existing.driver, tool.category)
+          : { type: item.type, action: item.action };
         const extracted =
           tool.target ||
           (tool.input ? extractTarget(tool.name || newAction, nextInput, item.driver || existing.driver) : '');
@@ -1044,12 +1102,12 @@ function mergeToolBlock(existing: AgentStreamBlock, tool: domain.ToolCall, delta
           details: output(item.details),
         };
       });
-      const summary = tool.summary || groupSummary(items);
+      const computed = groupSummary(items);
       return {
         ...existing,
         items,
         title: groupTitle(items),
-        summary: items.length > 1 ? summary : (items[0]?.target || summary),
+        summary: items.length > 1 ? computed : (tool.summary || items[0]?.target || computed),
       };
     }
     case 'tool_todo': {
@@ -1203,16 +1261,20 @@ function toQuestionBlock(tool: domain.ToolCall): AgentStreamBlock | null {
     items = input.questions as any;
   } else if (typeof input.question === 'string') {
     const opts = Array.isArray(input.options) ? (input.options as any[]) : [];
-    items = [{ question: input.question, options: opts, isMultiSelect: !!input.is_multi_select || !!input.multiple }];
+    items = [{ question: input.question, options: opts, isMultiSelect: Boolean(input.isMultiSelect || input.is_multi_select || input.multiSelect || input.multiple) }];
   } else if (typeof input.prompt === 'string') {
-    items = [{ question: input.prompt, options: Array.isArray(input.options) ? (input.options as any[]) : [] }];
+    items = [{ question: input.prompt, options: Array.isArray(input.options) ? (input.options as any[]) : [], isMultiSelect: Boolean(input.isMultiSelect || input.is_multi_select || input.multiSelect || input.multiple) }];
   } else if (typeof input.header === 'string') {
-    items = [{ question: input.header, options: Array.isArray(input.options) ? (input.options as any[]) : [] }];
+    items = [{ question: input.header, options: Array.isArray(input.options) ? (input.options as any[]) : [], isMultiSelect: Boolean(input.isMultiSelect || input.is_multi_select || input.multiSelect || input.multiple) }];
   }
 
   const rawItems = toQuestionItems(items.length > 0 ? items : [{ question: input.question || input.prompt || input.header || input.title, options: input.options }]);
   if (rawItems.length === 0) return null;
-  const built = rawItems.map((it) => ({ question: it.question, options: buildQuestionOptions(it.options) }));
+  const built = rawItems.map((it) => ({
+    question: it.question,
+    options: buildQuestionOptions(it.options),
+    ...(it.isMultiSelect ? { isMultiSelect: true } : {}),
+  }));
   const first = built[0];
 
   return {
@@ -1230,6 +1292,75 @@ function asRecord(value: unknown): Record<string, unknown> {
   return (value ?? {}) as Record<string, unknown>;
 }
 
+function extractMcpCallDetails(
+  name: string,
+  input: Record<string, unknown>,
+  rawTarget?: string,
+): { server?: string; action?: string; target?: string } {
+  const lower = name.trim().toLowerCase();
+  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+
+  if (lower === 'call_mcp_tool') {
+    let server =
+      str(input.ServerName) ||
+      str(input.serverName) ||
+      str(input.server_name) ||
+      str(input.server);
+    let toolName =
+      str(input.ToolName) ||
+      str(input.toolName) ||
+      str(input.tool_name) ||
+      str(input.tool);
+
+    if ((!server || !toolName) && rawTarget && rawTarget.includes(':')) {
+      const idx = rawTarget.indexOf(':');
+      if (!server) server = rawTarget.slice(0, idx).trim();
+      if (!toolName) toolName = rawTarget.slice(idx + 1).trim();
+    }
+
+    let argTarget = '';
+    const args = asRecord(input.Arguments ?? input.arguments);
+    argTarget =
+      str(args.board_name) ||
+      str(args.query) ||
+      str(args.title) ||
+      str(args.name) ||
+      str(args.item_id) ||
+      str(args.id) ||
+      str(args.uri) ||
+      str(args.path);
+
+    const action = toolName ? cleanMcpAction(toolName) : undefined;
+    return {
+      server: server || undefined,
+      action,
+      target: argTarget || undefined,
+    };
+  }
+
+  const orch = orchestratorAction(name);
+  if (orch) {
+    return { server: 'orchestrator', action: orch };
+  }
+
+  const doubleUnder = name.match(/^mcp__([^_]+)__/i);
+  if (doubleUnder) {
+    return { server: doubleUnder[1], action: cleanMcpAction(name) };
+  }
+
+  const colon = name.match(/^([^:]+):(.+)$/);
+  if (colon) {
+    return { server: colon[1], action: cleanMcpAction(colon[2]) };
+  }
+
+  const singleUnder = name.match(/^mcp_([a-zA-Z0-9-]+)_(.+)$/i);
+  if (singleUnder) {
+    return { server: singleUnder[1], action: cleanMcpAction(singleUnder[2]) };
+  }
+
+  return {};
+}
+
 function toGroupItem(
   name: string,
   tool: domain.ToolCall,
@@ -1237,8 +1368,20 @@ function toGroupItem(
   driver?: string,
 ): ToolGroupItem {
   const cmd = field(input, COMMAND_KEYS);
-  const target = tool.target || extractTarget(name, input, driver);
-  const { type, action } = determineAction(name, cmd, driver, tool.category);
+  const rawTarget = tool.target || extractTarget(name, input, driver);
+  const determined = determineAction(name, cmd, driver, tool.category);
+  let { type, action } = determined;
+  let target = rawTarget;
+  let mcpServer: string | undefined;
+
+  if (type === 'mcp') {
+    const details = extractMcpCallDetails(name, input, rawTarget);
+    if (details.server) mcpServer = details.server;
+    if (details.action) action = details.action;
+    if (name.trim().toLowerCase() === 'call_mcp_tool') {
+      target = details.target || '';
+    }
+  }
 
   const cleanTarget =
     target &&
@@ -1252,6 +1395,7 @@ function toGroupItem(
     type,
     action,
     target: cleanTarget,
+    ...(mcpServer ? { mcpServer } : {}),
     status: toStatus(tool.status),
     details: tool.output || undefined,
     driver,
@@ -1527,38 +1671,72 @@ export function editBlockFields(
 
 const MAX_LCS_CELLS = 250_000;
 
-/** Line diff via LCS; very large inputs degrade to delete-all/add-all. */
+/** Line diff via LCS after trimming common prefix/suffix lines so edits in large files stay exact. */
 function lineDiff(oldText: string, newText: string): DiffLine[] {
   const a = oldText ? oldText.replace(/\r\n/g, '\n').split('\n') : [];
   const b = newText ? newText.replace(/\r\n/g, '\n').split('\n') : [];
+
+  let prefix = 0;
+  const minLen = Math.min(a.length, b.length);
+  while (prefix < minLen && a[prefix] === b[prefix]) {
+    prefix++;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < a.length - prefix &&
+    suffix < b.length - prefix &&
+    a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+
+  const aMid = a.slice(prefix, a.length - suffix);
+  const bMid = b.slice(prefix, b.length - suffix);
   const out: DiffLine[] = [];
-  if (a.length * b.length > MAX_LCS_CELLS) {
-    a.forEach((content, i) => out.push({ type: 'delete', lineNum: i + 1, content }));
-    b.forEach((content, i) => out.push({ type: 'add', lineNum: i + 1, content }));
+
+  if (aMid.length === 0 && bMid.length === 0) {
     return out;
   }
-  const n = a.length;
-  const m = b.length;
-  const dp: Uint32Array[] = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+
+  const ctxBeforeStart = Math.max(0, prefix - 3);
+  for (let k = ctxBeforeStart; k < prefix; k++) {
+    out.push({ type: 'context', lineNum: k + 1, content: b[k] });
+  }
+
+  if (aMid.length * bMid.length > MAX_LCS_CELLS) {
+    aMid.forEach((content, idx) => out.push({ type: 'delete', lineNum: prefix + idx + 1, content }));
+    bMid.forEach((content, idx) => out.push({ type: 'add', lineNum: prefix + idx + 1, content }));
+  } else {
+    const n = aMid.length;
+    const m = bMid.length;
+    const dp: Uint32Array[] = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = aMid[i] === bMid[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && aMid[i] === bMid[j]) {
+        out.push({ type: 'context', lineNum: prefix + j + 1, content: aMid[i] });
+        i++;
+        j++;
+      } else if (i < n && (j >= m || dp[i + 1][j] >= dp[i][j + 1])) {
+        out.push({ type: 'delete', lineNum: prefix + i + 1, content: aMid[i] });
+        i++;
+      } else {
+        out.push({ type: 'add', lineNum: prefix + j + 1, content: bMid[j] });
+        j++;
+      }
     }
   }
-  let i = 0;
-  let j = 0;
-  while (i < n || j < m) {
-    if (i < n && j < m && a[i] === b[j]) {
-      out.push({ type: 'context', lineNum: j + 1, content: a[i] });
-      i++;
-      j++;
-    } else if (i < n && (j >= m || dp[i + 1][j] >= dp[i][j + 1])) {
-      out.push({ type: 'delete', lineNum: i + 1, content: a[i] });
-      i++;
-    } else {
-      out.push({ type: 'add', lineNum: j + 1, content: b[j] });
-      j++;
-    }
+
+  const ctxAfterEnd = Math.min(b.length, b.length - suffix + 3);
+  for (let k = b.length - suffix; k < ctxAfterEnd; k++) {
+    out.push({ type: 'context', lineNum: k + 1, content: b[k] });
   }
+
   return out;
 }

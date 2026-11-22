@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { GetProviderSettings, ListProviders, UpdateProviderSettings } from '../../../wailsjs/go/main/App';
+import {
+  GetAccountModels,
+  GetProviderSettings,
+  ListProviders,
+  UpdateProviderSettings,
+} from '../../../wailsjs/go/main/App';
 import { domain } from '../../../wailsjs/go/models';
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
 import { AIModel, CLIProvider } from '../orchestrator/types';
@@ -8,6 +13,13 @@ import { toModel, toProvider } from '../orchestrator/orchestratorData';
 export interface EffortChoice {
   value: string;
   label: string;
+}
+
+export interface AccountDefaultEntry {
+  models: AIModel[];
+  modelId: string;
+  effortId: string;
+  effortChoices: EffortChoice[];
 }
 
 export interface ProviderDefault {
@@ -19,6 +31,8 @@ export interface ProviderDefault {
   /** Backend effort id for the pinned model (e.g. "high"). Empty when the model has no effort knob. */
   effortId: string;
   effortChoices: EffortChoice[];
+  /** Per-account default model & effort, keyed by account ID (e.g. "default", "lirikrexhepiii-neon"). */
+  accountDefaults: Record<string, AccountDefaultEntry>;
 }
 
 export interface DefaultModels {
@@ -27,6 +41,8 @@ export interface DefaultModels {
   isSaving: string | null;
   select: (providerId: string, modelId: string) => Promise<void>;
   selectEffort: (providerId: string, effortId: string) => Promise<void>;
+  selectForAccount: (providerId: string, accountId: string, modelId: string) => Promise<void>;
+  selectEffortForAccount: (providerId: string, accountId: string, effortId: string) => Promise<void>;
   toggle: (providerId: string, enabled: boolean) => Promise<void>;
 }
 
@@ -58,7 +74,7 @@ function effortLabel(model: AIModel | undefined, effortId: string): string | nul
 }
 
 /**
- * Per-CLI preferred model, permission toggle and default effort.
+ * Per-CLI and per-account preferred model, permission toggle and default effort.
  *
  * Stored against the provider in backend settings so choices survive restart.
  */
@@ -85,6 +101,49 @@ export function useDefaultModels(isOpen: boolean): DefaultModels {
               : '';
           const { effortId, choices } = resolveEffort(model, savedEffort);
 
+          const accounts = snapshot.accounts ?? [];
+          const savedAccountDefaults = settings.accountDefaults ?? {};
+          const accountDefaults: Record<string, AccountDefaultEntry> = {};
+
+          await Promise.all(
+            accounts.map(async (account) => {
+              let accModels = models;
+              if (accounts.length > 1) {
+                try {
+                  const raw = await GetAccountModels(provider.id, account.id);
+                  if (raw && raw.length > 0) {
+                    const parsed = raw.map((m) => toModel(snapshot, m));
+                    accModels = parsed.filter((m, idx, arr) => arr.findIndex((x) => x.id === m.id) === idx);
+                  }
+                } catch {
+                  // Fall back to provider models
+                }
+              }
+              const savedAcc = savedAccountDefaults[account.id];
+              const accModelId =
+                savedAcc?.model !== undefined
+                  ? savedAcc.model
+                  : account.id === 'default'
+                    ? modelId
+                    : '';
+              const accModel = accModels.find((m) => m.id === accModelId);
+              const accSavedEffort =
+                typeof savedAcc?.options?.[EFFORT_OPTION] === 'string'
+                  ? (savedAcc.options[EFFORT_OPTION] as string)
+                  : account.id === 'default'
+                    ? savedEffort
+                    : '';
+              const resolvedAcc = resolveEffort(accModel, accSavedEffort);
+
+              accountDefaults[account.id] = {
+                models: accModels,
+                modelId: accModelId,
+                effortId: resolvedAcc.effortId,
+                effortChoices: resolvedAcc.choices,
+              };
+            }),
+          );
+
           return {
             provider,
             models,
@@ -92,6 +151,7 @@ export function useDefaultModels(isOpen: boolean): DefaultModels {
             enabled: Boolean(settings.enabled),
             effortId,
             effortChoices: choices,
+            accountDefaults,
           };
         }),
       );
@@ -108,68 +168,114 @@ export function useDefaultModels(isOpen: boolean): DefaultModels {
     void refresh();
   }, [isOpen, refresh]);
 
-  const toggle = useCallback(
-    async (providerId: string, enabled: boolean) => {
-      setSaving(providerId);
-      try {
-        const current = await GetProviderSettings(providerId);
-        await UpdateProviderSettings(
-          providerId,
-          domain.ProviderSettings.createFrom({ ...current, enabled }),
-        );
+  const toggle = useCallback(async (providerId: string, enabled: boolean) => {
+    setSaving(providerId);
+    try {
+      const current = await GetProviderSettings(providerId);
+      await UpdateProviderSettings(
+        providerId,
+        domain.ProviderSettings.createFrom({ ...current, enabled }),
+      );
 
-        setEntries((prev) =>
-          prev.map((entry) =>
-            entry.provider.id === providerId ? { ...entry, enabled } : entry,
-          ),
-        );
+      setEntries((prev) =>
+        prev.map((entry) =>
+          entry.provider.id === providerId ? { ...entry, enabled } : entry,
+        ),
+      );
 
-        await useOrchestratorStore.getState().loadProviders(true);
-        setError(null);
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause));
-      } finally {
-        setSaving(null);
-      }
-    },
-    [],
-  );
+      await useOrchestratorStore.getState().loadProviders(true);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving(null);
+    }
+  }, []);
 
-  const select = useCallback(
-    async (providerId: string, modelId: string) => {
-      setSaving(providerId);
+  const selectForAccount = useCallback(
+    async (providerId: string, accountId: string, modelId: string) => {
+      const savingKey = `${providerId}:${accountId}`;
+      setSaving(savingKey);
       try {
         const current = await GetProviderSettings(providerId);
         const entry = entries.find((item) => item.provider.id === providerId);
-        const model = entry?.models.find((m) => m.id === modelId);
+        const accEntry = entry?.accountDefaults[accountId];
+        const modelList = accEntry?.models ?? entry?.models ?? [];
+        const model = modelList.find((m) => m.id === modelId);
+        const existingAcc = current.accountDefaults?.[accountId];
         const previousEffort =
-          typeof current.options?.[EFFORT_OPTION] === 'string'
-            ? (current.options[EFFORT_OPTION] as string)
-            : entry?.effortId ?? '';
+          typeof existingAcc?.options?.[EFFORT_OPTION] === 'string'
+            ? (existingAcc.options[EFFORT_OPTION] as string)
+            : accEntry?.effortId ?? '';
         const { effortId } = resolveEffort(model, previousEffort);
-        const options = { ...(current.options ?? {}) };
+        const accOptions: Record<string, unknown> = { ...(existingAcc?.options ?? {}) };
         if (model && effortDescriptor(model) && effortId) {
-          options[EFFORT_OPTION] = effortId;
+          accOptions[EFFORT_OPTION] = effortId;
         } else {
-          delete options[EFFORT_OPTION];
+          delete accOptions[EFFORT_OPTION];
         }
+
+        const nextAccountDefaults: Record<string, domain.AccountModelDefault> = {
+          ...(current.accountDefaults ?? {}),
+          [accountId]: domain.AccountModelDefault.createFrom({
+            model: modelId,
+            options: accOptions,
+          }),
+        };
+
+        const patch: Record<string, unknown> = {
+          ...current,
+          accountDefaults: nextAccountDefaults,
+        };
+        if (accountId === 'default') {
+          patch.model = modelId;
+          patch.options = accOptions;
+        }
+
         await UpdateProviderSettings(
           providerId,
-          domain.ProviderSettings.createFrom({ ...current, model: modelId, options }),
+          domain.ProviderSettings.createFrom(patch),
         );
 
         setEntries((prev) =>
           prev.map((item) => {
             if (item.provider.id !== providerId) return item;
-            const nextModel = item.models.find((m) => m.id === modelId);
+            const prevAcc = item.accountDefaults[accountId];
+            const modelsForAcc = prevAcc?.models ?? item.models;
+            const nextModel = modelsForAcc.find((m) => m.id === modelId);
             const resolved = resolveEffort(nextModel, effortId);
-            return { ...item, modelId, effortId: resolved.effortId, effortChoices: resolved.choices };
+            const updatedAccDefaults = {
+              ...item.accountDefaults,
+              [accountId]: {
+                models: modelsForAcc,
+                modelId,
+                effortId: resolved.effortId,
+                effortChoices: resolved.choices,
+              },
+            };
+            if (accountId === 'default') {
+              return {
+                ...item,
+                modelId,
+                effortId: resolved.effortId,
+                effortChoices: resolved.choices,
+                accountDefaults: updatedAccDefaults,
+              };
+            }
+            return { ...item, accountDefaults: updatedAccDefaults };
           }),
         );
 
         const store = useOrchestratorStore.getState();
-        store.setPreferredModel(providerId, modelId);
-        if (modelId && store.selectedProviderId === providerId) {
+        store.setPreferredAccountModel(providerId, accountId, modelId, effortId);
+        if (accountId === 'default') {
+          store.setPreferredModel(providerId, modelId);
+        }
+        if (
+          modelId &&
+          store.selectedProviderId === providerId &&
+          store.shownAccount(providerId) === accountId
+        ) {
           store.selectModelSilently(modelId);
         }
         if (model && effortId) {
@@ -186,28 +292,63 @@ export function useDefaultModels(isOpen: boolean): DefaultModels {
     [entries],
   );
 
-  const selectEffort = useCallback(
-    async (providerId: string, effortId: string) => {
-      setSaving(providerId);
+  const selectEffortForAccount = useCallback(
+    async (providerId: string, accountId: string, effortId: string) => {
+      const savingKey = `${providerId}:${accountId}`;
+      setSaving(savingKey);
       try {
         const current = await GetProviderSettings(providerId);
-        const options = { ...(current.options ?? {}), [EFFORT_OPTION]: effortId };
+        const existingAcc = current.accountDefaults?.[accountId];
+        const entry = entries.find((item) => item.provider.id === providerId);
+        const accEntry = entry?.accountDefaults[accountId];
+        const modelId = existingAcc?.model ?? accEntry?.modelId ?? (accountId === 'default' ? current.model ?? '' : '');
+        const accOptions = { ...(existingAcc?.options ?? {}), [EFFORT_OPTION]: effortId };
+
+        const nextAccountDefaults: Record<string, domain.AccountModelDefault> = {
+          ...(current.accountDefaults ?? {}),
+          [accountId]: domain.AccountModelDefault.createFrom({
+            model: modelId,
+            options: accOptions,
+          }),
+        };
+
+        const patch: Record<string, unknown> = {
+          ...current,
+          accountDefaults: nextAccountDefaults,
+        };
+        if (accountId === 'default') {
+          patch.options = { ...(current.options ?? {}), [EFFORT_OPTION]: effortId };
+        }
+
         await UpdateProviderSettings(
           providerId,
-          domain.ProviderSettings.createFrom({ ...current, options }),
+          domain.ProviderSettings.createFrom(patch),
         );
 
         setEntries((prev) =>
-          prev.map((item) =>
-            item.provider.id === providerId ? { ...item, effortId } : item,
-          ),
+          prev.map((item) => {
+            if (item.provider.id !== providerId) return item;
+            const prevAcc = item.accountDefaults[accountId];
+            const updatedAccDefaults = prevAcc
+              ? {
+                  ...item.accountDefaults,
+                  [accountId]: { ...prevAcc, effortId },
+                }
+              : item.accountDefaults;
+            if (accountId === 'default') {
+              return { ...item, effortId, accountDefaults: updatedAccDefaults };
+            }
+            return { ...item, accountDefaults: updatedAccDefaults };
+          }),
         );
 
-        const entry = entries.find((item) => item.provider.id === providerId);
-        const model = entry?.models.find((m) => m.id === (entry?.modelId ?? current.model));
+        const store = useOrchestratorStore.getState();
+        store.setPreferredAccountModel(providerId, accountId, modelId, effortId);
+        const modelList = accEntry?.models ?? entry?.models ?? [];
+        const model = modelList.find((m) => m.id === modelId);
         const label = model ? effortLabel(model, effortId) : null;
         if (model && label) {
-          useOrchestratorStore.getState().setModelSettings(model.id, { effort: label });
+          store.setModelSettings(model.id, { effort: label });
         }
         setError(null);
       } catch (cause) {
@@ -219,5 +360,28 @@ export function useDefaultModels(isOpen: boolean): DefaultModels {
     [entries],
   );
 
-  return { entries, error, isSaving, select, selectEffort, toggle };
+  const select = useCallback(
+    async (providerId: string, modelId: string) => {
+      await selectForAccount(providerId, 'default', modelId);
+    },
+    [selectForAccount],
+  );
+
+  const selectEffort = useCallback(
+    async (providerId: string, effortId: string) => {
+      await selectEffortForAccount(providerId, 'default', effortId);
+    },
+    [selectEffortForAccount],
+  );
+
+  return {
+    entries,
+    error,
+    isSaving,
+    select,
+    selectEffort,
+    selectForAccount,
+    selectEffortForAccount,
+    toggle,
+  };
 }

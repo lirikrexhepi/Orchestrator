@@ -17,12 +17,23 @@ type FileRepoScope struct {
 	IsGit  bool   `json:"isGit"`
 }
 
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
 func normalizeFilePath(p string) string {
 	p = strings.TrimSpace(p)
-	if len(p) >= 3 && p[0] == '/' && ((p[1] >= 'a' && p[1] <= 'z') || (p[1] >= 'A' && p[1] <= 'Z')) && p[2] == ':' {
+	if p == "" {
+		return ""
+	}
+	if len(p) >= 3 && p[0] == '/' && isASCIILetter(p[1]) && p[2] == ':' {
 		p = p[1:]
 	}
-	return filepath.Clean(p)
+	cleaned := filepath.Clean(p)
+	if len(cleaned) >= 2 && cleaned[0] >= 'a' && cleaned[0] <= 'z' && cleaned[1] == ':' {
+		cleaned = string(cleaned[0]-('a'-'A')) + cleaned[1:]
+	}
+	return cleaned
 }
 
 func resolveNearestDir(p string) string {
@@ -78,7 +89,7 @@ func (a *App) ResolveFileRepos(paths []string) map[string]FileRepoScope {
 		if ok && repo != nil && repo.Root != "" {
 			branch, _ := repo.CurrentBranch(ctx)
 			cancel()
-			repoRoot := repo.Root
+			repoRoot := normalizeFilePath(repo.Root)
 			dirScopes[dir] = FileRepoScope{
 				Root:   repoRoot,
 				Name:   filepath.Base(repoRoot),
@@ -101,9 +112,13 @@ func (a *App) ResolveFileRepos(paths []string) map[string]FileRepoScope {
 			result[p] = scope
 		} else {
 			cleaned := normalizeFilePath(p)
+			name := ""
+			if cleaned != "" {
+				name = filepath.Base(cleaned)
+			}
 			result[p] = FileRepoScope{
 				Root:  cleaned,
-				Name:  filepath.Base(cleaned),
+				Name:  name,
 				IsGit: false,
 			}
 		}

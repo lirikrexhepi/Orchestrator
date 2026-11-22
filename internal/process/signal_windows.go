@@ -14,10 +14,14 @@ func configureSysProcAttr(cmd *exec.Cmd) {
 	}
 }
 
-// Windows has no SIGTERM. Killing the process is the only portable escalation,
-// and the job-object-free child tree is reaped by CommandContext.
-func terminate(cmd *exec.Cmd) {
-	if cmd.Process != nil {
-		_ = cmd.Process.Kill()
+// Windows has no SIGTERM. Terminate the entire Job Object when KillTree is
+// active (killing grandchild Node processes behind .cmd shims), falling back
+// to killing the direct child process.
+func terminate(p *Process) {
+	if terminateJob(p) {
+		return
+	}
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
 	}
 }

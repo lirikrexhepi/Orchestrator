@@ -218,9 +218,14 @@ export const AgentInput: React.FC<AgentInputProps> = ({
 
   const handleSelectProvider = (providerId: string) => {
     setLocalProviderId(providerId);
-    const providerModels = models.filter((m) => m.providerId === providerId);
-    if (providerModels.length > 0) {
-      setLocalModelId(providerModels[0].id);
+    const store = useOrchestratorStore.getState();
+    const account = store.shownAccount(providerId);
+    const providerModels = store.getModelsForProvider(providerId, account);
+    const preferredId =
+      store.preferredAccountModels[`${providerId}:${account}`] || store.preferredModels[providerId];
+    const pick = providerModels.find((m) => m.id === preferredId) ?? providerModels[0];
+    if (pick) {
+      setLocalModelId(pick.id);
     }
   };
 

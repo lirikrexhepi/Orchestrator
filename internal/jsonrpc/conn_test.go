@@ -204,3 +204,50 @@ func TestSequentialNotificationsDeliveredInFIFOOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestCloseCancelsHandlerContextAndNonBlockingDispatch(t *testing.T) {
+	clientR, peerW := io.Pipe()
+	peerR, clientW := io.Pipe()
+	defer peerW.Close()
+	defer clientW.Close()
+
+	// Drain peerR so writes from client don't block.
+	go func() { _, _ = io.Copy(io.Discard, peerR) }()
+
+	handlerStarted := make(chan struct{})
+	handlerCancelled := make(chan struct{})
+
+	clientConn := NewConn(clientR, clientW, func(ctx context.Context, method string, params json.RawMessage) (any, error) {
+		if method == "slow/request" {
+			close(handlerStarted)
+			<-ctx.Done()
+			close(handlerCancelled)
+			return nil, ctx.Err()
+		}
+		return nil, nil
+	})
+
+	// Send an inbound request that blocks on ctx.Done().
+	if _, err := peerW.Write([]byte(`{"jsonrpc":"2.0","id":7,"method":"slow/request","params":{}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handlerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	// Simulate an unbuffered or pre-filled pending response channel in dispatch().
+	fullCh := make(chan *Message, 1)
+	fullCh <- &Message{JSONRPC: "2.0", ID: json.RawMessage("999")}
+	clientConn.pending.Store("999", fullCh)
+	clientConn.dispatch(&Message{JSONRPC: "2.0", ID: json.RawMessage("999"), Result: json.RawMessage(`{}`)})
+
+	clientConn.Close(nil)
+
+	select {
+	case <-handlerCancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() did not cancel handler context")
+	}
+}
