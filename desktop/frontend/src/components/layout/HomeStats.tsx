@@ -16,18 +16,18 @@ const PERIOD_TABS: { id: ActivityPeriod; label: string; phrase: string; prevLabe
 ];
 
 const WHITE_DARK = [
-  '#18191e',                    // Level 0: empty
-  'rgba(255, 255, 255, 0.22)',  // Level 1: low
-  'rgba(255, 255, 255, 0.45)',  // Level 2: medium
-  'rgba(255, 255, 255, 0.70)',  // Level 3: high
+  '#151619',                    // Level 0: empty
+  'rgba(255, 255, 255, 0.20)',  // Level 1: low
+  'rgba(255, 255, 255, 0.42)',  // Level 2: medium
+  'rgba(255, 255, 255, 0.68)',  // Level 3: high
   'rgba(255, 255, 255, 0.95)',  // Level 4: peak
 ];
 
 const WHITE_LIGHT = [
   'rgba(0, 0, 0, 0.05)',
-  'rgba(0, 0, 0, 0.22)',
-  'rgba(0, 0, 0, 0.45)',
-  'rgba(0, 0, 0, 0.70)',
+  'rgba(0, 0, 0, 0.20)',
+  'rgba(0, 0, 0, 0.42)',
+  'rgba(0, 0, 0, 0.68)',
   'rgba(0, 0, 0, 0.92)',
 ];
 
@@ -37,6 +37,20 @@ const PROVIDER_COLORS: Record<string, string> = {
   codex: '#38bdf8',
   opencode: '#34d399',
 };
+
+const MONO_SHADES_DARK = [
+  'rgba(255, 255, 255, 0.85)',
+  'rgba(255, 255, 255, 0.45)',
+  'rgba(255, 255, 255, 0.22)',
+  'rgba(255, 255, 255, 0.12)',
+];
+
+const MONO_SHADES_LIGHT = [
+  'rgba(0, 0, 0, 0.85)',
+  'rgba(0, 0, 0, 0.45)',
+  'rgba(0, 0, 0, 0.22)',
+  'rgba(0, 0, 0, 0.12)',
+];
 
 function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(1).replace(/\.0$/, '')}B`;
@@ -114,7 +128,7 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
     return Array.from(map.entries()).map(([id, label]) => ({ id, label }));
   }, [overview?.projects, allProjects?.projects]);
 
-  const cols = 28;
+  const cols = 53;
   const days = useMemo(() => {
     const raw = overview?.days ?? [];
     const target = cols * 7;
@@ -143,6 +157,19 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
   };
 
   const now = new Date();
+  const currentYear = now.getFullYear();
+  const yearStartKey = `${currentYear}-01-01`;
+  const thisYearCol = useMemo(() => {
+    for (let c = 0; c < cols; c++) {
+      for (let r = 0; r < 7; r++) {
+        const d = days[c * 7 + r];
+        if (d?.date && d.date >= yearStartKey) {
+          return c;
+        }
+      }
+    }
+    return -1;
+  }, [days, yearStartKey, cols]);
   const todayHeading = now.toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'long',
@@ -178,13 +205,14 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
     providersList.find((p) => p.id === id)?.name || (id ? id.charAt(0).toUpperCase() + id.slice(1) : 'Agent');
 
   const palette = isLight ? WHITE_LIGHT : WHITE_DARK;
+  const monoShades = isLight ? MONO_SHADES_LIGHT : MONO_SHADES_DARK;
   const strongText = isLight ? 'text-black' : 'text-white';
   const mutedText = isLight ? 'text-black/45' : 'text-white/45';
   const faintText = isLight ? 'text-black/35' : 'text-white/35';
 
   return (
     <div className="w-full max-w-[540px] flex flex-col select-none font-(family-name:--app-font)">
-      {/* Top Row: Date + Project Filter (left) & Today / Week / Month Segmented Control (right) */}
+      {/* Top Row: Date + Project Filter (left) & Today / Week / Month Minimalist Toggle (right) */}
       <div className="flex items-center justify-between gap-4 mb-4">
         <div className="flex items-center gap-3 min-w-0">
           <span className={`text-[12.5px] font-normal tracking-tight truncate ${mutedText}`}>
@@ -244,14 +272,8 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
           )}
         </div>
 
-        {/* Today | Week | Month Segmented Toggle */}
-        <div
-          className={`inline-flex items-center p-[3px] rounded-[9px] border shrink-0 ${
-            isLight
-              ? 'bg-black/[0.04] border-black/[0.07]'
-              : 'bg-white/[0.04] border-white/[0.07]'
-          }`}
-        >
+        {/* Today | Week | Month Minimalist Text Toggle - No borders, no boxes */}
+        <div className="inline-flex items-center gap-3 shrink-0">
           {PERIOD_TABS.map((tab) => {
             const active = period === tab.id;
             return (
@@ -259,14 +281,14 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
                 key={tab.id}
                 type="button"
                 onClick={() => setPeriod(tab.id)}
-                className={`px-2.5 py-1 rounded-[6px] text-[11.5px] font-medium tracking-tight transition-all duration-150 cursor-pointer ${
+                className={`text-[12px] tracking-tight transition-colors duration-150 cursor-pointer ${
                   active
                     ? isLight
-                      ? 'bg-white text-black shadow-xs'
-                      : 'bg-white/[0.11] text-white shadow-xs'
+                      ? 'text-black font-medium'
+                      : 'text-white font-medium'
                     : isLight
-                      ? 'text-black/45 hover:text-black/75'
-                      : 'text-white/45 hover:text-white/80'
+                      ? 'text-black/40 hover:text-black/75 font-normal'
+                      : 'text-white/40 hover:text-white/75 font-normal'
                 }`}
               >
                 {tab.label}
@@ -319,17 +341,17 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
       )}
 
       {/* Activity Heatmap Header */}
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-1.5">
         <span className={`text-[12px] font-medium tracking-tight ${strongText}`}>
           Activity
         </span>
         <div className={`flex items-center gap-1.5 text-[10.5px] tracking-tight ${faintText}`}>
           <span>Less</span>
-          <div className="flex items-center gap-[3px]">
+          <div className="flex items-center gap-[2px]">
             {palette.map((bg, idx) => (
               <span
                 key={idx}
-                className="w-[9px] h-[9px] rounded-[2px]"
+                className="w-[7px] h-[7px] rounded-[1.5px]"
                 style={{ backgroundColor: bg }}
               />
             ))}
@@ -338,10 +360,24 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
         </div>
       </div>
 
-      {/* Activity Heatmap Grid: 7 rows x 28 columns */}
-      <div className="flex flex-col gap-[4px] mb-5">
+      {/* Year start indicator above the grid */}
+      <div className="relative w-full h-[14px] mb-1 overflow-hidden pointer-events-none select-none">
+        {thisYearCol >= 0 && (
+          <div
+            className="absolute top-0 text-[10px] text-white/50 font-mono tracking-tight"
+            style={{
+              left: `${Math.min(90, Math.max(0, (thisYearCol / cols) * 100))}%`,
+            }}
+          >
+            ↑ {currentYear}
+          </div>
+        )}
+      </div>
+
+      {/* Activity Heatmap Grid: 7 rows x 53 columns */}
+      <div className="flex flex-col gap-[2px] mb-5">
         {Array.from({ length: 7 }).map((_, rIdx) => (
-          <div key={rIdx} className="grid gap-[4px]" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+          <div key={rIdx} className="grid gap-[2px]" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
             {Array.from({ length: cols }).map((_, cIdx) => {
               const day = days[cIdx * 7 + rIdx];
               const count = day?.count ?? 0;
@@ -356,7 +392,7 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
                 <div
                   key={cIdx}
                   title={tooltip}
-                  className="aspect-square rounded-[2.5px] transition-colors duration-150"
+                  className="aspect-square rounded-[1.5px] transition-colors duration-150"
                   style={{ backgroundColor: cellBg }}
                 />
               );
@@ -399,21 +435,21 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
         {/* Provider Share Bar & Legend */}
         {shares.length > 0 && (
           <div className="flex flex-col gap-1.5 flex-1 min-w-[160px] max-w-[230px]">
-            <div className="flex w-full h-[4px] gap-[2px] rounded-full overflow-hidden">
-              {shares.map((share) => (
+            <div className="flex w-full h-[3px] gap-[2px] rounded-full overflow-hidden">
+              {shares.map((share, idx) => (
                 <div
                   key={share.driver}
-                  className="h-full rounded-full min-w-[4px]"
+                  className="h-full rounded-full min-w-[3px]"
                   style={{
                     flexGrow: shareTotal > 0 ? share.tokens : share.messages || 1,
                     flexBasis: 0,
-                    backgroundColor: PROVIDER_COLORS[share.driver] ?? (isLight ? '#555' : '#888'),
+                    backgroundColor: monoShades[idx % monoShades.length],
                   }}
                 />
               ))}
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-              {shares.slice(0, 3).map((share) => {
+              {shares.slice(0, 3).map((share, idx) => {
                 const pct = shareTotal > 0 ? Math.round((share.tokens / shareTotal) * 100) : 0;
                 return (
                   <span
@@ -421,8 +457,8 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
                     className={`inline-flex items-center gap-1 text-[10.5px] tracking-tight ${mutedText}`}
                   >
                     <span
-                      className="w-[5px] h-[5px] rounded-full shrink-0"
-                      style={{ backgroundColor: PROVIDER_COLORS[share.driver] ?? (isLight ? '#555' : '#888') }}
+                      className="w-[4.5px] h-[4.5px] rounded-full shrink-0"
+                      style={{ backgroundColor: monoShades[idx % monoShades.length] }}
                     />
                     <span>{providerLabel(share.driver)}</span>
                     <span className="tabular-nums opacity-75">{pct}%</span>

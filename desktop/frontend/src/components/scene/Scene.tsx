@@ -821,6 +821,7 @@ export const Scene: React.FC<SceneProps> = () => {
                     onClose={() => handleCloseTask(activeTask.threadId)}
                     projectName={activeTask.projectName}
                     projectPath={activeTask.projectPath}
+                    isPreviousChat={Boolean(activeTask.isHistory || activeTask.isLive === false)}
                     accountName={accountLabel(activeTask.driver, activeTask.account)}
                     browserTargetUrl={browserTarget?.url}
                     browserTargetNonce={browserTarget?.nonce}

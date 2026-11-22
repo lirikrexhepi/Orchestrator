@@ -131,6 +131,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
             const isOpen = open === row.key;
             const renaming = accounts.renaming === row.key;
             const confirming = accounts.confirmRemove === row.key;
+            const isDefault = (row.accountId || 'default') === (projectDefault || 'default');
             return (
               <div key={row.key} className="flex flex-col">
                 <div className="flex items-center gap-3 px-3.5 py-2.5">
@@ -173,6 +174,32 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
                               {authMode === 'api_key' ? 'API Key' : 'Keyring'}
                             </span>
                           )}
+                          {isDefault ? (
+                            <span
+                              className={`text-[9.5px] font-semibold px-2 py-0.5 rounded-full tracking-tight shrink-0 ${
+                                isLight ? 'bg-black/10 text-black/80' : 'bg-white/15 text-white/90'
+                              }`}
+                            >
+                              Default
+                            </span>
+                          ) : driverAccounts.length > 1 ? (
+                            <button
+                              type="button"
+                              disabled={accounts.busy}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void accounts.setProjectDefault(provider.id, row.accountId || 'default');
+                              }}
+                              className={`text-[9.5px] font-medium px-2 py-0.5 rounded-full tracking-tight transition-colors cursor-pointer shrink-0 opacity-70 hover:opacity-100 ${
+                                isLight
+                                  ? 'bg-black/5 hover:bg-black/10 text-black/70 hover:text-black'
+                                  : 'bg-white/5 hover:bg-white/10 text-white/70 hover:text-white'
+                              }`}
+                              title={accounts.project ? `Make default for ${accounts.project.name}` : 'Make default'}
+                            >
+                              Make default
+                            </button>
+                          ) : null}
                         </div>
                         <span className={`text-[11px] tracking-tight truncate ${sub}`}>
                           {[label, limit?.resetsAt ? until(limit.resetsAt) : ''].filter(Boolean).join(' · ')}
@@ -214,6 +241,21 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
                           </>
                         ) : (
                           <>
+                            {isDefault ? (
+                              <span className={`text-[11.5px] font-medium tracking-tight ${sub} flex items-center gap-1 shrink-0`}>
+                                ✓ Default account
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={accounts.busy}
+                                onClick={() => void accounts.setProjectDefault(provider.id, row.accountId || 'default')}
+                                className={link}
+                                title={accounts.project ? `Set as default account for ${accounts.project.name}` : 'Set as default account'}
+                              >
+                                Set as default
+                              </button>
+                            )}
                             {!(provider.id === 'antigravity' && authMode === 'api_key') && (
                               <button type="button" disabled={accounts.busy} onClick={() => void accounts.signIn(provider.id, row.accountId!)} className={link}>
                                 {status?.signedIn ? 'Sign in again' : 'Sign in'}

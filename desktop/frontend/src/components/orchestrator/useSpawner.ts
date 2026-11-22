@@ -41,6 +41,7 @@ export interface SpawnedTask {
   isBusy: boolean;
   workspaceId?: string;
   isLive?: boolean;
+  isHistory?: boolean;
   /** Frontend-only blank tab. No CLI is running until the first message sends. */
   isDraft?: boolean;
   /** Set on tasks replayed from an imported outside chat (e.g. "claude-code"). */
@@ -1058,7 +1059,11 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
         const rawTranscripts = (loaded.transcripts ?? {}) as Record<string, RuntimeEvent[]>;
         const truncated = (loaded.truncated ?? {}) as Record<string, number>;
         let rawTasks = meta.tasks ? [...meta.tasks] : [];
-        const cwd = meta.workspace?.cwd || '';
+        const taskCwd =
+          (meta.tasks || []).find((x: any) => x.cwd || x.worktree?.path)?.cwd ||
+          (meta.tasks || []).find((x: any) => x.worktree?.path)?.worktree?.path ||
+          '';
+        const cwd = meta.workspace?.cwd || taskCwd || '';
         const folderName = cwd ? cwd.replace(/\\/g, '/').split('/').filter(Boolean).pop() : undefined;
 
         // If session had no subagents but had coordinator blocks:
@@ -1132,6 +1137,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
           isBusy: false,
           workspaceId: targetWorkspaceId,
           isLive: false,
+          isHistory: true,
           hasEarlier,
           importedFrom: (meta.workspace as any)?.importedFrom,
           projectName: folderName,

@@ -87,6 +87,7 @@ export interface AgentWindowProps {
   projectName?: string;
   projectPath?: string;
   accountName?: string;
+  isPreviousChat?: boolean;
   isFullscreen?: boolean;
   onEnterFullscreen?: () => void;
   onExitFullscreen?: () => void;
@@ -173,6 +174,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   projectName,
   projectPath,
   accountName,
+  isPreviousChat = false,
   isFullscreen = false,
   onEnterFullscreen,
   onExitFullscreen,
@@ -699,11 +701,17 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
 
   const { currentTheme } = useTheme();
   const isLight = currentTheme.id === 'light' || currentTheme.id === 'white';
+  const effectiveProjectName =
+    projectName ||
+    (projectPath ? projectPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() : undefined) ||
+    (matchingLane?.path ? matchingLane.path.replace(/\\/g, '/').split('/').filter(Boolean).pop() : undefined);
+  const shouldShowProject = Boolean(isPreviousChat && effectiveProjectName);
+
   const workspaceSection = useMemo(
     () => (
       <WorkspaceSection
         isLight={isLight}
-        projectName={projectName}
+        projectName={effectiveProjectName}
         path={projectPath}
         lane={matchingLane ?? null}
         hideBranchHeader={hasMultiRepoChanges}
@@ -711,7 +719,7 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
         onClose={onClose}
       />
     ),
-    [isLight, projectName, projectPath, matchingLane, hasMultiRepoChanges, openChanges, onClose],
+    [isLight, effectiveProjectName, projectPath, matchingLane, hasMultiRepoChanges, openChanges, onClose],
   );
 
   const inspectorSection = useMemo(
@@ -733,10 +741,10 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
 
   const projectMeta = (
     <>
-      {projectName && (
-        <span className={'inline-flex items-center gap-1 shrink-0 font-medium font-(family-name:--app-font) tracking-tight ' + (isFullscreen ? 'text-[13px] gap-1.5 ' : 'text-[11px] ') + (isLight ? 'text-black/55' : 'text-white/50')} title={'Project: ' + projectName}>
+      {shouldShowProject && (
+        <span className={'inline-flex items-center gap-1 shrink-0 font-medium font-(family-name:--app-font) tracking-tight ' + (isFullscreen ? 'text-[13px] gap-1.5 ' : 'text-[11px] ') + (isLight ? 'text-black/55' : 'text-white/50')} title={'Project: ' + effectiveProjectName}>
           <Folder size={isFullscreen ? 15 : 12} strokeWidth={1.75} />
-          {projectName}
+          {effectiveProjectName}
         </span>
       )}
       {accountName && (
