@@ -87,6 +87,13 @@ jobs:
           $json = ($cfg | ConvertTo-Json -Depth 10) + "`n"
           [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
 
+      - name: Build mobile web UI
+        shell: pwsh
+        working-directory: internal/remote/mobile
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
       - name: Build Windows NSIS installer
         shell: pwsh
         working-directory: desktop
