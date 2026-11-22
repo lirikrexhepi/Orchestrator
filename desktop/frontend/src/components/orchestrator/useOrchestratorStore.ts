@@ -44,10 +44,10 @@ interface OrchestratorStore {
 
   // Actions
   setAccountProject: (projectPath: string, defaults?: Record<string, string>) => void;
-  selectAccount: (providerId: string, accountId: string) => void;
+  selectAccount: (providerId: string, accountId: string, preserveModelId?: string) => void;
   loadAccountModels: (providerId: string, accountId: string) => Promise<AIModel[]>;
   /** Selects the account's pinned default model (loading that account's models first). */
-  applyAccountDefault: (providerId: string, accountId: string) => Promise<void>;
+  applyAccountDefault: (providerId: string, accountId: string, preserveModelId?: string) => Promise<void>;
   accountFor: (providerId: string, projectPath?: string) => string;
   shownAccount: (providerId: string) => string;
   focusSession: (session: FocusedSession | null) => void;
@@ -151,7 +151,7 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     }
   },
 
-  selectAccount: (providerId, accountId) => {
+  selectAccount: (providerId, accountId, preserveModelId) => {
     const focused = get().focusedSession;
     const nextChosen = { ...get().chosenAccounts, [providerId]: accountId };
     if (!focused) {
@@ -162,12 +162,16 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
         pendingAccounts: { ...get().pendingAccounts, [focused.threadId]: { providerId, account: accountId } },
       });
     }
-    void get().applyAccountDefault(providerId, accountId);
+    void get().applyAccountDefault(providerId, accountId, preserveModelId);
   },
 
-  applyAccountDefault: async (providerId, accountId) => {
+  applyAccountDefault: async (providerId, accountId, preserveModelId) => {
     const key = `${providerId}:${accountId}`;
     const pick = (list: AIModel[]) => {
+      if (preserveModelId) {
+        const preserved = list.find((m) => m.id === preserveModelId || m.id.toLowerCase() === preserveModelId.toLowerCase());
+        if (preserved) return preserved;
+      }
       const { preferredAccountModels, preferredModels } = get();
       const ids = [preferredAccountModels[key], preferredModels[providerId]].filter(Boolean);
       for (const id of ids) {

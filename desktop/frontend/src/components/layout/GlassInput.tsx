@@ -221,16 +221,15 @@ export const GlassInput: React.FC<GlassInputProps> = ({
     if (!models || models.length === 0) return;
 
     const target = resolveMatchingModel(models, activeChatModel, activeChatDriver);
-    if (target) {
-      lastSyncedChatKey = activeChatKey;
-      if (target.id !== store.selectedModelId || target.providerId !== store.selectedProviderId) {
-        store.selectModelSilently(target.id, target.providerId);
-      }
-      if (activeChatAccount && store.shownAccount(target.providerId) !== activeChatAccount) {
-        store.selectAccount(target.providerId, activeChatAccount);
-      }
-    } else {
-      lastSyncedChatKey = activeChatKey;
+    lastSyncedChatKey = activeChatKey;
+
+    const targetProviderId = target?.providerId || activeChatDriver || store.selectedProviderId;
+    const targetModelId = target?.id;
+
+    if (activeChatAccount && store.shownAccount(targetProviderId) !== activeChatAccount) {
+      store.selectAccount(targetProviderId, activeChatAccount, targetModelId);
+    } else if (targetModelId && (targetModelId !== store.selectedModelId || targetProviderId !== store.selectedProviderId)) {
+      store.selectModelSilently(targetModelId, targetProviderId);
     }
   }, [activeChatKey, activeChatModel, activeChatDriver, activeChatAccount, store.models, store.selectedModelId]);
 
