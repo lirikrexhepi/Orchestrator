@@ -97,6 +97,8 @@ type SessionInfo struct {
 	ThreadID     string `json:"threadId"`
 	URL          string `json:"url"`
 	Title        string `json:"title"`
+	Favicon      string `json:"favicon,omitempty"`
+	Cursor       string `json:"cursor,omitempty"`
 	Loading      bool   `json:"loading"`
 	CanGoBack    bool   `json:"canGoBack"`
 	CanGoForward bool   `json:"canGoForward"`
@@ -143,6 +145,11 @@ type tab struct {
 	sessionID    string
 	url          string
 	title        string
+	favicon        string
+	faviconURL     string
+	cursor         string
+	lastCursorAt   time.Time
+	cursorInFlight bool
 	loading      bool
 	canGoBack    bool
 	canGoForward bool
@@ -163,6 +170,8 @@ func (t *tab) info() SessionInfo {
 		ThreadID:     t.threadID,
 		URL:          t.url,
 		Title:        t.title,
+		Favicon:      t.favicon,
+		Cursor:       t.cursor,
 		Loading:      t.loading,
 		CanGoBack:    t.canGoBack,
 		CanGoForward: t.canGoForward,
@@ -606,6 +615,9 @@ func (m *Manager) Open(ctx context.Context, threadID, initialURL string, width, 
 	_ = m.cdp.Call(ctx, t.sessionID, "Page.addScriptToEvaluateOnNewDocument", map[string]any{
 		"source": stealthInitScript,
 	}, nil)
+	_ = m.cdp.Call(ctx, t.sessionID, "Emulation.setFocusEmulationEnabled", map[string]any{
+		"enabled": true,
+	}, nil)
 	_ = m.cdp.Send(t.sessionID, "Page.bringToFront", nil)
 	_ = m.cdp.Call(ctx, t.sessionID, "Emulation.setDeviceMetricsOverride", map[string]any{
 		"width":             width,
@@ -743,6 +755,7 @@ func (m *Manager) handleTabCDPEvent(t *tab, method string, params json.RawMessag
 		t.mu.Unlock()
 		m.refreshNavHistory(t)
 		m.broadcastState(t)
+		go m.refreshTabFavicon(t)
 		if !hasFrame && !paused {
 			go m.pushFallbackFrame(t)
 		}
@@ -754,6 +767,7 @@ func (m *Manager) handleTabCDPEvent(t *tab, method string, params json.RawMessag
 		t.mu.RUnlock()
 		m.refreshNavHistory(t)
 		m.broadcastState(t)
+		go m.refreshTabFavicon(t)
 		if !hasFrame && !paused {
 			go m.pushFallbackFrame(t)
 		}
@@ -1138,20 +1152,164 @@ func (m *Manager) DispatchMouse(ctx context.Context, id string, ev MouseEvent) e
 	}
 
 	params := map[string]any{
-		"type":       ev.Type,
-		"x":          ev.X,
-		"y":          ev.Y,
-		"button":     btn,
-		"buttons":    ev.Buttons,
-		"clickCount": ev.ClickCount,
-		"deltaX":     ev.DeltaX,
-		"deltaY":     ev.DeltaY,
-		"modifiers":  ev.Modifiers,
+		"type":        ev.Type,
+		"x":           ev.X,
+		"y":           ev.Y,
+		"button":      btn,
+		"buttons":     ev.Buttons,
+		"clickCount":  ev.ClickCount,
+		"deltaX":      ev.DeltaX,
+		"deltaY":      ev.DeltaY,
+		"modifiers":   ev.Modifiers,
+		"pointerType": "mouse",
 	}
 	if ev.Type == "mousePressed" {
 		_ = cdp.Send(t.sessionID, "Page.bringToFront", nil)
 	}
+	if ev.Type == "mouseMoved" {
+		m.maybeRefreshTabCursor(t, ev.X, ev.Y)
+	}
 	return cdp.Send(t.sessionID, "Input.dispatchMouseEvent", params)
+}
+
+func (m *Manager) maybeRefreshTabCursor(t *tab, x, y float64) {
+	t.mu.Lock()
+	if t.cursorInFlight || time.Since(t.lastCursorAt) < 65*time.Millisecond {
+		t.mu.Unlock()
+		return
+	}
+	t.cursorInFlight = true
+	t.lastCursorAt = time.Now()
+	sessionID := t.sessionID
+	t.mu.Unlock()
+
+	go func() {
+		defer func() {
+			t.mu.Lock()
+			t.cursorInFlight = false
+			t.mu.Unlock()
+		}()
+
+		m.mu.Lock()
+		cdp := m.cdp
+		m.mu.Unlock()
+		if cdp == nil {
+			return
+		}
+
+		expr := fmt.Sprintf(`(() => {
+			const el = document.elementFromPoint(%f, %f);
+			if (!el) return 'default';
+			const c = getComputedStyle(el).cursor;
+			if (c && c !== 'auto') return c;
+			if (el.closest('a[href], button, [role="button"], summary, select, label[for]')) return 'pointer';
+			if (el.closest('input:not([type="button"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, [contenteditable="true"]')) return 'text';
+			return 'default';
+		})()`, x, y)
+
+		var evalRes struct {
+			Result struct {
+				Value string `json:"value"`
+			} `json:"result"`
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+		defer cancel()
+		if err := cdp.Call(ctx, sessionID, "Runtime.evaluate", map[string]any{
+			"expression":    expr,
+			"returnByValue": true,
+		}, &evalRes); err != nil {
+			return
+		}
+		next := strings.TrimSpace(evalRes.Result.Value)
+		if next == "" {
+			next = "default"
+		}
+		t.mu.Lock()
+		changed := t.cursor != next
+		if changed {
+			t.cursor = next
+		}
+		t.mu.Unlock()
+		if changed {
+			m.broadcastState(t)
+		}
+	}()
+}
+
+func (m *Manager) refreshTabFavicon(t *tab) {
+	t.mu.RLock()
+	curURL := t.url
+	prevURL := t.faviconURL
+	sessionID := t.sessionID
+	t.mu.RUnlock()
+
+	if curURL == "" || curURL == "about:blank" || curURL == prevURL {
+		return
+	}
+
+	m.mu.Lock()
+	cdp := m.cdp
+	m.mu.Unlock()
+	if cdp == nil {
+		return
+	}
+
+	const expr = `(async () => {
+		try {
+			const links = Array.from(document.querySelectorAll('link[rel*="icon"]'));
+			let href = '';
+			for (const l of links) {
+				if (l.href) { href = l.href; break; }
+			}
+			if (!href && location.origin && location.origin !== 'null') {
+				href = location.origin + '/favicon.ico';
+			}
+			if (!href) return '';
+			if (href.startsWith('data:image/')) {
+				return href.length <= 65536 ? href : '';
+			}
+			const resp = await fetch(href, { credentials: 'include' });
+			if (!resp.ok) return '';
+			const blob = await resp.blob();
+			if (!blob || blob.size === 0 || blob.size > 48000) return '';
+			return await new Promise((resolve) => {
+				const r = new FileReader();
+				r.onloadend = () => resolve(typeof r.result === 'string' ? r.result : '');
+				r.onerror = () => resolve('');
+				r.readAsDataURL(blob);
+			});
+		} catch {
+			return '';
+		}
+	})()`
+
+	var evalRes struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := cdp.Call(ctx, sessionID, "Runtime.evaluate", map[string]any{
+		"expression":    expr,
+		"awaitPromise":  true,
+		"returnByValue": true,
+	}, &evalRes); err != nil {
+		return
+	}
+
+	dataURL := strings.TrimSpace(evalRes.Result.Value)
+	if !strings.HasPrefix(dataURL, "data:image/") {
+		return
+	}
+	t.mu.Lock()
+	t.faviconURL = curURL
+	changed := t.favicon != dataURL
+	t.favicon = dataURL
+	t.mu.Unlock()
+	if changed {
+		m.broadcastState(t)
+	}
 }
 
 // DispatchKey sends key events into the CDP tab.

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { ActivityPeriod, useActivityOverview } from '../activity/useActivityOverview';
 import { useProjects } from '../orchestrator/useProjects';
+import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
 import { Check } from '../common/icons';
 import { activity } from '../../../wailsjs/go/models';
 
@@ -8,18 +9,18 @@ export interface HomeStatsProps {
   isLight?: boolean;
 }
 
-const PERIOD_OPTIONS: { id: ActivityPeriod; label: string }[] = [
-  { id: 'week', label: 'This week' },
-  { id: 'month', label: 'This month' },
-  { id: 'year', label: 'This year' },
+const PERIOD_TABS: { id: ActivityPeriod; label: string; phrase: string; prevLabel: string }[] = [
+  { id: 'today', label: 'Today', phrase: 'so far', prevLabel: 'yesterday' },
+  { id: 'week', label: 'Week', phrase: 'this week', prevLabel: 'last week' },
+  { id: 'month', label: 'Month', phrase: 'this month', prevLabel: 'last month' },
 ];
 
 const WHITE_DARK = [
   '#18191e',                    // Level 0: empty
-  'rgba(255, 255, 255, 0.22)', // Level 1: low
-  'rgba(255, 255, 255, 0.45)', // Level 2: medium
-  'rgba(255, 255, 255, 0.70)', // Level 3: high
-  'rgba(255, 255, 255, 0.95)', // Level 4: peak
+  'rgba(255, 255, 255, 0.22)',  // Level 1: low
+  'rgba(255, 255, 255, 0.45)',  // Level 2: medium
+  'rgba(255, 255, 255, 0.70)',  // Level 3: high
+  'rgba(255, 255, 255, 0.95)',  // Level 4: peak
 ];
 
 const WHITE_LIGHT = [
@@ -30,11 +31,29 @@ const WHITE_LIGHT = [
   'rgba(0, 0, 0, 0.92)',
 ];
 
+const PROVIDER_COLORS: Record<string, string> = {
+  claude: '#d97757',
+  antigravity: '#7c9cf5',
+  codex: '#38bdf8',
+  opencode: '#34d399',
+};
+
 function formatTokens(tokens: number): string {
-  if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(1)}B`;
+  if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(1).replace(/\.0$/, '')}B`;
   if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M`;
   if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
   return `${tokens}`;
+}
+
+function formatDuration(ms: number): string {
+  if (!ms || ms <= 0) return '0m';
+  const totalMinutes = Math.round(ms / 60_000);
+  if (totalMinutes < 1) return '<1m';
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  if (hours === 0) return `${mins}m`;
+  if (mins === 0) return `${hours}h`;
+  return `${hours}h ${mins}m`;
 }
 
 function formatDate(key: string): string {
@@ -47,53 +66,42 @@ function formatDate(key: string): string {
   });
 }
 
+function getGreeting(hour: number): string {
+  if (hour >= 5 && hour < 12) return 'Good morning';
+  if (hour >= 12 && hour < 17) return 'Good afternoon';
+  if (hour >= 17 && hour < 21) return 'Good evening';
+  return 'Late night';
+}
+
 export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
-  const [period, setPeriod] = useState<ActivityPeriod>('week');
+  const [period, setPeriod] = useState<ActivityPeriod>('today');
   const [project, setProject] = useState<string>('');
-  const [isPeriodOpen, setIsPeriodOpen] = useState(false);
   const [isProjectOpen, setIsProjectOpen] = useState(false);
 
-  const periodMenuRef = useRef<HTMLDivElement>(null);
   const projectMenuRef = useRef<HTMLDivElement>(null);
 
   const { overview } = useActivityOverview(period, project);
   const allProjects = useProjects();
+  const providersList = useOrchestratorStore((s) => s.providers);
 
-  // Close menus on outside click or Escape
   useEffect(() => {
-    if (!isPeriodOpen && !isProjectOpen) return;
-
+    if (!isProjectOpen) return;
     const handlePointerDown = (e: MouseEvent) => {
-      if (
-        periodMenuRef.current &&
-        !periodMenuRef.current.contains(e.target as Node)
-      ) {
-        setIsPeriodOpen(false);
-      }
-      if (
-        projectMenuRef.current &&
-        !projectMenuRef.current.contains(e.target as Node)
-      ) {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) {
         setIsProjectOpen(false);
       }
     };
-
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setIsPeriodOpen(false);
-        setIsProjectOpen(false);
-      }
+      if (e.key === 'Escape') setIsProjectOpen(false);
     };
-
     document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isPeriodOpen, isProjectOpen]);
+  }, [isProjectOpen]);
 
-  // Project filter options
   const projectOptions = useMemo(() => {
     const map = new Map<string, string>();
     map.set('', 'All projects');
@@ -106,11 +114,12 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
     return Array.from(map.entries()).map(([id, label]) => ({ id, label }));
   }, [overview?.projects, allProjects?.projects]);
 
-  // Format activity days into 24 columns x 7 rows
+  const cols = 28;
   const days = useMemo(() => {
     const raw = overview?.days ?? [];
+    const target = cols * 7;
     if (raw.length === 0) {
-      return Array.from({ length: 168 }, () => ({ date: '', count: 0 } as activity.Day));
+      return Array.from({ length: target }, () => ({ date: '', count: 0 } as activity.Day));
     }
     const list = [...raw];
     const rem = list.length % 7;
@@ -119,7 +128,6 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
         list.push({ date: '', count: 0 } as activity.Day);
       }
     }
-    const target = 24 * 7;
     if (list.length < target) {
       const pad = Array.from({ length: target - list.length }, () => ({ date: '', count: 0 } as activity.Day));
       return [...pad, ...list];
@@ -127,168 +135,214 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
     return list.slice(-target);
   }, [overview?.days]);
 
-  // Maximum commits/messages in any day for scaling
-  const max = useMemo(() => {
-    return days.reduce((acc, d) => Math.max(acc, d.count), 0);
-  }, [days]);
+  const max = useMemo(() => days.reduce((acc, d) => Math.max(acc, d.count), 0), [days]);
 
   const getLevel = (count: number) => {
     if (count <= 0 || max === 0) return 0;
     return Math.min(4, Math.ceil((count / max) * 4));
   };
 
-  // Metrics from overview
+  const now = new Date();
+  const todayHeading = now.toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+  });
+  const greeting = getGreeting(now.getHours());
+  const userName = overview?.userName?.trim() || '';
+  const greetingLine = userName ? `${greeting}, ${userName}.` : `${greeting}.`;
+
+  const activeTab = PERIOD_TABS.find((t) => t.id === period) ?? PERIOD_TABS[0];
   const current = overview?.current;
+  const previous = overview?.previous;
+
   const messagesCount = current?.messages ?? 0;
   const sessionsCount = current?.sessions ?? 0;
-  const toolCallsCount = current?.toolCalls ?? 0;
-  const tokensCount = current?.tokens ? formatTokens(current.tokens) : '0';
+  const agentsCount = current?.agents ?? 0;
+  const workingMs = current?.workingMs ?? 0;
+  const tokensRaw = current?.tokens ?? 0;
+  const tokensFormatted = formatTokens(tokensRaw);
+  const activeProjectsCount = project ? 1 : (overview?.activeProjects ?? 0);
+
+  const prevTokens = previous?.tokens ?? 0;
+  const prevMessages = previous?.messages ?? 0;
+  const tokenPctDelta =
+    prevTokens > 0 && tokensRaw > 0
+      ? Math.round(((tokensRaw - prevTokens) / prevTokens) * 100)
+      : null;
+  const messageDiff = prevMessages > 0 ? messagesCount - prevMessages : null;
+
+  const shares = overview?.providers ?? [];
+  const shareTotal = shares.reduce((sum, s) => sum + s.tokens, 0);
+  const providerLabel = (id: string) =>
+    providersList.find((p) => p.id === id)?.name || (id ? id.charAt(0).toUpperCase() + id.slice(1) : 'Agent');
 
   const palette = isLight ? WHITE_LIGHT : WHITE_DARK;
+  const strongText = isLight ? 'text-black' : 'text-white';
+  const mutedText = isLight ? 'text-black/45' : 'text-white/45';
+  const faintText = isLight ? 'text-black/35' : 'text-white/35';
 
   return (
-    <div className="w-[356px] flex flex-col select-none font-(family-name:--app-font)">
-      {/* Header Filters: "This week" & "All projects" */}
-      <div className="flex items-center gap-5 mb-3.5">
-        {/* Period Filter Dropdown */}
-        <div className="relative" ref={periodMenuRef}>
-          <button
-            type="button"
-            onClick={() => {
-              setIsPeriodOpen((prev) => !prev);
-              setIsProjectOpen(false);
-            }}
-            className={`text-[13px] tracking-tight transition-colors cursor-pointer ${
-              period !== 'week' || isPeriodOpen
-                ? isLight ? 'text-black font-medium' : 'text-white font-medium'
-                : isLight ? 'text-black/85 font-medium' : 'text-white/95 font-medium'
-            }`}
-          >
-            {PERIOD_OPTIONS.find((p) => p.id === period)?.label ?? 'This week'}
-          </button>
+    <div className="w-full max-w-[540px] flex flex-col select-none font-(family-name:--app-font)">
+      {/* Top Row: Date + Project Filter (left) & Today / Week / Month Segmented Control (right) */}
+      <div className="flex items-center justify-between gap-4 mb-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className={`text-[12.5px] font-normal tracking-tight truncate ${mutedText}`}>
+            {todayHeading}
+          </span>
+          {projectOptions.length > 1 && (
+            <div className="relative" ref={projectMenuRef}>
+              <button
+                type="button"
+                onClick={() => setIsProjectOpen((prev) => !prev)}
+                className={`text-[12px] tracking-tight transition-colors cursor-pointer ${
+                  project !== '' || isProjectOpen
+                    ? `${strongText} font-medium`
+                    : `${faintText} hover:${mutedText}`
+                }`}
+              >
+                {projectOptions.find((p) => p.id === project)?.label ?? 'All projects'}
+              </button>
 
-          {isPeriodOpen && (
-            <div
-              className={`absolute left-0 top-[26px] z-50 min-w-[140px] rounded-[10px] p-1 border backdrop-blur-xl shadow-2xl animate-scale-in ${
-                isLight
-                  ? 'bg-white/95 border-black/10 text-black'
-                  : 'bg-[#141518]/95 border-white/10 text-white'
-              }`}
-            >
-              {PERIOD_OPTIONS.map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => {
-                    setPeriod(opt.id);
-                    setIsPeriodOpen(false);
-                  }}
-                  className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-[6px] text-[12px] tracking-tight cursor-pointer ${
-                    isLight ? 'hover:bg-black/[0.05]' : 'hover:bg-white/[0.08]'
+              {isProjectOpen && (
+                <div
+                  className={`absolute left-0 top-[24px] z-50 min-w-[170px] max-h-[220px] overflow-y-auto rounded-[10px] p-1 border backdrop-blur-xl shadow-2xl animate-scale-in ${
+                    isLight
+                      ? 'bg-white/95 border-black/10 text-black'
+                      : 'bg-[#141518]/95 border-white/10 text-white'
                   }`}
                 >
-                  <span className={opt.id === period ? 'font-medium text-white' : 'text-white/60'}>
-                    {opt.label}
-                  </span>
-                  {opt.id === period && <Check size={12} strokeWidth={2.2} className="text-white shrink-0" />}
-                </button>
-              ))}
+                  {projectOptions.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => {
+                        setProject(opt.id);
+                        setIsProjectOpen(false);
+                      }}
+                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-[6px] text-[12px] tracking-tight cursor-pointer ${
+                        isLight ? 'hover:bg-black/[0.05]' : 'hover:bg-white/[0.08]'
+                      }`}
+                    >
+                      <span
+                        className={`truncate max-w-[130px] ${
+                          opt.id === project
+                            ? isLight ? 'font-medium text-black' : 'font-medium text-white'
+                            : isLight ? 'text-black/60' : 'text-white/60'
+                        }`}
+                      >
+                        {opt.label}
+                      </span>
+                      {opt.id === project && (
+                        <Check size={12} strokeWidth={2.2} className={`${strongText} shrink-0`} />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        {/* Project Filter Dropdown */}
-        <div className="relative" ref={projectMenuRef}>
-          <button
-            type="button"
-            onClick={() => {
-              setIsProjectOpen((prev) => !prev);
-              setIsPeriodOpen(false);
-            }}
-            className={`text-[13px] tracking-tight transition-colors cursor-pointer ${
-              project !== '' || isProjectOpen
-                ? isLight ? 'text-black font-medium' : 'text-white font-medium'
-                : isLight ? 'text-black/40 hover:text-black/75' : 'text-white/40 hover:text-white/70'
-            }`}
-          >
-            {projectOptions.find((p) => p.id === project)?.label ?? 'All projects'}
-          </button>
+        {/* Today | Week | Month Segmented Toggle */}
+        <div
+          className={`inline-flex items-center p-[3px] rounded-[9px] border shrink-0 ${
+            isLight
+              ? 'bg-black/[0.04] border-black/[0.07]'
+              : 'bg-white/[0.04] border-white/[0.07]'
+          }`}
+        >
+          {PERIOD_TABS.map((tab) => {
+            const active = period === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setPeriod(tab.id)}
+                className={`px-2.5 py-1 rounded-[6px] text-[11.5px] font-medium tracking-tight transition-all duration-150 cursor-pointer ${
+                  active
+                    ? isLight
+                      ? 'bg-white text-black shadow-xs'
+                      : 'bg-white/[0.11] text-white shadow-xs'
+                    : isLight
+                      ? 'text-black/45 hover:text-black/75'
+                      : 'text-white/45 hover:text-white/80'
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
-          {isProjectOpen && (
-            <div
-              className={`absolute left-0 top-[26px] z-50 min-w-[170px] max-h-[220px] overflow-y-auto rounded-[10px] p-1 border backdrop-blur-xl shadow-2xl animate-scale-in ${
-                isLight
-                  ? 'bg-white/95 border-black/10 text-black'
-                  : 'bg-[#141518]/95 border-white/10 text-white'
-              }`}
-            >
-              {projectOptions.map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => {
-                    setProject(opt.id);
-                    setIsProjectOpen(false);
-                  }}
-                  className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-[6px] text-[12px] tracking-tight cursor-pointer ${
-                    isLight ? 'hover:bg-black/[0.05]' : 'hover:bg-white/[0.08]'
-                  }`}
-                >
-                  <span className={`truncate max-w-[130px] ${opt.id === project ? 'font-medium text-white' : 'text-white/60'}`}>
-                    {opt.label}
-                  </span>
-                  {opt.id === project && <Check size={12} strokeWidth={2.2} className="text-white shrink-0" />}
-                </button>
-              ))}
-            </div>
+      {/* Editorial Hero Summary Text */}
+      <h1
+        className={`text-[28px] sm:text-[31px] font-semibold tracking-[-0.03em] leading-[1.2] mb-3 ${mutedText}`}
+      >
+        <span className={strongText}>{greetingLine}</span>{' '}
+        You used{' '}
+        <span className={strongText}>{tokensFormatted} tokens</span>{' '}
+        {activeTab.phrase}, sent{' '}
+        <span className={strongText}>
+          {messagesCount.toLocaleString()} {messagesCount === 1 ? 'message' : 'messages'}
+        </span>
+        , and worked on{' '}
+        <span className={strongText}>
+          {activeProjectsCount} {activeProjectsCount === 1 ? 'project' : 'projects'}
+        </span>
+      </h1>
+
+      {/* Comparison Deltas */}
+      {(tokenPctDelta !== null && tokenPctDelta !== 0) || (messageDiff !== null && messageDiff !== 0) ? (
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mb-7 text-[11.5px] tracking-tight">
+          {tokenPctDelta !== null && tokenPctDelta !== 0 && (
+            <span className={`inline-flex items-center gap-1 ${mutedText}`}>
+              <span className={tokenPctDelta > 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                {tokenPctDelta > 0 ? '↗' : '↘'}
+              </span>
+              {Math.abs(tokenPctDelta)}% {tokenPctDelta > 0 ? 'more' : 'fewer'} tokens than {activeTab.prevLabel}
+            </span>
+          )}
+          {messageDiff !== null && messageDiff !== 0 && (
+            <span className={`inline-flex items-center gap-1 ${mutedText}`}>
+              <span className={messageDiff > 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                {messageDiff > 0 ? '↗' : '↘'}
+              </span>
+              {Math.abs(messageDiff).toLocaleString()} {messageDiff > 0 ? 'more' : 'fewer'}{' '}
+              {Math.abs(messageDiff) === 1 ? 'message' : 'messages'} than {activeTab.prevLabel}
+            </span>
           )}
         </div>
-      </div>
+      ) : (
+        <div className="mb-6" />
+      )}
 
-      {/* 4 Metric Columns evenly spaced across the 356px width */}
-      <div className="flex items-baseline justify-between w-full mb-5">
-        <div>
-          <div className={`text-[25px] font-normal tracking-tight leading-none ${isLight ? 'text-black' : 'text-white'}`}>
-            {messagesCount.toLocaleString()}
+      {/* Activity Heatmap Header */}
+      <div className="flex items-center justify-between mb-2">
+        <span className={`text-[12px] font-medium tracking-tight ${strongText}`}>
+          Activity
+        </span>
+        <div className={`flex items-center gap-1.5 text-[10.5px] tracking-tight ${faintText}`}>
+          <span>Less</span>
+          <div className="flex items-center gap-[3px]">
+            {palette.map((bg, idx) => (
+              <span
+                key={idx}
+                className="w-[9px] h-[9px] rounded-[2px]"
+                style={{ backgroundColor: bg }}
+              />
+            ))}
           </div>
-          <div className={`text-[11.5px] font-normal tracking-tight mt-1.5 ${isLight ? 'text-black/45' : 'text-white/40'}`}>
-            messages
-          </div>
-        </div>
-
-        <div>
-          <div className={`text-[25px] font-normal tracking-tight leading-none ${isLight ? 'text-black' : 'text-white'}`}>
-            {sessionsCount.toLocaleString()}
-          </div>
-          <div className={`text-[11.5px] font-normal tracking-tight mt-1.5 ${isLight ? 'text-black/45' : 'text-white/40'}`}>
-            sessions
-          </div>
-        </div>
-
-        <div>
-          <div className={`text-[25px] font-normal tracking-tight leading-none ${isLight ? 'text-black' : 'text-white'}`}>
-            {toolCallsCount.toLocaleString()}
-          </div>
-          <div className={`text-[11.5px] font-normal tracking-tight mt-1.5 ${isLight ? 'text-black/45' : 'text-white/40'}`}>
-            tool calls
-          </div>
-        </div>
-
-        <div>
-          <div className={`text-[25px] font-normal tracking-tight leading-none ${isLight ? 'text-black' : 'text-white'}`}>
-            {tokensCount}
-          </div>
-          <div className={`text-[11.5px] font-normal tracking-tight mt-1.5 ${isLight ? 'text-black/45' : 'text-white/40'}`}>
-            tokens
-          </div>
+          <span>More</span>
         </div>
       </div>
 
-      {/* Activity Heatmap Grid: 7 rows x 24 columns */}
-      <div className="flex flex-col gap-[4px]">
+      {/* Activity Heatmap Grid: 7 rows x 28 columns */}
+      <div className="flex flex-col gap-[4px] mb-5">
         {Array.from({ length: 7 }).map((_, rIdx) => (
-          <div key={rIdx} className="flex items-center gap-[4px]">
-            {Array.from({ length: 24 }).map((_, cIdx) => {
+          <div key={rIdx} className="grid gap-[4px]" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+            {Array.from({ length: cols }).map((_, cIdx) => {
               const day = days[cIdx * 7 + rIdx];
               const count = day?.count ?? 0;
               const lvl = getLevel(count);
@@ -302,15 +356,82 @@ export const HomeStats: React.FC<HomeStatsProps> = ({ isLight = false }) => {
                 <div
                   key={cIdx}
                   title={tooltip}
-                  className="w-[11px] h-[11px] rounded-[2.5px] transition-colors duration-150"
-                  style={{
-                    backgroundColor: cellBg,
-                  }}
+                  className="aspect-square rounded-[2.5px] transition-colors duration-150"
+                  style={{ backgroundColor: cellBg }}
                 />
               );
             })}
           </div>
         ))}
+      </div>
+
+      {/* Bottom Metrics Row: Sessions, Agents, Working + Provider Breakdown */}
+      <div className="flex flex-wrap items-end justify-between gap-6">
+        <div className="flex items-baseline gap-8">
+          <div>
+            <div className={`text-[18px] font-semibold tracking-tight tabular-nums leading-none ${strongText}`}>
+              {sessionsCount.toLocaleString()}
+            </div>
+            <div className={`text-[11px] font-normal tracking-tight mt-1.5 ${mutedText}`}>
+              Sessions
+            </div>
+          </div>
+
+          <div>
+            <div className={`text-[18px] font-semibold tracking-tight tabular-nums leading-none ${strongText}`}>
+              {agentsCount.toLocaleString()}
+            </div>
+            <div className={`text-[11px] font-normal tracking-tight mt-1.5 ${mutedText}`}>
+              Agents
+            </div>
+          </div>
+
+          <div>
+            <div className={`text-[18px] font-semibold tracking-tight tabular-nums leading-none ${strongText}`}>
+              {formatDuration(workingMs)}
+            </div>
+            <div className={`text-[11px] font-normal tracking-tight mt-1.5 ${mutedText}`}>
+              Working
+            </div>
+          </div>
+        </div>
+
+        {/* Provider Share Bar & Legend */}
+        {shares.length > 0 && (
+          <div className="flex flex-col gap-1.5 flex-1 min-w-[160px] max-w-[230px]">
+            <div className="flex w-full h-[4px] gap-[2px] rounded-full overflow-hidden">
+              {shares.map((share) => (
+                <div
+                  key={share.driver}
+                  className="h-full rounded-full min-w-[4px]"
+                  style={{
+                    flexGrow: shareTotal > 0 ? share.tokens : share.messages || 1,
+                    flexBasis: 0,
+                    backgroundColor: PROVIDER_COLORS[share.driver] ?? (isLight ? '#555' : '#888'),
+                  }}
+                />
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+              {shares.slice(0, 3).map((share) => {
+                const pct = shareTotal > 0 ? Math.round((share.tokens / shareTotal) * 100) : 0;
+                return (
+                  <span
+                    key={share.driver}
+                    className={`inline-flex items-center gap-1 text-[10.5px] tracking-tight ${mutedText}`}
+                  >
+                    <span
+                      className="w-[5px] h-[5px] rounded-full shrink-0"
+                      style={{ backgroundColor: PROVIDER_COLORS[share.driver] ?? (isLight ? '#555' : '#888') }}
+                    />
+                    <span>{providerLabel(share.driver)}</span>
+                    <span className="tabular-nums opacity-75">{pct}%</span>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

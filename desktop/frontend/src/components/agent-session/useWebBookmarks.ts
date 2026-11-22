@@ -4,11 +4,56 @@ export interface WebBookmark {
   id: string;
   title: string;
   url: string;
+  favicon?: string;
   project?: string | null; // null/undefined/"" = Universal (shows everywhere); string = project name
   createdAt: number;
 }
 
 const STORAGE_KEY = 'orchestrator:web_bookmarks';
+const FAVICON_CACHE_KEY = 'orchestrator:web_favicons';
+const BOOKMARKS_UPDATED_EVENT = 'orchestrator:web-bookmarks-updated';
+
+function readFaviconCache(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(FAVICON_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function rememberBrowserFavicon(urlStr: string, faviconDataUrl: string): void {
+  if (!urlStr || !faviconDataUrl || !faviconDataUrl.startsWith('data:image/')) return;
+  const domain = getDomain(urlStr).toLowerCase();
+  if (!domain) return;
+  try {
+    const cache = readFaviconCache();
+    const changedCache = cache[domain] !== faviconDataUrl;
+    if (changedCache) {
+      cache[domain] = faviconDataUrl;
+      localStorage.setItem(FAVICON_CACHE_KEY, JSON.stringify(cache));
+    }
+    const stored = readStoredBookmarks();
+    let changedBookmarks = false;
+    const next = stored.map((bm) => {
+      if (getDomain(bm.url).toLowerCase() === domain && bm.favicon !== faviconDataUrl) {
+        changedBookmarks = true;
+        return { ...bm, favicon: faviconDataUrl };
+      }
+      return bm;
+    });
+    if (changedBookmarks) {
+      writeStoredBookmarks(next);
+      window.dispatchEvent(new Event(BOOKMARKS_UPDATED_EVENT));
+    } else if (changedCache) {
+      window.dispatchEvent(new Event(BOOKMARKS_UPDATED_EVENT));
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
 
 function readStoredBookmarks(): WebBookmark[] {
   try {
@@ -40,8 +85,15 @@ export function getDomain(urlStr: string): string {
   }
 }
 
-export function getFaviconUrl(urlStr: string): string {
+export function getFaviconUrl(urlStr: string, savedFavicon?: string): string {
+  if (savedFavicon && savedFavicon.startsWith('data:image/')) {
+    return savedFavicon;
+  }
   const domain = getDomain(urlStr);
+  const cached = readFaviconCache()[domain.toLowerCase()];
+  if (cached && cached.startsWith('data:image/')) {
+    return cached;
+  }
   return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`;
 }
 
@@ -50,28 +102,39 @@ export function useWebBookmarks(projectName?: string | null) {
 
   useEffect(() => {
     const handleStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY) {
+      if (e.key === STORAGE_KEY || e.key === FAVICON_CACHE_KEY) {
         setBookmarks(readStoredBookmarks());
       }
     };
+    const handleLocalUpdate = () => {
+      setBookmarks(readStoredBookmarks());
+    };
     window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+    window.addEventListener(BOOKMARKS_UPDATED_EVENT, handleLocalUpdate);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener(BOOKMARKS_UPDATED_EVENT, handleLocalUpdate);
+    };
   }, []);
 
   const addBookmark = useCallback(
-    (bookmark: { title: string; url: string; project?: string | null }) => {
+    (bookmark: { title: string; url: string; favicon?: string; project?: string | null }) => {
       const cleanUrl = bookmark.url.trim();
       const cleanTitle = bookmark.title.trim() || getDomain(cleanUrl) || cleanUrl;
+      const domain = getDomain(cleanUrl).toLowerCase();
+      const cachedFavicon = bookmark.favicon || readFaviconCache()[domain];
       const newBm: WebBookmark = {
         id: 'bm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
         title: cleanTitle,
         url: cleanUrl,
+        ...(cachedFavicon ? { favicon: cachedFavicon } : {}),
         project: bookmark.project?.trim() || null,
         createdAt: Date.now(),
       };
       setBookmarks((prev) => {
         const next = [newBm, ...prev];
         writeStoredBookmarks(next);
+        window.dispatchEvent(new Event(BOOKMARKS_UPDATED_EVENT));
         return next;
       });
       return newBm;

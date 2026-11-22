@@ -51,6 +51,8 @@ export namespace activity {
 	export class Totals {
 	    messages: number;
 	    sessions: number;
+	    agents: number;
+	    workingMs: number;
 	    toolCalls: number;
 	    tokens: number;
 	
@@ -62,6 +64,8 @@ export namespace activity {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.messages = source["messages"];
 	        this.sessions = source["sessions"];
+	        this.agents = source["agents"];
+	        this.workingMs = source["workingMs"];
 	        this.toolCalls = source["toolCalls"];
 	        this.tokens = source["tokens"];
 	    }
@@ -69,6 +73,8 @@ export namespace activity {
 	export class Overview {
 	    period: string;
 	    project: string;
+	    userName?: string;
+	    activeProjects: number;
 	    current: Totals;
 	    previous: Totals;
 	    days: Day[];
@@ -92,6 +98,8 @@ export namespace activity {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.period = source["period"];
 	        this.project = source["project"];
+	        this.userName = source["userName"];
+	        this.activeProjects = source["activeProjects"];
 	        this.current = this.convertValues(source["current"], Totals);
 	        this.previous = this.convertValues(source["previous"], Totals);
 	        this.days = this.convertValues(source["days"], Day);

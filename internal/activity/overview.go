@@ -10,6 +10,8 @@ import (
 type Totals struct {
 	Messages  int64 `json:"messages"`
 	Sessions  int64 `json:"sessions"`
+	Agents    int64 `json:"agents"`
+	WorkingMs int64 `json:"workingMs"`
 	ToolCalls int64 `json:"toolCalls"`
 	Tokens    int64 `json:"tokens"`
 }
@@ -17,6 +19,8 @@ type Totals struct {
 func (t *Totals) add(c Counts) {
 	t.Messages += c.Messages
 	t.Sessions += c.Sessions
+	t.Agents += c.Agents
+	t.WorkingMs += c.WorkingMs
 	t.ToolCalls += c.ToolCalls
 	t.Tokens += c.Tokens()
 }
@@ -42,6 +46,8 @@ type Project struct {
 type Overview struct {
 	Period                 string    `json:"period"`
 	Project                string    `json:"project"`
+	UserName               string    `json:"userName,omitempty"`
+	ActiveProjects         int       `json:"activeProjects"`
 	Current                Totals    `json:"current"`
 	Previous               Totals    `json:"previous"`
 	Days                   []Day     `json:"days"`
@@ -68,6 +74,10 @@ func midnight(t time.Time) time.Time {
 func windows(today time.Time, period string) (string, string, string) {
 	var start, prevStart, prevEnd time.Time
 	switch period {
+	case "today":
+		start = today
+		prevStart = today.AddDate(0, 0, -1)
+		prevEnd = prevStart
 	case "month":
 		start = time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, today.Location())
 		prevStart = start.AddDate(0, -1, 0)
@@ -89,7 +99,7 @@ func windows(today time.Time, period string) (string, string, string) {
 
 func normalizePeriod(period string) string {
 	switch period {
-	case "month", "year":
+	case "today", "month", "year":
 		return period
 	}
 	return "week"
@@ -105,6 +115,7 @@ func Build(rows []Row, now time.Time, period, project string) Overview {
 
 	out := Overview{Period: period, Project: project}
 	projects := map[string]int64{}
+	activeProjects := map[string]struct{}{}
 	perDay := map[string]int64{}
 	providers := map[string]*Share{}
 	models := map[string]*Share{}
@@ -122,6 +133,9 @@ func Build(rows []Row, now time.Time, period, project string) Overview {
 		perDay[row.Day] += row.Messages
 		if row.Day >= start {
 			out.Current.add(row.Counts)
+			if row.Project != "" && (row.Messages > 0 || row.Sessions > 0 || row.Tokens() > 0) {
+				activeProjects[strings.ToLower(filepath.Clean(row.Project))] = struct{}{}
+			}
 			if row.Driver != "" {
 				p := providers[row.Driver]
 				if p == nil {
@@ -171,6 +185,7 @@ func Build(rows []Row, now time.Time, period, project string) Overview {
 		}
 	}
 
+	out.ActiveProjects = len(activeProjects)
 	out.CurrentStreak, out.LongestStreak = streaks(perDay, today, gridKey)
 	out.Providers = rank(providers, 0)
 	out.Models = rank(models, maxModels)

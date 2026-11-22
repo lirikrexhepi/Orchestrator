@@ -16,7 +16,7 @@ import {
   Trash2,
   X,
 } from '../common/icons';
-import { useWebBookmarks, getDomain, getFaviconUrl, type WebBookmark } from './useWebBookmarks';
+import { useWebBookmarks, getDomain, getFaviconUrl, rememberBrowserFavicon, type WebBookmark } from './useWebBookmarks';
 import { BookmarkModal } from './BookmarkModal';
 import { CdpBrowserAction, CdpBrowserSurface } from '../browser/CdpBrowserSurface';
 
@@ -1085,15 +1085,19 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
                 onStateChange={(state) => {
                   const nextUrl =
                     state.url && state.url !== 'about:blank' ? state.url : tab.url;
+                  if (state.favicon && nextUrl !== 'about:blank') {
+                    rememberBrowserFavicon(nextUrl, state.favicon);
+                  }
                   updateTab(tab.id, {
                     url: nextUrl,
                     title: state.title || (nextUrl !== 'about:blank' ? getDomain(nextUrl) : 'New Tab'),
                     favicon:
-                      nextUrl !== 'about:blank' &&
+                      state.favicon ||
+                      (nextUrl !== 'about:blank' &&
                       !nextUrl.includes('localhost') &&
                       !nextUrl.includes('127.0.0.1')
                         ? getFaviconUrl(nextUrl)
-                        : '',
+                        : ''),
                     loading: state.loading,
                     canGoBack: state.canGoBack,
                     canGoForward: state.canGoForward,
@@ -1147,7 +1151,7 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
                       className="flex items-center gap-2 px-3 py-1.5 rounded-[10px] bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] hover:border-white/15 text-white/85 text-[12px] font-medium transition-all active:scale-95 cursor-pointer"
                     >
                       <img
-                        src={getFaviconUrl(bm.url)}
+                        src={getFaviconUrl(bm.url, bm.favicon)}
                         alt=""
                         className="w-4 h-4 object-contain rounded-xs shrink-0"
                         onError={(e) => {

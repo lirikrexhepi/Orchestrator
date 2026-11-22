@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityOverview } from '../../../wailsjs/go/main/App';
 import { activity } from '../../../wailsjs/go/models';
 
-export type ActivityPeriod = 'week' | 'month' | 'year';
+export type ActivityPeriod = 'today' | 'week' | 'month' | 'year';
 
 export function useActivityOverview(period: ActivityPeriod, project: string) {
   const [overview, setOverview] = useState<activity.Overview | null>(null);

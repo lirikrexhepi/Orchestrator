@@ -51,7 +51,7 @@ func TestTrackerCountsDeltasAndDedupesTools(t *testing.T) {
 	}
 
 	got := total(sink.rows)
-	want := Counts{Messages: 1, Sessions: 1, ToolCalls: 2, InputTokens: 34, OutputTokens: 15}
+	want := Counts{Messages: 1, Sessions: 1, Agents: 1, ToolCalls: 2, InputTokens: 34, OutputTokens: 15}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}

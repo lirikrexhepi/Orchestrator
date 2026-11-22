@@ -113,6 +113,14 @@ CREATE TABLE IF NOT EXISTS activity_daily (
 CREATE INDEX IF NOT EXISTS idx_activity_daily_day ON activity_daily(day);
 `,
 	},
+	{
+		version: 3,
+		name:    "activity_agents_and_working",
+		sql: `
+ALTER TABLE activity_daily ADD COLUMN agents INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE activity_daily ADD COLUMN working_ms INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 func (d *DB) migrate(ctx context.Context) error {

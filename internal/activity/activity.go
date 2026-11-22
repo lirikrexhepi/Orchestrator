@@ -20,6 +20,8 @@ type Key struct {
 type Counts struct {
 	Messages         int64 `json:"messages"`
 	Sessions         int64 `json:"sessions"`
+	Agents           int64 `json:"agents"`
+	WorkingMs        int64 `json:"workingMs"`
 	ToolCalls        int64 `json:"toolCalls"`
 	InputTokens      int64 `json:"inputTokens"`
 	OutputTokens     int64 `json:"outputTokens"`
@@ -34,6 +36,8 @@ func (c Counts) Tokens() int64 {
 func (c *Counts) add(o Counts) {
 	c.Messages += o.Messages
 	c.Sessions += o.Sessions
+	c.Agents += o.Agents
+	c.WorkingMs += o.WorkingMs
 	c.ToolCalls += o.ToolCalls
 	c.InputTokens += o.InputTokens
 	c.OutputTokens += o.OutputTokens
@@ -60,19 +64,23 @@ type Thread struct {
 	Model   string
 }
 
+const maxTurnWorkingMs = int64(2 * time.Hour / time.Millisecond)
+
 type accumulator struct {
-	pending map[Key]*Counts
-	threads map[string]Thread
-	turns   map[string]domain.Usage
-	tools   map[string]map[string]struct{}
+	pending    map[Key]*Counts
+	threads    map[string]Thread
+	turns      map[string]domain.Usage
+	turnStarts map[string]int64
+	tools      map[string]map[string]struct{}
 }
 
 func newAccumulator() *accumulator {
 	return &accumulator{
-		pending: make(map[Key]*Counts),
-		threads: make(map[string]Thread),
-		turns:   make(map[string]domain.Usage),
-		tools:   make(map[string]map[string]struct{}),
+		pending:    make(map[Key]*Counts),
+		threads:    make(map[string]Thread),
+		turns:      make(map[string]domain.Usage),
+		turnStarts: make(map[string]int64),
+		tools:      make(map[string]map[string]struct{}),
 	}
 }
 
@@ -132,18 +140,41 @@ func (a *accumulator) bucket(event domain.RuntimeEvent) *Counts {
 func counted(kind domain.EventKind) bool {
 	switch kind {
 	case domain.EventSessionStarted, domain.EventSessionStopped, domain.EventUserMessage, domain.EventToolCall,
-		domain.EventUsage, domain.EventAgentMessage, domain.EventTurnCompleted, domain.EventTurnFailed:
+		domain.EventUsage, domain.EventAgentMessage, domain.EventTurnStarted, domain.EventTurnCompleted, domain.EventTurnFailed:
 		return true
 	}
 	return false
 }
 
+func isAgentSpawnTool(name string) bool {
+	switch name {
+	case "Agent", "Task", "invoke_subagent", "delegate_task", "mcp_orchestrator_delegate_task":
+		return true
+	}
+	return false
+}
+
+func eventTimestamp(at int64) int64 {
+	if at > 0 {
+		return at
+	}
+	return time.Now().UnixMilli()
+}
+
 func (a *accumulator) observe(event domain.RuntimeEvent) {
 	switch event.Kind {
 	case domain.EventSessionStarted:
-		a.bucket(event).Sessions++
+		b := a.bucket(event)
+		b.Sessions++
+		b.Agents++
+	case domain.EventTurnStarted:
+		a.turnStarts[turnKey(event)] = eventTimestamp(event.At)
 	case domain.EventUserMessage:
 		a.bucket(event).Messages++
+		key := turnKey(event)
+		if _, exists := a.turnStarts[key]; !exists {
+			a.turnStarts[key] = eventTimestamp(event.At)
+		}
 	case domain.EventToolCall:
 		if event.Tool == nil {
 			return
@@ -159,7 +190,11 @@ func (a *accumulator) observe(event domain.RuntimeEvent) {
 			}
 			seen[event.Tool.ID] = struct{}{}
 		}
-		a.bucket(event).ToolCalls++
+		b := a.bucket(event)
+		b.ToolCalls++
+		if isAgentSpawnTool(event.Tool.Name) {
+			b.Agents++
+		}
 	case domain.EventUsage, domain.EventAgentMessage:
 		if event.Usage == nil {
 			return
@@ -178,7 +213,18 @@ func (a *accumulator) observe(event domain.RuntimeEvent) {
 			a.bucket(event).add(delta)
 		}
 	case domain.EventTurnCompleted, domain.EventTurnFailed:
-		delete(a.turns, turnKey(event))
+		key := turnKey(event)
+		if start, ok := a.turnStarts[key]; ok {
+			end := eventTimestamp(event.At)
+			if diff := end - start; diff > 0 {
+				if diff > maxTurnWorkingMs {
+					diff = maxTurnWorkingMs
+				}
+				a.bucket(event).WorkingMs += diff
+			}
+			delete(a.turnStarts, key)
+		}
+		delete(a.turns, key)
 		delete(a.tools, event.ThreadID)
 	case domain.EventSessionStopped:
 		delete(a.tools, event.ThreadID)

@@ -215,7 +215,7 @@ export const NavRail: React.FC<NavRailProps> = ({
                     }`}
                   >
                     <img
-                      src={getFaviconUrl(bm.url)}
+                      src={getFaviconUrl(bm.url, bm.favicon)}
                       alt={bm.title}
                       className="w-[15px] h-[15px] object-contain rounded-xs pointer-events-none"
                       onError={(e) => {

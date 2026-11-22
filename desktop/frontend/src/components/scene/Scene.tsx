@@ -87,7 +87,6 @@ export const Scene: React.FC<SceneProps> = () => {
   const wallpaper = useWallpaper();
   const projects = useProjects();
   const spawner = useSpawner();
-  const attachments = useAttachments();
   const { currentTheme } = useTheme();
   const isLight = currentTheme.id === 'light' || currentTheme.id === 'white';
 
@@ -121,6 +120,8 @@ export const Scene: React.FC<SceneProps> = () => {
 
   // Active task object
   const activeTask = activeTasks[activeCardIndex] ?? null;
+  const activeAttachmentScope = activeView === 'chat' && activeTask ? activeTask.threadId : '__home__';
+  const attachments = useAttachments(activeAttachmentScope);
 
   // Web Bookmarks (Universal + Project scoped)
   const activeProjectName = activeTask?.projectName || projects.active?.name;

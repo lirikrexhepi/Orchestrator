@@ -415,6 +415,7 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
         desired && providerChanges ? pendingAccount || store.shownAccount(desired.providerId) : pendingAccount;
       const accountChanges =
         Boolean(wantedAccount) && !providerChanges && wantedAccount !== (currentTask?.account || 'default');
+      let optimisticUserBlockAdded = false;
 
       if (currentTask && currentTask.workspaceId && currentTask.isLive === false) {
         // Imported outside chats are read-only context: messaging one starts a
@@ -530,6 +531,21 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
         if (desired && (providerChanges || accountChanges)) {
           threads.current.add(threadId);
         } else {
+          // Show the user's message immediately so resuming an idle CLI session
+          // doesn't leave the composer looking frozen for 1-2s.
+          const resumeStamp = Date.now();
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.threadId === threadId
+                ? {
+                    ...t,
+                    isBusy: true,
+                    blocks: [...t.blocks, userBlock(trimmed, `user-${resumeStamp}`, files, resumeStamp)],
+                  }
+                : t,
+            ),
+          );
+          optimisticUserBlockAdded = true;
           try {
             // Only this chat's agent is started, not every task of its session.
             await ResumeHistoryThread(currentTask.workspaceId, threadId);
@@ -542,6 +558,9 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
               ),
             );
           } catch (cause) {
+            setTasks((prev) =>
+              prev.map((t) => (t.threadId === threadId ? { ...t, isBusy: false } : t)),
+            );
             setError(cause instanceof Error ? cause.message : String(cause));
             return undefined;
           }
@@ -734,18 +753,20 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
         } else {
           lastSentOptions.current[threadId] = key;
           const turnId = `${threadId}-turn-${Date.now()}`;
-          setTasks((previous) =>
-            previous.map((task) =>
-              task.threadId === threadId
-                ? {
-                    ...task,
-                    isBusy: true,
-                    isLive: true,
-                    blocks: [...task.blocks, userBlock(trimmed, `user-${Date.now()}`, files, Date.now())],
-                  }
-                : task,
-            ),
-          );
+          if (!optimisticUserBlockAdded) {
+            setTasks((previous) =>
+              previous.map((task) =>
+                task.threadId === threadId
+                  ? {
+                      ...task,
+                      isBusy: true,
+                      isLive: true,
+                      blocks: [...task.blocks, userBlock(trimmed, `user-${Date.now()}`, files, Date.now())],
+                    }
+                  : task,
+              ),
+            );
+          }
           try {
             await SendTurn(
               domain.SendTurnInput.createFrom({ threadId, turnId, text: trimmed, files }),
@@ -901,6 +922,36 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
           setError('Choose a project folder before starting an agent');
           return;
         }
+
+        // Insert an optimistic chat card immediately so the user's message and
+        // working state appear at 0ms while the CLI process boots.
+        const pendingId = replaceDraftId || `pending-${Date.now()}`;
+        const pendingStamp = Date.now();
+        const optimisticCard: SpawnedTask = {
+          threadId: pendingId,
+          cardKey: pendingId,
+          title: taskTitle,
+          model: chosen.id,
+          driver: chosen.providerId,
+          account: store.accountFor(chosen.providerId, projCwd),
+          blocks: [userBlock(trimmed, `orch-prompt-${pendingId}`, files, pendingStamp)],
+          isBusy: true,
+          isLive: true,
+          projectName: currentProj?.name,
+          projectPath: currentProj?.path,
+        };
+        setTasks((previous) => {
+          if (replaceDraftId) {
+            const idx = previous.findIndex((t) => t.threadId === replaceDraftId);
+            if (idx !== -1) {
+              const next = [...previous];
+              next.splice(idx, 1, optimisticCard);
+              return next;
+            }
+          }
+          return [...previous, optimisticCard];
+        });
+
         const result = await SpawnTasks(
           [
             session.SpawnRequest.createFrom({
@@ -940,32 +991,31 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
         const created = result.tasks.map((task, index) =>
           withEarlyEvents({
             threadId: task.threadId,
-            cardKey: replaceDraftId && index === 0 ? replaceDraftId : task.threadId,
+            cardKey: index === 0 ? pendingId : task.threadId,
             title: task.title,
             branch: task.worktree?.branch,
             model: task.model,
             driver: task.driver,
             account: task.account,
-            blocks: [userBlock(trimmed, `orch-prompt-${task.threadId}`, files, task.createdAt || Date.now())],
+            blocks: [userBlock(trimmed, `orch-prompt-${task.threadId}`, files, task.createdAt || pendingStamp)],
             isBusy: true,
             projectName: currentProj?.name,
             projectPath: currentProj?.path,
           }),
         );
-        if (replaceDraftId) {
-          setTasks((previous) => {
-            const idx = previous.findIndex((t) => t.threadId === replaceDraftId);
-            if (idx === -1) return [...previous, ...created];
-            const next = [...previous];
-            next.splice(idx, 1, ...created);
-            return next;
-          });
-        } else {
-          setTasks((previous) => [...previous, ...created]);
-        }
+        setTasks((previous) => {
+          const idx = previous.findIndex((t) => t.threadId === pendingId);
+          if (idx === -1) return [...previous, ...created];
+          const next = [...previous];
+          next.splice(idx, 1, ...created);
+          return next;
+        });
 
         return result.tasks[0]?.threadId;
       } catch (cause) {
+        if (!replaceDraftId) {
+          setTasks((previous) => previous.filter((t) => !t.threadId.startsWith('pending-')));
+        }
         setError(cause instanceof Error ? cause.message : String(cause));
       }
     },

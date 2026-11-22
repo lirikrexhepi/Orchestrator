@@ -24,6 +24,7 @@ export interface CdpBrowserSurfaceProps {
   onStateChange?: (state: {
     url: string;
     title: string;
+    favicon?: string;
     loading: boolean;
     canGoBack: boolean;
     canGoForward: boolean;
@@ -124,6 +125,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
   onErrorRef.current = onError;
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [cursorStyle, setCursorStyle] = useState<string>('default');
   const [reconnectNonce, setReconnectNonce] = useState<number>(0);
 
   const sessionThreadKey =
@@ -405,9 +407,13 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
                   canGoBack: s.canGoBack ?? false,
                   canGoForward: s.canGoForward ?? false,
                 };
+                if (s.cursor) {
+                  setCursorStyle(s.cursor);
+                }
                 onStateChangeRef.current?.({
                   url: stateUrl,
                   title: s.title || '',
+                  favicon: s.favicon || undefined,
                   loading: s.loading ?? false,
                   canGoBack: s.canGoBack ?? false,
                   canGoForward: s.canGoForward ?? false,
@@ -845,10 +851,11 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
         onContextMenu={(e) => {
           if (isFocused) e.preventDefault();
         }}
-        className="w-full h-full block object-contain focus:outline-none cursor-default"
+        className="w-full h-full block object-contain focus:outline-none"
         style={{
           touchAction: 'none',
           imageRendering: 'auto',
+          cursor: cursorStyle,
         }}
       />
 

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ChooseAttachments,
   DiscardAttachment,
@@ -41,17 +41,46 @@ function encode(file: File): Promise<string> {
   });
 }
 
+const attachmentsByScope = new Map<string, Attachment[]>();
+
 /**
  * Staged attachments for one composer.
  *
  * Every CLI adapter takes a filesystem path, so pasted bytes are written to
- * disk by the backend before they can be sent. State is per-composer: the
- * orchestrator and each agent window stage independently.
+ * disk by the backend before they can be sent. When scopeKey is provided,
+ * staged attachments are persisted per chat tab so switching tabs keeps each
+ * tab's pasted images and files isolated.
  */
-export function useAttachments(): AttachmentsState {
-  const [items, setItems] = useState<Attachment[]>([]);
+export function useAttachments(scopeKey?: string): AttachmentsState {
+  const scope = scopeKey || '';
+  const [items, setItemsState] = useState<Attachment[]>(() =>
+    scope ? (attachmentsByScope.get(scope) ?? []) : [],
+  );
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setBusy] = useState(false);
+
+  const setItems = useCallback(
+    (next: Attachment[] | ((previous: Attachment[]) => Attachment[])) => {
+      setItemsState((previous) => {
+        const resolved = typeof next === 'function' ? next(previous) : next;
+        if (scope) {
+          if (resolved.length > 0) {
+            attachmentsByScope.set(scope, resolved);
+          } else {
+            attachmentsByScope.delete(scope);
+          }
+        }
+        return resolved;
+      });
+    },
+    [scope],
+  );
+
+  useEffect(() => {
+    if (!scope) return;
+    setItemsState(attachmentsByScope.get(scope) ?? []);
+    setError(null);
+  }, [scope]);
 
   const accept = useCallback(async (files: File[]) => {
     if (files.length === 0) return;

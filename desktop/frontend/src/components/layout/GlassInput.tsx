@@ -217,8 +217,6 @@ export const GlassInput: React.FC<GlassInputProps> = ({
 
     if (lastSyncedChatKey === activeChatKey && store.selectedModelId) return;
 
-    if (text.trim().length > 0) return;
-
     const models = store.models;
     if (!models || models.length === 0) return;
 
@@ -231,7 +229,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
     } else {
       lastSyncedChatKey = activeChatKey;
     }
-  }, [activeChatKey, activeChatModel, activeChatDriver, store.models, store.selectedModelId, text]);
+  }, [activeChatKey, activeChatModel, activeChatDriver, store.models, store.selectedModelId]);
 
   // Auto-resize textarea
   useEffect(() => {
