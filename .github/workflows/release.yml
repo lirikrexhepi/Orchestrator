@@ -64,12 +64,18 @@ jobs:
         shell: pwsh
         run: |
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+          $goBin = Join-Path (go env GOPATH) "bin"
+          "$goBin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          $env:PATH = "$goBin;$env:PATH"
+
           $nsisDir = "C:\Program Files (x86)\NSIS"
           if (-not (Test-Path "$nsisDir\makensis.exe")) {
             choco install nsis -y --no-progress
           }
           "$nsisDir" | Out-File -FilePath $env:GITHUB_PATH -Append
-          makensis -VERSION
+          $env:PATH = "$nsisDir;$env:PATH"
+
+          & "$nsisDir\makensis.exe" -VERSION
           wails version
 
       - name: Stamp version into desktop/wails.json
