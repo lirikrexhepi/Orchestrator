@@ -12,7 +12,7 @@ import { useDefaultModels } from '../sidebar/useDefaultModels';
 import { useAppUpdate } from '../sidebar/useAppUpdate';
 import { useTheme } from '../../themes';
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
-import { AgentWindow, AgentCardMode } from '../agent-session';
+import { AgentWindow, AgentBrowserView, AgentCardMode } from '../agent-session';
 import { collectThreadChanges } from '../agent-session/threadChanges';
 import { useGit } from '../git';
 import { NavRail } from '../layout/NavRail';
@@ -137,8 +137,10 @@ export const Scene: React.FC<SceneProps> = () => {
   const handleBookmarkClick = useCallback((bm: WebBookmark) => {
     setBrowserTarget({ url: bm.url, nonce: Date.now() });
     setCardMode('browser');
-    setActiveView('chat');
-  }, []);
+    if (activeTasks.length > 0) {
+      setActiveView('chat');
+    }
+  }, [activeTasks.length]);
 
   const handleBookmarkEdit = useCallback((bm: WebBookmark) => {
     setEditingBookmark(bm);
@@ -606,6 +608,7 @@ export const Scene: React.FC<SceneProps> = () => {
         activeView={activeView}
         onHomeClick={() => {
           setDirection(-1);
+          setCardMode('chat');
           setActiveView('home');
         }}
         onProjectsClick={() => setProjectsTrigger((p) => p + 1)}
@@ -618,7 +621,15 @@ export const Scene: React.FC<SceneProps> = () => {
         cardMode={cardMode}
         onModeSelect={(mode) => {
           setCardMode(mode);
-          setActiveView('chat');
+          if (mode === 'chat') {
+            if (activeTasks.length > 0) {
+              setActiveView('chat');
+            } else {
+              setActiveView('home');
+            }
+          } else if (activeTasks.length > 0) {
+            setActiveView('chat');
+          }
         }}
         onGitClick={handleGitClick}
         hasPreview={true}
@@ -658,7 +669,7 @@ export const Scene: React.FC<SceneProps> = () => {
         {/* Top Window TitleBar with Drag Handle & Traffic Lights (Minimise / Maximise / Close) */}
         <TitleBar>
           <DynamicIsland
-            cardMode={activeView === 'chat' ? cardMode : 'chat'}
+            cardMode={activeView === 'chat' || cardMode === 'browser' ? cardMode : 'chat'}
             projects={projects}
             activeTaskProjectName={activeTask?.projectName}
             activeTaskBranch={activeTask?.branch}
@@ -711,7 +722,37 @@ export const Scene: React.FC<SceneProps> = () => {
         {/* View Content */}
         <div className="relative flex-1 w-full h-full overflow-hidden">
           <AnimatePresence mode="wait" custom={direction} initial={false}>
-            {activeView === 'home' || !activeTask ? (
+            {cardMode === 'browser' && (!activeTask || activeView === 'home') ? (
+              /* Standalone Browser View (works with 0 chats or from home) */
+              <motion.div
+                key="standalone-browser"
+                custom={direction}
+                variants={chatSlideVariants}
+                initial="enter"
+                animate="center"
+                exit="exit"
+                className="relative w-full h-full overflow-hidden"
+              >
+                <Suspense fallback={null}>
+                  <AgentBrowserView
+                    threadId="global"
+                    detectedServers={runningServers.groups?.flatMap((g) => g.servers || []).filter((s) => !s.agent && s.port > 0) || []}
+                    isFocused={true}
+                    onFocusCard={() => {}}
+                    onCloseBrowser={() => {
+                      setCardMode('chat');
+                      setActiveView('home');
+                    }}
+                    onAttachImage={handleAttachImage}
+                    targetUrl={browserTarget?.url}
+                    targetUrlNonce={browserTarget?.nonce}
+                    projectName={activeProjectName}
+                    projectPath={projects.active?.path}
+                    className="w-full h-full"
+                  />
+                </Suspense>
+              </motion.div>
+            ) : activeView === 'home' || !activeTask ? (
               /* Blank Chat / Home View */
               <motion.div
                 key="home-view"

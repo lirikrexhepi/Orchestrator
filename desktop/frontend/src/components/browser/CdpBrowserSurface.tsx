@@ -267,7 +267,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
         const rect = containerRef.current?.getBoundingClientRect();
         const w = Math.max(200, Math.round(rect?.width || 1280));
         const h = Math.max(160, Math.round(rect?.height || 800));
-        const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+        const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2.5));
         const startUrl = initialUrlRef.current || 'about:blank';
 
         const [endpoint, session] = await Promise.all([
@@ -360,6 +360,8 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
                     }
                     const ctx = canvas.getContext('2d', { alpha: false });
                     if (ctx) {
+                      ctx.imageSmoothingEnabled = true;
+                      ctx.imageSmoothingQuality = 'high';
                       ctx.drawImage(bitmap, 0, 0);
                     }
                   }
@@ -498,7 +500,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
           window.clearTimeout(resizeTimer);
         }
         resizeTimer = window.setTimeout(() => {
-          const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+          const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2.5));
           const w = Math.round(width);
           const h = Math.round(height);
           tabStateRef.current.width = w;

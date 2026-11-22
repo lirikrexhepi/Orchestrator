@@ -30,6 +30,67 @@ var (
 
 var devToolsWsRegex = regexp.MustCompile(`DevTools listening on (ws://[^\s\r\n]+)`)
 
+const desktopChromeUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+const stealthInitScript = `
+(function() {
+	try {
+		delete Object.getPrototypeOf(navigator).webdriver;
+	} catch (e) {}
+	try {
+		Object.defineProperty(navigator, 'webdriver', {
+			get: () => undefined,
+			configurable: true,
+		});
+	} catch (e) {}
+
+	if (!window.chrome) {
+		window.chrome = {};
+	}
+	if (!window.chrome.app) {
+		window.chrome.app = {
+			isInstalled: false,
+			InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+			RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+		};
+	}
+	if (!window.chrome.runtime) {
+		window.chrome.runtime = {
+			OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+			OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+			PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+			PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+			PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+			RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' }
+		};
+	}
+
+	if (!navigator.plugins || navigator.plugins.length === 0) {
+		const plugins = [
+			{ name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+			{ name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+			{ name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+			{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+			{ name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
+		];
+		try {
+			Object.defineProperty(navigator, 'plugins', {
+				get: () => plugins,
+				configurable: true,
+			});
+		} catch (e) {}
+	}
+	if (!navigator.languages || navigator.languages.length === 0) {
+		try {
+			Object.defineProperty(navigator, 'languages', {
+				get: () => ['en-US', 'en'],
+				configurable: true,
+			});
+		} catch (e) {}
+	}
+})();
+`
+
 // SessionInfo holds the public state of a single CDP browser tab.
 type SessionInfo struct {
 	ID           string `json:"id"`
@@ -310,7 +371,10 @@ func (m *Manager) launchChromiumLocked(ctx context.Context, execPath, profile st
 		"--disable-backgrounding-occluded-windows",
 		"--disable-features=CalculateNativeWinOcclusion",
 		"--disable-dev-shm-usage",
-		"--window-size=1280,800",
+		"--window-size=1920,1080",
+		"--disable-blink-features=AutomationControlled",
+		"--user-agent=" + desktopChromeUserAgent,
+		"--lang=en-US,en",
 	}
 	if disableGPU {
 		flags = append(flags, "--disable-gpu", "--disable-gpu-sandbox")
@@ -460,8 +524,8 @@ func (m *Manager) Open(ctx context.Context, threadID, initialURL string, width, 
 	if height <= 0 {
 		height = 800
 	}
-	width = clamp(width, 200, 2560)
-	height = clamp(height, 160, 1600)
+	width = clamp(width, 200, 3840)
+	height = clamp(height, 160, 2400)
 
 	if err := m.ensureChromiumLocked(ctx); err != nil {
 		return SessionInfo{}, err
@@ -531,8 +595,17 @@ func (m *Manager) Open(ctx context.Context, threadID, initialURL string, width, 
 	}
 	m.tabs[tabID] = t
 
-	// 3. Enable Page domain, focus the target, and set device metrics
+	// 3. Enable Page and Network domains, focus the target, configure anti-bot stealth and device metrics
 	_ = m.cdp.Call(ctx, t.sessionID, "Page.enable", nil, nil)
+	_ = m.cdp.Call(ctx, t.sessionID, "Network.enable", nil, nil)
+	_ = m.cdp.Call(ctx, t.sessionID, "Network.setUserAgentOverride", map[string]any{
+		"userAgent":      desktopChromeUserAgent,
+		"acceptLanguage": "en-US,en;q=0.9",
+		"platform":       "Win32",
+	}, nil)
+	_ = m.cdp.Call(ctx, t.sessionID, "Page.addScriptToEvaluateOnNewDocument", map[string]any{
+		"source": stealthInitScript,
+	}, nil)
 	_ = m.cdp.Send(t.sessionID, "Page.bringToFront", nil)
 	_ = m.cdp.Call(ctx, t.sessionID, "Emulation.setDeviceMetricsOverride", map[string]any{
 		"width":             width,
@@ -900,14 +973,14 @@ func (m *Manager) Reload(ctx context.Context, id string) error {
 func screencastParams(width, height int, dpr float64) map[string]any {
 	if dpr < 1.0 {
 		dpr = 1.0
-	} else if dpr > 1.5 {
-		dpr = 1.5
+	} else if dpr > 2.5 {
+		dpr = 2.5
 	}
-	maxW := clamp(int(math.Round(float64(width)*dpr)), 200, 1920)
-	maxH := clamp(int(math.Round(float64(height)*dpr)), 160, 1200)
+	maxW := clamp(int(math.Round(float64(width)*dpr)), 200, 3840)
+	maxH := clamp(int(math.Round(float64(height)*dpr)), 160, 2400)
 	return map[string]any{
 		"format":        "jpeg",
-		"quality":       75,
+		"quality":       95,
 		"everyNthFrame": 1,
 		"maxWidth":      maxW,
 		"maxHeight":     maxH,
@@ -928,12 +1001,12 @@ func (m *Manager) Resize(ctx context.Context, id string, width, height int, dpr 
 		return ErrBrowserClosed
 	}
 
-	width = clamp(width, 200, 2560)
-	height = clamp(height, 160, 1600)
+	width = clamp(width, 200, 3840)
+	height = clamp(height, 160, 2400)
 	if dpr < 1.0 {
 		dpr = 1.0
-	} else if dpr > 2.0 {
-		dpr = 2.0
+	} else if dpr > 2.5 {
+		dpr = 2.5
 	}
 
 	t.mu.Lock()

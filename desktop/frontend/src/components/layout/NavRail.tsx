@@ -100,7 +100,7 @@ export const NavRail: React.FC<NavRailProps> = ({
         <button
           type="button"
           onClick={onHomeClick}
-          className={getIconClass(activeView === 'home')}
+          className={getIconClass(activeView === 'home' && cardMode === 'chat')}
           title="Home / New Chat (Ctrl+N)"
           aria-label="Home / New Chat"
         >
@@ -118,75 +118,70 @@ export const NavRail: React.FC<NavRailProps> = ({
           <Folder size={16} strokeWidth={1.8} />
         </button>
 
-        {/* Mode switcher icons (only active in chat view) */}
-        {activeView === 'chat' && (
-          <>
-            {/* Subtle Divider */}
-            <div className={`w-3.5 h-[1px] my-1 ${isLight ? 'bg-black/10' : 'bg-white/10'}`} />
+        {/* Subtle Divider */}
+        <div className={`w-3.5 h-[1px] my-1 ${isLight ? 'bg-black/10' : 'bg-white/10'}`} />
 
-            {/* Chat view icon */}
-            <button
-              type="button"
-              onClick={() => onModeSelect?.('chat')}
-              className={getIconClass(cardMode === 'chat')}
-              title="Chat"
-              aria-label="Chat"
-            >
-              <MaterialIcon name="chat" size="15px" />
-            </button>
+        {/* Chat view icon */}
+        <button
+          type="button"
+          onClick={() => onModeSelect?.('chat')}
+          className={getIconClass(cardMode === 'chat' && activeView === 'chat')}
+          title="Chat"
+          aria-label="Chat"
+        >
+          <MaterialIcon name="chat" size="15px" />
+        </button>
 
-            {/* Preview / Browser view icon - Accessible at all times */}
-            <button
-              type="button"
-              onClick={() => onModeSelect?.('browser')}
-              className={getIconClass(cardMode === 'browser')}
-              title="Web Browser"
-              aria-label="Web Browser"
-            >
-              <Globe size={15} strokeWidth={1.8} />
-            </button>
+        {/* Preview / Browser view icon - Accessible at all times */}
+        <button
+          type="button"
+          onClick={() => onModeSelect?.('browser')}
+          className={getIconClass(cardMode === 'browser')}
+          title="Web Browser"
+          aria-label="Web Browser"
+        >
+          <Globe size={15} strokeWidth={1.8} />
+        </button>
 
-            {/* Terminal view icon - Dedicated and always accessible */}
-            <button
-              type="button"
-              onClick={() => onModeSelect?.('terminal')}
-              className={getIconClass(cardMode === 'terminal')}
-              title="Terminal"
-              aria-label="Terminal"
-            >
-              <Terminal size={15} strokeWidth={1.8} />
-            </button>
+        {/* Terminal view icon - Dedicated and always accessible */}
+        <button
+          type="button"
+          onClick={() => onModeSelect?.('terminal')}
+          className={getIconClass(cardMode === 'terminal')}
+          title="Terminal"
+          aria-label="Terminal"
+        >
+          <Terminal size={15} strokeWidth={1.8} />
+        </button>
 
-            {/* Servers view icon */}
-            <button
-              type="button"
-              disabled={!hasServers}
-              onClick={() => onModeSelect?.('servers')}
-              className={getModeIconClass(cardMode === 'servers', hasServers)}
-              title={hasServers ? 'Servers' : 'Servers (none running)'}
-              aria-label="Servers"
-            >
-              <MaterialIcon name="dns" size="15px" />
-            </button>
+        {/* Servers view icon */}
+        <button
+          type="button"
+          disabled={!hasServers}
+          onClick={() => onModeSelect?.('servers')}
+          className={getModeIconClass(cardMode === 'servers', hasServers)}
+          title={hasServers ? 'Servers' : 'Servers (none running)'}
+          aria-label="Servers"
+        >
+          <MaterialIcon name="dns" size="15px" />
+        </button>
 
-            {/* Changes / Git icon - Accessible, opens Git remote repo in built-in browser */}
-            <button
-              type="button"
-              onClick={() => {
-                if (onGitClick) {
-                  onGitClick();
-                } else {
-                  onModeSelect?.('changes');
-                }
-              }}
-              className={getIconClass(cardMode === 'changes')}
-              title="Git Repository"
-              aria-label="Git Repository"
-            >
-              <GitBranch size={15} strokeWidth={1.8} />
-            </button>
-          </>
-        )}
+        {/* Changes / Git icon - Accessible, opens Git remote repo in built-in browser */}
+        <button
+          type="button"
+          onClick={() => {
+            if (onGitClick) {
+              onGitClick();
+            } else {
+              onModeSelect?.('changes');
+            }
+          }}
+          className={getIconClass(cardMode === 'changes')}
+          title="Git Repository"
+          aria-label="Git Repository"
+        >
+          <GitBranch size={15} strokeWidth={1.8} />
+        </button>
 
         {/* Bookmarks Section (Universal & Project Bookmarks on Side Panel) */}
         {((bookmarks && bookmarks.length > 0) || onAddBookmark) && (
