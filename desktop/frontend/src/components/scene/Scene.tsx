@@ -613,6 +613,7 @@ export const Scene: React.FC<SceneProps> = () => {
         isSettingsOpen={isSettingsOpen}
         hasAppUpdate={Boolean(appUpdate.status?.available)}
         appUpdateVersion={appUpdate.status?.latestVersion}
+        appUpdate={appUpdate}
         isLight={isLight}
         cardMode={cardMode}
         onModeSelect={(mode) => {

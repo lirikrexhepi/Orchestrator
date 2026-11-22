@@ -11,6 +11,8 @@ import {
 } from '../common/icons';
 import type { AgentCardMode } from '../agent-session';
 import { getFaviconUrl, type WebBookmark } from '../agent-session/useWebBookmarks';
+import type { AppUpdateState } from '../sidebar/useAppUpdate';
+import { NavRailUpdateButton } from './NavRailUpdateButton';
 
 export interface NavRailProps {
   activeView: 'home' | 'chat';
@@ -20,6 +22,7 @@ export interface NavRailProps {
   isSettingsOpen?: boolean;
   hasAppUpdate?: boolean;
   appUpdateVersion?: string;
+  appUpdate?: AppUpdateState;
   isLight?: boolean;
   // Card mode controls
   cardMode?: AgentCardMode;
@@ -44,6 +47,7 @@ export const NavRail: React.FC<NavRailProps> = ({
   isSettingsOpen = false,
   hasAppUpdate = false,
   appUpdateVersion,
+  appUpdate,
   isLight = false,
   cardMode = 'chat',
   onModeSelect,
@@ -254,8 +258,13 @@ export const NavRail: React.FC<NavRailProps> = ({
         )}
       </div>
 
-      {/* Bottom action icon: Settings only */}
-      <div className="flex flex-col items-center">
+      {/* Bottom action icons: Update (when available/installing) + Settings */}
+      <div className="flex flex-col items-center gap-1.5 relative">
+        <NavRailUpdateButton
+          appUpdate={appUpdate}
+          isLight={isLight}
+          fallbackVersion={appUpdateVersion}
+        />
         <button
           type="button"
           onClick={onSettingsClick}
@@ -264,7 +273,7 @@ export const NavRail: React.FC<NavRailProps> = ({
           aria-label="Settings"
         >
           <Settings size={16} strokeWidth={1.8} />
-          {hasAppUpdate && (
+          {hasAppUpdate && !appUpdate?.status?.available && (
             <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#0A84FF] ring-1 ring-[#141414]" />
           )}
         </button>
