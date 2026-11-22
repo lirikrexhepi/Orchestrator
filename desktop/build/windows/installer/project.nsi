@@ -1,40 +1,32 @@
 Unicode true
 
 ####
-## Please note: Template replacements don't work in this file. They are provided with default defines like
-## mentioned underneath.
-## If the keyword is not defined, "wails_tools.nsh" will populate them with the values from ProjectInfo.
-## If they are defined here, "wails_tools.nsh" will not touch them. This allows to use this project.nsi manually
-## from outside of Wails for debugging and development of the installer.
+## Orchestrator Windows Installer (NSIS)
 ##
-## For development first make a wails nsis build to populate the "wails_tools.nsh":
-## > wails build --target windows/amd64 --nsis
-## Then you can call makensis on this file with specifying the path to your binary:
-## For a AMD64 only installer:
-## > makensis -DARG_WAILS_AMD64_BINARY=..\..\bin\app.exe
-## For a ARM64 only installer:
-## > makensis -DARG_WAILS_ARM64_BINARY=..\..\bin\app.exe
-## For a installer with both architectures:
-## > makensis -DARG_WAILS_AMD64_BINARY=..\..\bin\app-amd64.exe -DARG_WAILS_ARM64_BINARY=..\..\bin\app-arm64.exe
+## Per-user installation into %LOCALAPPDATA%\Programs\Orchestrator:
+## - No UAC elevation required for initial install or silent in-app updates.
+## - Preserves custom install directory across upgrades via InstallDirRegKey.
+## - Gracefully waits for a running Orchestrator.exe to release its file lock
+##   before overwriting (essential for zero-glitch silent /S auto-updates).
+## - Supports /S /RELAUNCH so the in-app updater exits cleanly, swaps the
+##   binary, updates metadata/shortcuts, and relaunches the new version.
+## - Preserves %APPDATA%\composer (chats, history, accounts, settings) on both
+##   upgrades and uninstall.
 ####
-## The following information is taken from the ProjectInfo file, but they can be overwritten here.
-####
-## !define INFO_PROJECTNAME    "MyProject" # Default "{{.Name}}"
-## !define INFO_COMPANYNAME    "MyCompany" # Default "{{.Info.CompanyName}}"
-## !define INFO_PRODUCTNAME    "MyProduct" # Default "{{.Info.ProductName}}"
-## !define INFO_PRODUCTVERSION "1.0.0"     # Default "{{.Info.ProductVersion}}"
-## !define INFO_COPYRIGHT      "Copyright" # Default "{{.Info.Copyright}}"
-###
-## !define PRODUCT_EXECUTABLE  "Application.exe"      # Default "${INFO_PROJECTNAME}.exe"
-## !define UNINST_KEY_NAME     "UninstKeyInRegistry"  # Default "${INFO_COMPANYNAME}${INFO_PRODUCTNAME}"
-####
-## !define REQUEST_EXECUTION_LEVEL "admin"            # Default "admin"  see also https://nsis.sourceforge.io/Docs/Chapter4.html
-####
-## Include the wails tools
-####
+
+!ifdef REQUEST_EXECUTION_LEVEL
+    !undef REQUEST_EXECUTION_LEVEL
+!endif
+!define REQUEST_EXECUTION_LEVEL "user"
+
+!ifdef WAILS_INSTALL_SCOPE
+    !undef WAILS_INSTALL_SCOPE
+!endif
+!define WAILS_INSTALL_SCOPE "user"
+
 !include "wails_tools.nsh"
 
-# The version information for this two must consist of 4 parts
+# Version info requires 4 numeric components (major.minor.patch.build)
 VIProductVersion "${INFO_PRODUCTVERSION}.0"
 VIFileVersion    "${INFO_PRODUCTVERSION}.0"
 
@@ -45,73 +37,132 @@ VIAddVersionKey "FileVersion"     "${INFO_PRODUCTVERSION}"
 VIAddVersionKey "LegalCopyright"  "${INFO_COPYRIGHT}"
 VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
 
-# Enable HiDPI support. https://nsis.sourceforge.io/Reference/ManifestDPIAware
 ManifestDPIAware true
 
-!include "MUI.nsh"
+!include "MUI2.nsh"
+!include "LogicLib.nsh"
+
+; Inject FileFunc helpers used for silent /RELAUNCH handling (FileFunc.nsh is included by wails_tools.nsh).
+!insertmacro GetParameters
+!insertmacro GetOptions
 
 !define MUI_ICON "..\icon.ico"
 !define MUI_UNICON "..\icon.ico"
-# !define MUI_WELCOMEFINISHPAGE_BITMAP "resources\leftimage.bmp" #Include this to add a bitmap on the left side of the Welcome Page. Must be a size of 164x314
-!define MUI_FINISHPAGE_NOAUTOCLOSE # Wait on the INSTFILES page so the user can take a look into the details of the installation steps
-!define MUI_ABORTWARNING # This will warn the user if they exit from the installer.
+!define MUI_ABORTWARNING
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXECUTABLE}"
+!define MUI_FINISHPAGE_RUN_TEXT "Launch ${INFO_PRODUCTNAME}"
 
-!insertmacro MUI_PAGE_WELCOME # Welcome to the installer page.
-# !insertmacro MUI_PAGE_LICENSE "resources\eula.txt" # Adds a EULA page to the installer
-!insertmacro MUI_PAGE_DIRECTORY # In which folder install page.
-!insertmacro MUI_PAGE_INSTFILES # Installing page.
-!insertmacro MUI_PAGE_FINISH # Finished installation page.
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
 
-!insertmacro MUI_UNPAGE_INSTFILES # Uinstalling page
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
 
-!insertmacro MUI_LANGUAGE "English" # Set the Language of the installer
+!insertmacro MUI_LANGUAGE "English"
 
-## The following two statements can be used to sign the installer and the uninstaller. The path to the binaries are provided in %1
-#!uninstfinalize 'signtool --file "%1"'
-#!finalize 'signtool --file "%1"'
+Name "${INFO_PRODUCTNAME} ${INFO_PRODUCTVERSION}"
+OutFile "..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe"
+InstallDir "$LOCALAPPDATA\Programs\${INFO_PRODUCTNAME}"
+InstallDirRegKey HKCU "${UNINST_KEY}" "InstallLocation"
+ShowInstDetails nevershow
+ShowUninstDetails nevershow
 
-Name "${INFO_PRODUCTNAME}"
-OutFile "..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the installer's file.
-!ifdef WAILS_INSTALL_SCOPE
-  !if "${WAILS_INSTALL_SCOPE}" == "user"
-    InstallDir "$LOCALAPPDATA\Programs\${INFO_PRODUCTNAME}"
-  !else
-    InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
-  !endif
-!else
-  InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
-!endif # Default installing folder ($PROGRAMFILES is Program Files folder).
-ShowInstDetails show # This will always show the installation details.
+; Wait until a running Orchestrator.exe finishes exiting so we never hit a
+; locked-file error when overwriting during an in-place upgrade or uninstall.
+!macro orchestrator.waitForUnlock TARGET_EXE
+    ${If} ${FileExists} "${TARGET_EXE}"
+        StrCpy $R0 0
+        ${Do}
+            ClearErrors
+            Delete "${TARGET_EXE}"
+            ${IfNot} ${Errors}
+                ${Break}
+            ${EndIf}
+            ; After 2s (8 * 250ms), ask any lingering instance to close gracefully.
+            ${If} $R0 == 8
+                nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM "${PRODUCT_EXECUTABLE}"'
+                Pop $R1
+            ${EndIf}
+            ; After 6s (24 * 250ms), force-terminate so the binary swap cannot stall.
+            ${If} $R0 == 24
+                nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM "${PRODUCT_EXECUTABLE}" /T /F'
+                Pop $R1
+            ${EndIf}
+            IntOp $R0 $R0 + 1
+            ${If} $R0 >= 60
+                ${Break}
+            ${EndIf}
+            Sleep 250
+        ${Loop}
+    ${EndIf}
+!macroend
 
 Function .onInit
-   !insertmacro wails.checkArchitecture
+    !insertmacro wails.checkArchitecture
 FunctionEnd
 
-Section
+Section "Install"
     !insertmacro wails.setShellContext
 
     !insertmacro wails.webview2runtime
 
     SetOutPath $INSTDIR
 
+    !insertmacro orchestrator.waitForUnlock "$INSTDIR\${PRODUCT_EXECUTABLE}"
+
     !insertmacro wails.files
 
+    ; Always keep Start Menu shortcut up to date. On silent auto-updates, only
+    ; refresh the Desktop shortcut if the user hasn't deleted it.
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
-    CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    IfSilent 0 createDesktopShortcut
+        ${If} ${FileExists} "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
+            CreateShortcut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+        ${EndIf}
+        Goto afterDesktopShortcut
+    createDesktopShortcut:
+        CreateShortcut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    afterDesktopShortcut:
 
     !insertmacro wails.associateFiles
     !insertmacro wails.associateCustomProtocols
 
     !insertmacro wails.writeUninstaller
+
+    ; Additional Windows Apps & Features metadata
+    SetRegView 64
+    WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
+    WriteRegStr HKCU "${UNINST_KEY}" "URLInfoAbout" "https://github.com/lirikrexhepi/Orchestrator"
+    WriteRegDWORD HKCU "${UNINST_KEY}" "NoModify" 1
+    WriteRegDWORD HKCU "${UNINST_KEY}" "NoRepair" 1
+
+    ; Refresh shell icon cache so updated icons/versions appear immediately
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+
+    ; In silent auto-update mode (/S /RELAUNCH), relaunch the freshly installed app
+    IfSilent 0 skipSilentRelaunch
+        ${GetParameters} $R2
+        ClearErrors
+        ${GetOptions} $R2 "/RELAUNCH" $R3
+        ${IfNot} ${Errors}
+            Exec '"$INSTDIR\${PRODUCT_EXECUTABLE}"'
+        ${EndIf}
+    skipSilentRelaunch:
 SectionEnd
 
 Section "uninstall"
     !insertmacro wails.setShellContext
 
-    RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
+    !insertmacro orchestrator.waitForUnlock "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
-    RMDir /r $INSTDIR
+    ; Remove WebView2 runtime cache for this binary, but keep %APPDATA%\composer
+    ; (chats, history, accounts, settings) intact.
+    RMDir /r "$APPDATA\${PRODUCT_EXECUTABLE}"
+    RMDir /r "$LOCALAPPDATA\${PRODUCT_EXECUTABLE}"
 
+    Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
 
@@ -119,4 +170,9 @@ Section "uninstall"
     !insertmacro wails.unassociateCustomProtocols
 
     !insertmacro wails.deleteUninstaller
+
+    ; Only remove $INSTDIR if empty so a custom folder with user files is never wiped.
+    RMDir "$INSTDIR"
+
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
 SectionEnd

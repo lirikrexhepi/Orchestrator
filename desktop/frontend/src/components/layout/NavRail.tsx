@@ -18,6 +18,8 @@ export interface NavRailProps {
   onProjectsClick: () => void;
   onSettingsClick: () => void;
   isSettingsOpen?: boolean;
+  hasAppUpdate?: boolean;
+  appUpdateVersion?: string;
   isLight?: boolean;
   // Card mode controls
   cardMode?: AgentCardMode;
@@ -40,6 +42,8 @@ export const NavRail: React.FC<NavRailProps> = ({
   onProjectsClick,
   onSettingsClick,
   isSettingsOpen = false,
+  hasAppUpdate = false,
+  appUpdateVersion,
   isLight = false,
   cardMode = 'chat',
   onModeSelect,
@@ -255,11 +259,14 @@ export const NavRail: React.FC<NavRailProps> = ({
         <button
           type="button"
           onClick={onSettingsClick}
-          className={getIconClass(isSettingsOpen)}
-          title="Settings"
+          className={`relative ${getIconClass(isSettingsOpen)}`}
+          title={hasAppUpdate && appUpdateVersion ? `Settings · Update v${appUpdateVersion} available` : 'Settings'}
           aria-label="Settings"
         >
           <Settings size={16} strokeWidth={1.8} />
+          {hasAppUpdate && (
+            <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#0A84FF] ring-1 ring-[#141414]" />
+          )}
         </button>
       </div>
     </aside>

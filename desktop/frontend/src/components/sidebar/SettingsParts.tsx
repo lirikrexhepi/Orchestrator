@@ -8,6 +8,7 @@ import { GetAppIcon, GetUserPreference, SetAppIcon, SetUserPreference } from '..
 import { APP_ICONS, DEFAULT_APP_ICON } from '../../appIcons';
 import { BackgroundRows } from './BackgroundSection';
 import { addFontFiles, applyFont, currentFontChoice, FONT_PRESETS, fontStack, isFontAvailable, loadFontCss, removeFamily, storedFaces } from '../../fonts';
+import { AppUpdateState } from './useAppUpdate';
 
 export function Switch({ on, onChange, isLight, label }: { on: boolean; onChange: () => void; isLight: boolean; label: string }) {
   return (
@@ -140,7 +141,7 @@ export function SettingsRow({
   );
 }
 
-export function GeneralSettings({ isLight }: { isLight: boolean }) {
+export function GeneralSettings({ isLight, appUpdate }: { isLight: boolean; appUpdate?: AppUpdateState }) {
   const toggles = useGeneralToggles();
   const [gpu, setGpu] = useState(true);
   const [gpuChanged, setGpuChanged] = useState(false);
@@ -159,8 +160,77 @@ export function GeneralSettings({ isLight }: { isLight: boolean }) {
       .catch(() => undefined);
   }, []);
 
+  const updateStatus = appUpdate?.status;
+  const currentVersionLabel = updateStatus?.isDevBuild
+    ? 'Development build'
+    : updateStatus?.currentVersion
+      ? `v${updateStatus.currentVersion}`
+      : 'Orchestrator';
+  const updateHint = (() => {
+    if (appUpdate?.installing && appUpdate.progress) {
+      if (appUpdate.progress.stage === 'verifying') return 'Verifying SHA-256 signature…';
+      if (appUpdate.progress.stage === 'installing') return 'Installing update and restarting…';
+      return `Downloading v${updateStatus?.latestVersion || ''} (${appUpdate.progress.percent ?? 0}%)…`;
+    }
+    if (appUpdate?.error) return appUpdate.error;
+    if (updateStatus?.available && updateStatus.latestVersion) {
+      return `v${updateStatus.latestVersion} is ready to install`;
+    }
+    if (updateStatus?.isDevBuild && updateStatus.latestVersion) {
+      return `Latest release: v${updateStatus.latestVersion} (install a release build for auto-updates)`;
+    }
+    if (updateStatus?.checkedAt && !updateStatus.error) {
+      return 'Up to date';
+    }
+    return 'Checks GitHub Releases automatically';
+  })();
+
   return (
     <div className="flex flex-col gap-5">
+      {appUpdate && (
+        <SettingsGroup title="Updates" isLight={isLight}>
+          <SettingsRow
+            title={`Orchestrator · ${currentVersionLabel}`}
+            hint={updateHint}
+            isLight={isLight}
+            control={
+              updateStatus?.available ? (
+                <button
+                  type="button"
+                  disabled={appUpdate.installing}
+                  onClick={() => void appUpdate.install()}
+                  className="h-[26px] px-3 rounded-full text-[11.5px] font-medium bg-[#007AFF] hover:bg-[#0A84FF] text-white active:scale-95 transition-all cursor-pointer disabled:opacity-50 shrink-0"
+                >
+                  {appUpdate.installing ? 'Updating…' : `Update to v${updateStatus.latestVersion}`}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={appUpdate.checking || appUpdate.installing}
+                  onClick={() => void appUpdate.checkNow()}
+                  className={`h-[26px] px-3 rounded-full text-[11.5px] font-medium active:scale-95 transition-all cursor-pointer disabled:opacity-50 shrink-0 ${
+                    isLight
+                      ? 'bg-black/[0.06] hover:bg-black/[0.11] text-black/80'
+                      : 'bg-white/[0.08] hover:bg-white/[0.14] text-white/85'
+                  }`}
+                >
+                  {appUpdate.checking ? 'Checking…' : 'Check for updates'}
+                </button>
+              )
+            }
+          >
+            {appUpdate.installing && appUpdate.progress && (
+              <div className={`h-[4px] w-full rounded-full overflow-hidden mt-1 ${isLight ? 'bg-black/[0.08]' : 'bg-white/[0.10]'}`}>
+                <div
+                  className="h-full rounded-full bg-[#0A84FF] transition-[width] duration-200"
+                  style={{ width: `${Math.max(4, appUpdate.progress.percent ?? 0)}%` }}
+                />
+              </div>
+            )}
+          </SettingsRow>
+        </SettingsGroup>
+      )}
+
       <SettingsGroup title="Agents" isLight={isLight}>
         <SettingsRow
           title="Auto-start agents"

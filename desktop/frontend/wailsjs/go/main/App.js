@@ -46,6 +46,14 @@ export function CaptureAntigravityProfile(arg1) {
   return window['go']['main']['App']['CaptureAntigravityProfile'](arg1);
 }
 
+export function CheckAppUpdate() {
+  return window['go']['main']['App']['CheckAppUpdate']();
+}
+
+export function CheckAppUpdateNow() {
+  return window['go']['main']['App']['CheckAppUpdateNow']();
+}
+
 export function ChooseAttachments() {
   return window['go']['main']['App']['ChooseAttachments']();
 }
@@ -120,6 +128,10 @@ export function GetAllUserPreferences() {
 
 export function GetAppIcon() {
   return window['go']['main']['App']['GetAppIcon']();
+}
+
+export function GetAppVersion() {
+  return window['go']['main']['App']['GetAppVersion']();
 }
 
 export function GetBackgroundSettings() {
@@ -220,6 +232,10 @@ export function ImportClaudeCodeSession(arg1) {
 
 export function ImportOpenCodeSession(arg1) {
   return window['go']['main']['App']['ImportOpenCodeSession'](arg1);
+}
+
+export function InstallAppUpdate() {
+  return window['go']['main']['App']['InstallAppUpdate']();
 }
 
 export function InstructionSources(arg1) {

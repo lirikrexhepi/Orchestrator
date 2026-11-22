@@ -9,6 +9,7 @@ import { useUsage } from '../sidebar/useUsage';
 import { useServers } from '../sidebar/useServers';
 import { useClaudeImport } from '../history/useClaudeImport';
 import { useDefaultModels } from '../sidebar/useDefaultModels';
+import { useAppUpdate } from '../sidebar/useAppUpdate';
 import { useTheme } from '../../themes';
 import { useOrchestratorStore } from '../orchestrator/useOrchestratorStore';
 import { AgentWindow, AgentCardMode } from '../agent-session';
@@ -97,6 +98,7 @@ export const Scene: React.FC<SceneProps> = () => {
   const [historyTrigger, setHistoryTrigger] = useState(0);
 
   const defaultModels = useDefaultModels(isSettingsOpen);
+  const appUpdate = useAppUpdate();
   const history = useHistory(true);
   const usage = useUsage(isIslandUsageOpen || isSettingsOpen);
   const runningServers = useServers(true);
@@ -609,6 +611,8 @@ export const Scene: React.FC<SceneProps> = () => {
         onProjectsClick={() => setProjectsTrigger((p) => p + 1)}
         onSettingsClick={() => setIsSettingsOpen((prev) => !prev)}
         isSettingsOpen={isSettingsOpen}
+        hasAppUpdate={Boolean(appUpdate.status?.available)}
+        appUpdateVersion={appUpdate.status?.latestVersion}
         isLight={isLight}
         cardMode={cardMode}
         onModeSelect={(mode) => {
@@ -955,6 +959,7 @@ export const Scene: React.FC<SceneProps> = () => {
             onClose={() => setIsSettingsOpen(false)}
             wallpaper={wallpaper}
             defaultModels={defaultModels}
+            appUpdate={appUpdate}
           />
         </Suspense>
       )}

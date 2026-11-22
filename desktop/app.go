@@ -104,6 +104,7 @@ type App struct {
 	prefRepo       *sqlite.PreferenceRepo
 	activity       *activity.Tracker
 	titles         chatTitles
+	appUpdater     *appUpdaterState
 }
 
 func NewApp() *App {
@@ -207,6 +208,7 @@ func NewApp() *App {
 		prefRepo:       prefRepo,
 		terminals:      terminal.NewManager(),
 		browsers:       browser.NewManager(filepath.Join(configRoot(), "browser-profile")),
+		appUpdater:     newAppUpdater(),
 	}
 	if activityRepo != nil {
 		app.activity = activity.NewTracker(activityRepo, app.activityThread)
@@ -318,6 +320,7 @@ func (a *App) startCore(ctx context.Context) {
 
 	go a.pumpEvents(ctx, events)
 	go a.prewarmAccountModels(ctx)
+	go a.watchAppUpdates(ctx)
 }
 
 func (a *App) prewarmAccountModels(ctx context.Context) {
@@ -479,7 +482,7 @@ func (a *App) trackTaskState(event domain.RuntimeEvent) {
 
 // shutdown stops every agent CLI so none outlive the window.
 func (a *App) shutdown(ctx context.Context) {
-	if !bindingsBuild && !a.headless && a.keepRunningOnClose() && a.ownsGateway() {
+	if !bindingsBuild && !a.headless && !a.updatingForInstall() && a.keepRunningOnClose() && a.ownsGateway() {
 		a.handOffToBackground()
 	}
 	if a.remoteServer != nil {

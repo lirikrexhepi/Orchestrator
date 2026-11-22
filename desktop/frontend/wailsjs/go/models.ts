@@ -2520,3 +2520,40 @@ export namespace terminal {
 
 }
 
+export namespace updater {
+	
+	export class Status {
+	    currentVersion: string;
+	    latestVersion?: string;
+	    releaseNotes?: string;
+	    publishedAt?: string;
+	    downloadUrl?: string;
+	    sha256?: string;
+	    available: boolean;
+	    isDevBuild: boolean;
+	    supported: boolean;
+	    checkedAt: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Status(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.currentVersion = source["currentVersion"];
+	        this.latestVersion = source["latestVersion"];
+	        this.releaseNotes = source["releaseNotes"];
+	        this.publishedAt = source["publishedAt"];
+	        this.downloadUrl = source["downloadUrl"];
+	        this.sha256 = source["sha256"];
+	        this.available = source["available"];
+	        this.isDevBuild = source["isDevBuild"];
+	        this.supported = source["supported"];
+	        this.checkedAt = source["checkedAt"];
+	        this.error = source["error"];
+	    }
+	}
+
+}
+

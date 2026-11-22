@@ -5,6 +5,7 @@ import {projects} from '../models';
 import {activity} from '../models';
 import {main} from '../models';
 import {browser} from '../models';
+import {updater} from '../models';
 import {attachments} from '../models';
 import {domain} from '../models';
 import {session} from '../models';
@@ -39,6 +40,10 @@ export function BrowserEndpoint():Promise<main.BrowserEndpointInfo>;
 export function BrowserOpen(arg1:string,arg2:string,arg3:number,arg4:number):Promise<browser.SessionInfo>;
 
 export function CaptureAntigravityProfile(arg1:string):Promise<void>;
+
+export function CheckAppUpdate():Promise<updater.Status>;
+
+export function CheckAppUpdateNow():Promise<updater.Status>;
 
 export function ChooseAttachments():Promise<Array<attachments.Attachment>>;
 
@@ -77,6 +82,8 @@ export function GetAgentTasks(arg1:string):Promise<Array<domain.PlanEntry>>;
 export function GetAllUserPreferences():Promise<Record<string, string>>;
 
 export function GetAppIcon():Promise<string>;
+
+export function GetAppVersion():Promise<string>;
 
 export function GetBackgroundSettings():Promise<main.BackgroundSettings>;
 
@@ -127,6 +134,8 @@ export function GitWebURL(arg1:string):Promise<string>;
 export function ImportClaudeCodeSession(arg1:string):Promise<string>;
 
 export function ImportOpenCodeSession(arg1:string):Promise<string>;
+
+export function InstallAppUpdate():Promise<void>;
 
 export function InstructionSources(arg1:string):Promise<Array<instructions.Source>>;
 

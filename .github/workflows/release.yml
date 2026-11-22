@@ -1,0 +1,148 @@
+name: Release
+
+# Pushing a semver tag like v1.0.0 builds the Windows NSIS installer,
+# generates latest.json with SHA-256 verification, and publishes a GitHub Release
+# that installed copies of Orchestrator auto-update from.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without leading v (e.g. 1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows (amd64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: meta
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $raw = "${{ inputs.version }}".Trim()
+            $ver = $raw.TrimStart("v", "V")
+            $tag = "v$ver"
+          } else {
+            $tag = "${{ github.ref_name }}".Trim()
+            $ver = $tag.TrimStart("v", "V")
+          }
+          if ($ver -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            throw "Invalid semver version: $ver"
+          }
+          $numericVer = ($ver -split '-')[0]
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "numeric_version=$numericVer" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Releasing Orchestrator $tag (numeric=$numericVer)"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Install Wails CLI & ensure NSIS
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+          $nsisDir = "C:\Program Files (x86)\NSIS"
+          if (-not (Test-Path "$nsisDir\makensis.exe")) {
+            choco install nsis -y --no-progress
+          }
+          "$nsisDir" | Out-File -FilePath $env:GITHUB_PATH -Append
+          makensis -VERSION
+          wails version
+
+      - name: Stamp version into desktop/wails.json
+        shell: pwsh
+        run: |
+          $path = (Resolve-Path "desktop/wails.json").Path
+          $cfg = Get-Content $path -Raw | ConvertFrom-Json
+          $cfg.info.productVersion = "${{ steps.meta.outputs.numeric_version }}"
+          $json = ($cfg | ConvertTo-Json -Depth 10) + "`n"
+          [System.IO.File]::WriteAllText($path, $json, [System.Text.UTF8Encoding]::new($false))
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          go vet ./...
+          go test ./internal/updater ./internal/domain ./internal/provider ./internal/antigravity ./internal/history
+
+      - name: Build Windows NSIS installer
+        shell: pwsh
+        working-directory: desktop
+        run: |
+          $ver = "${{ steps.meta.outputs.version }}"
+          wails build -clean -nsis -installscope user -platform windows/amd64 -ldflags "-X main.AppVersion=$ver"
+
+      - name: Prepare release artifacts & latest.json
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $ver = "${{ steps.meta.outputs.version }}"
+          $repo = "${{ github.repository }}"
+
+          $built = Get-ChildItem "desktop/build/bin/*-installer.exe" | Select-Object -First 1
+          if (-not $built) {
+            throw "Expected NSIS installer in desktop/build/bin/"
+          }
+
+          New-Item -ItemType Directory -Force -Path dist-release | Out-Null
+          $versionedName = "Orchestrator-$ver-amd64-setup.exe"
+          $latestName = "Orchestrator-setup-x64.exe"
+          Copy-Item -Force $built.FullName "dist-release/$versionedName"
+          Copy-Item -Force $built.FullName "dist-release/$latestName"
+
+          $hash = (Get-FileHash "dist-release/$versionedName" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+          $manifest = @{
+            version   = $ver
+            pubDate   = $pubDate
+            notes     = "Orchestrator $tag"
+            platforms = @{
+              "windows-amd64" = @{
+                url    = "https://github.com/$repo/releases/download/$tag/$versionedName"
+                sha256 = $hash
+              }
+            }
+          }
+          $manifestJson = ($manifest | ConvertTo-Json -Depth 6) + "`n"
+          $manifestPath = Join-Path (Resolve-Path "dist-release").Path "latest.json"
+          [System.IO.File]::WriteAllText($manifestPath, $manifestJson, [System.Text.UTF8Encoding]::new($false))
+          Get-Content $manifestPath
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Orchestrator ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.meta.outputs.version, '-') }}
+          files: |
+            dist-release/Orchestrator-*-amd64-setup.exe
+            dist-release/Orchestrator-setup-x64.exe
+            dist-release/latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

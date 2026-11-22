@@ -10,6 +10,7 @@ import { InstructionsSection } from './InstructionsSection';
 import { useClaudeUpdate } from '../orchestrator/useClaudeUpdate';
 import { ScrollArea } from '../common/ScrollArea';
 import { AppIconPicker, FontPicker, GeneralSettings, SectionLabel, ThemePicker, WallpaperPicker } from './SettingsParts';
+import { AppUpdateState } from './useAppUpdate';
 
 type SectionId = 'general' | 'providers' | 'instructions' | 'appearance' | 'remote';
 
@@ -26,11 +27,13 @@ export function SettingsWindow({
   onClose,
   wallpaper,
   defaultModels,
+  appUpdate,
 }: {
   open: boolean;
   onClose: () => void;
   wallpaper: WallpaperState;
   defaultModels: DefaultModels;
+  appUpdate?: AppUpdateState;
 }) {
   const { currentTheme } = useTheme();
   const isLight = currentTheme.id === 'light' || currentTheme.id === 'white';
@@ -130,7 +133,7 @@ export function SettingsWindow({
                   key={section}
                   className="flex flex-col gap-3 max-w-[560px]"
                 >
-                  {section === 'general' && <GeneralSettings isLight={isLight} />}
+                  {section === 'general' && <GeneralSettings isLight={isLight} appUpdate={appUpdate} />}
                   {section === 'providers' &&
                     (defaultModels.entries.length > 0 ? (
                       <ProvidersSection defaultModels={defaultModels} claudeUpdate={claudeUpdate} isLight={isLight} />

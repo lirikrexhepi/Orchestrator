@@ -38,7 +38,7 @@ func main() {
 	logger.Init(
 		filepath.Join(configRoot(), "orchestrator_debug.log"),
 	)
-	logger.Infof("Main", "Starting Orchestrator, PID=%d", os.Getpid())
+	logger.Infof("Main", "Starting Orchestrator %s, PID=%d", AppVersion, os.Getpid())
 	captureCrashes(filepath.Join(configRoot(), "crash.log"))
 
 	if wantsHeadless(os.Args) {
@@ -86,7 +86,7 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:                    "Orchestrator Beta",
+		Title:                    "Orchestrator",
 		WindowStartState:         startState,
 		Width:                    1440,
 		Height:                   900,
