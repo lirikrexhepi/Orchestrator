@@ -45,7 +45,8 @@ if ($DryRun) {
 $json = ($cfg | ConvertTo-Json -Depth 10) + "`n"
 [System.IO.File]::WriteAllText((Resolve-Path $wailsPath).Path, $json, [System.Text.UTF8Encoding]::new($false))
 git add $wailsPath
-if (git diff --cached --quiet; $LASTEXITCODE -ne 0) {
+git diff --cached --quiet
+if ($LASTEXITCODE -ne 0) {
     git commit -m "chore(release): bump version to $tag"
 }
 
