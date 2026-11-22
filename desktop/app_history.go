@@ -129,7 +129,11 @@ func (a *App) ResumeHistoryThread(workspaceID, threadID string) (session.ResumeR
 		}
 		cwd := resolveResumeCwd(task, loaded.Meta.Workspace.Cwd)
 		fellBack := cwd != task.Dir(loaded.Meta.Workspace.Cwd)
-		if !isLiveDir(cwd) {
+		// Only fill in the active project when a legacy record has no stored
+		// directory at all. If a chat has a stored directory that is missing or
+		// unavailable, never silently hijack it into a different active project;
+		// spawner.Resume will surface a clear error for the missing path.
+		if cwd == "" {
 			if fallback := a.resolveCwd(""); isLiveDir(fallback) {
 				cwd = fallback
 				fellBack = true

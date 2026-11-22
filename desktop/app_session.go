@@ -251,6 +251,7 @@ func (a *App) SwitchTaskAccountWithOptions(oldThreadID, driver, account, model s
 		a.recorder.UpdateTaskState(oldThreadID, domain.TaskFailed, "")
 		return *oldTask, err
 	}
+	a.workspaces.SetTaskCwd(oldThreadID, cwd)
 	a.workspaces.SetTaskModel(oldThreadID, newDriver, model, options)
 	a.workspaces.SetTaskAccount(oldThreadID, account)
 	a.workspaces.SetState(oldThreadID, domain.TaskRunning)
@@ -362,6 +363,7 @@ func (a *App) UpdateTaskModel(threadID, driver, model string, options domain.Mod
 	}, transcript); err != nil {
 		return *task, err
 	}
+	a.workspaces.SetTaskCwd(threadID, cwd)
 	a.workspaces.SetTaskModel(threadID, live.Driver, model, options)
 	if updated, found := a.workspaces.TaskByThread(threadID); found && updated != nil {
 		a.recorder.TrackTask(*updated)
