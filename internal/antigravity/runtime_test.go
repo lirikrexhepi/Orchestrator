@@ -859,3 +859,210 @@ func TestConcurrentTurnSettlementDoesNotClobberOrDuplicate(t *testing.T) {
 		t.Fatalf("expected 1 terminal event per turn, got turn1=%d turn2=%d", turn1Terminals, turn2Terminals)
 	}
 }
+
+func TestReactiveWakeupUpdatesStreamAndSettle(t *testing.T) {
+	srv := &fakeServer{}
+	s := &session{
+		threadID:  "t-wakeup",
+		account:   "work",
+		sessionID: "sess-wakeup",
+		tools:     make(map[string]bool),
+		baselines: make(map[string]string),
+		pending:   make(map[string]*pendingApproval),
+	}
+	a, _, serverConn, rec := setupFakeServerPair(t, s, srv)
+	a.wakeupMessageSettleDelay = 40 * time.Millisecond
+	a.wakeupActivitySettleDelay = 200 * time.Millisecond
+
+	// First normal user turn completes.
+	if err := a.SendTurn(context.Background(), domain.SendTurnInput{
+		ThreadID: "t-wakeup",
+		TurnID:   "turn-1",
+		Text:     "start background task",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec.wait(t, func(e domain.RuntimeEvent) bool {
+		return e.Kind == domain.EventTurnCompleted && e.TurnID == "turn-1"
+	})
+
+	// Stray metadata update while idle must NOT start a wakeup turn.
+	_ = serverConn.Notify("session/update", sessionUpdateParams{
+		SessionID: "sess-wakeup",
+		Update:    acpSessionUpdate{SessionUpdate: "session_info_update"},
+	})
+	// Stray usage_update while idle must still emit usage without opening a turn.
+	_ = serverConn.Notify("session/update", sessionUpdateParams{
+		SessionID: "sess-wakeup",
+		Update:    acpSessionUpdate{SessionUpdate: "usage_update", Used: 1000, Size: 100000},
+	})
+	rec.wait(t, func(e domain.RuntimeEvent) bool {
+		return e.Kind == domain.EventUsage && e.Usage != nil && e.Usage.ContextTokens == 1000
+	})
+
+	// Now simulate reactive wakeup after a background command completes.
+	_ = serverConn.Notify("session/update", sessionUpdateParams{
+		SessionID: "sess-wakeup",
+		Update: acpSessionUpdate{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "call-bg-1",
+			Name:          "run_command",
+			Title:         "Run curl",
+			Status:        "in_progress",
+		},
+	})
+	_ = serverConn.Notify("session/update", sessionUpdateParams{
+		SessionID: "sess-wakeup",
+		Update: acpSessionUpdate{
+			SessionUpdate: "tool_call_update",
+			ToolCallID:    "call-bg-1",
+			Name:          "run_command",
+			Title:         "Run curl",
+			Status:        "completed",
+			RawOutput:     json.RawMessage(`{"output":"ok"}`),
+		},
+	})
+	_ = serverConn.Notify("session/update", sessionUpdateParams{
+		SessionID: "sess-wakeup",
+		Update: acpSessionUpdate{
+			SessionUpdate: "agent_message_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"Checked t3code: "}`),
+		},
+	})
+	_ = serverConn.Notify("session/update", sessionUpdateParams{
+		SessionID: "sess-wakeup",
+		Update: acpSessionUpdate{
+			SessionUpdate: "agent_message_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"all done."}`),
+		},
+	})
+
+	// Wakeup turn should emit TurnStarted, ToolCall, ToolResult, AgentMessages, and settle with TurnCompleted.
+	rec.wait(t, func(e domain.RuntimeEvent) bool {
+		return e.Kind == domain.EventTurnCompleted && e.TurnID == "wakeup-1"
+	})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var sawStarted, sawToolCall, sawToolResult bool
+	var msg strings.Builder
+	for _, e := range rec.events {
+		if e.TurnID != "wakeup-1" {
+			continue
+		}
+		switch e.Kind {
+		case domain.EventTurnStarted:
+			sawStarted = true
+		case domain.EventToolCall:
+			if e.Tool != nil && e.Tool.ID == "call-bg-1" {
+				sawToolCall = true
+			}
+		case domain.EventToolResult:
+			if e.Tool != nil && e.Tool.ID == "call-bg-1" {
+				sawToolResult = true
+			}
+		case domain.EventAgentMessage:
+			msg.WriteString(e.Text)
+		}
+	}
+	if !sawStarted || !sawToolCall || !sawToolResult {
+		t.Fatalf("missing wakeup events: started=%v toolCall=%v toolResult=%v", sawStarted, sawToolCall, sawToolResult)
+	}
+	if got := msg.String(); got != "Checked t3code: all done." {
+		t.Fatalf("wakeup message = %q, want %q", got, "Checked t3code: all done.")
+	}
+}
+
+func TestReactiveWakeupInterruptAndSendTurn(t *testing.T) {
+	srv := &fakeServer{}
+	s := &session{
+		threadID:  "t-wakeup-ctrl",
+		account:   "work",
+		sessionID: "sess-wakeup-ctrl",
+		tools:     make(map[string]bool),
+		baselines: make(map[string]string),
+		pending:   make(map[string]*pendingApproval),
+	}
+	a, _, serverConn, rec := setupFakeServerPair(t, s, srv)
+	a.wakeupMessageSettleDelay = 5 * time.Second
+	a.wakeupActivitySettleDelay = 5 * time.Second
+
+	// 1. InterruptTurn settles a wakeup turn immediately without closing conn.
+	_ = serverConn.Notify("session/update", sessionUpdateParams{
+		SessionID: "sess-wakeup-ctrl",
+		Update: acpSessionUpdate{
+			SessionUpdate: "agent_thought_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"thinking..."}`),
+		},
+	})
+	rec.wait(t, func(e domain.RuntimeEvent) bool {
+		return e.Kind == domain.EventTurnStarted && e.TurnID == "wakeup-1"
+	})
+
+	if err := a.InterruptTurn(context.Background(), "t-wakeup-ctrl"); err != nil {
+		t.Fatal(err)
+	}
+	rec.wait(t, func(e domain.RuntimeEvent) bool {
+		return e.Kind == domain.EventTurnCompleted && e.TurnID == "wakeup-1" && e.StopReason == domain.StopCancelled
+	})
+
+	// 2. SendTurn during a wakeup turn settles the wakeup immediately and completes the new user turn.
+	_ = serverConn.Notify("session/update", sessionUpdateParams{
+		SessionID: "sess-wakeup-ctrl",
+		Update: acpSessionUpdate{
+			SessionUpdate: "agent_thought_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"waking again..."}`),
+		},
+	})
+	rec.wait(t, func(e domain.RuntimeEvent) bool {
+		return e.Kind == domain.EventTurnStarted && e.TurnID == "wakeup-2"
+	})
+
+	start := time.Now()
+	if err := a.SendTurn(context.Background(), domain.SendTurnInput{
+		ThreadID: "t-wakeup-ctrl",
+		TurnID:   "turn-user",
+		Text:     "follow up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("SendTurn stalled %v waiting on wakeup turn", elapsed)
+	}
+	rec.wait(t, func(e domain.RuntimeEvent) bool {
+		return e.Kind == domain.EventTurnCompleted && e.TurnID == "wakeup-2" && e.StopReason == domain.StopCancelled
+	})
+	rec.wait(t, func(e domain.RuntimeEvent) bool {
+		return e.Kind == domain.EventTurnCompleted && e.TurnID == "turn-user"
+	})
+}
+
+func TestLoadingHistoryDoesNotTriggerWakeup(t *testing.T) {
+	srv := &fakeServer{}
+	s := &session{
+		threadID:       "t-loading",
+		account:        "work",
+		sessionID:      "sess-loading",
+		loadingHistory: true,
+		tools:          make(map[string]bool),
+		baselines:      make(map[string]string),
+		pending:        make(map[string]*pendingApproval),
+	}
+	a, _, serverConn, rec := setupFakeServerPair(t, s, srv)
+	a.wakeupMessageSettleDelay = 30 * time.Millisecond
+
+	_ = serverConn.Notify("session/update", sessionUpdateParams{
+		SessionID: "sess-loading",
+		Update: acpSessionUpdate{
+			SessionUpdate: "agent_message_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"replayed history"}`),
+		},
+	})
+	time.Sleep(80 * time.Millisecond)
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.events) != 0 {
+		t.Fatalf("expected 0 events while loadingHistory=true, got %d", len(rec.events))
+	}
+}

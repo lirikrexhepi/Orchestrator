@@ -21,12 +21,34 @@ import (
 	"composer/internal/shell"
 )
 
+const (
+	defaultWakeupMessageSettleDelay  = 1500 * time.Millisecond
+	defaultWakeupActivitySettleDelay = 15 * time.Second
+)
+
 type Adapter struct {
 	settings domain.ProviderSettings
 	emit     provider.Emitter
 
+	wakeupMessageSettleDelay  time.Duration
+	wakeupActivitySettleDelay time.Duration
+
 	mu       sync.RWMutex
 	sessions map[string]*session
+}
+
+func (a *Adapter) wakeupMessageDelay() time.Duration {
+	if a.wakeupMessageSettleDelay > 0 {
+		return a.wakeupMessageSettleDelay
+	}
+	return defaultWakeupMessageSettleDelay
+}
+
+func (a *Adapter) wakeupActivityDelay() time.Duration {
+	if a.wakeupActivitySettleDelay > 0 {
+		return a.wakeupActivitySettleDelay
+	}
+	return defaultWakeupActivitySettleDelay
 }
 
 func NewAdapter(settings domain.ProviderSettings, emit provider.Emitter) *Adapter {
@@ -73,6 +95,9 @@ type session struct {
 	mu             sync.Mutex
 	turnID         string
 	turnSettled    chan struct{}
+	wakeupTurn     bool
+	wakeupSeq      uint64
+	wakeupTimer    *time.Timer
 	interrupting   bool
 	loadingHistory bool
 
@@ -453,10 +478,15 @@ func (s *session) claimTurnSettlement(turnID string) (interrupting bool, ctxWind
 	if turnID == "" || s.turnID != turnID {
 		return false, 0, 0, false
 	}
+	if s.wakeupTimer != nil {
+		s.wakeupTimer.Stop()
+		s.wakeupTimer = nil
+	}
 	interrupting = s.interrupting
 	ctxWindow = s.contextWindow
 	ctxUsed = s.contextUsed
 	s.turnID = ""
+	s.wakeupTurn = false
 	s.interrupting = false
 	s.activeKind = ""
 	return interrupting, ctxWindow, ctxUsed, true
@@ -472,8 +502,13 @@ func (a *Adapter) finish(s *session) {
 	s.mu.Lock()
 	turnID := s.turnID
 	interrupting := s.interrupting
+	if s.wakeupTimer != nil {
+		s.wakeupTimer.Stop()
+		s.wakeupTimer = nil
+	}
 	if turnID != "" {
 		s.turnID = ""
+		s.wakeupTurn = false
 		s.interrupting = false
 		s.activeKind = ""
 	}
@@ -531,6 +566,84 @@ func (a *Adapter) finish(s *session) {
 	s.cancel()
 }
 
+func isWakeupSessionUpdate(update *acpSessionUpdate) bool {
+	if update == nil {
+		return false
+	}
+	switch update.SessionUpdate {
+	case "agent_message_chunk", "agent_thought_chunk":
+		var chunk acpTextContent
+		if err := json.Unmarshal(update.Content, &chunk); err != nil {
+			return false
+		}
+		return strings.TrimSpace(chunk.Text) != ""
+	case "tool_call", "tool_call_update":
+		return !hiddenTools[update.Name]
+	case "plan":
+		return len(update.Entries) > 0
+	default:
+		return false
+	}
+}
+
+func (a *Adapter) armWakeupTimerLocked(s *session, turnID string, delay time.Duration) {
+	if s.wakeupTimer != nil {
+		s.wakeupTimer.Stop()
+		s.wakeupTimer = nil
+	}
+	if !s.wakeupTurn || s.turnID != turnID || len(s.pending) > 0 {
+		return
+	}
+	s.wakeupTimer = time.AfterFunc(delay, func() {
+		a.settleWakeupTurn(s, turnID)
+	})
+}
+
+func (a *Adapter) refreshWakeupTimer(s *session, turnID string) {
+	s.mu.Lock()
+	if !s.wakeupTurn || s.turnID != turnID {
+		s.mu.Unlock()
+		return
+	}
+	delay := a.wakeupActivityDelay()
+	if s.activeKind == "message" {
+		delay = a.wakeupMessageDelay()
+	}
+	a.armWakeupTimerLocked(s, turnID, delay)
+	s.mu.Unlock()
+}
+
+func (a *Adapter) settleWakeupTurn(s *session, turnID string) {
+	s.mu.Lock()
+	if !s.wakeupTurn || s.turnID != turnID || len(s.pending) > 0 {
+		s.mu.Unlock()
+		return
+	}
+	if s.wakeupTimer != nil {
+		s.wakeupTimer.Stop()
+		s.wakeupTimer = nil
+	}
+	interrupting := s.interrupting
+	s.turnID = ""
+	s.wakeupTurn = false
+	s.interrupting = false
+	s.activeKind = ""
+	s.mu.Unlock()
+
+	stopReason := domain.StopEndTurn
+	if interrupting {
+		stopReason = domain.StopCancelled
+	}
+	a.emit.Emit(domain.RuntimeEvent{
+		Kind:       domain.EventTurnCompleted,
+		ThreadID:   s.threadID,
+		TurnID:     turnID,
+		Driver:     domain.DriverAntigravity,
+		Account:    s.account,
+		StopReason: stopReason,
+	})
+}
+
 func (a *Adapter) makeHandler(s *session) jsonrpc.Handler {
 	return func(ctx context.Context, method string, rawParams json.RawMessage) (any, error) {
 		switch method {
@@ -543,11 +656,40 @@ func (a *Adapter) makeHandler(s *session) jsonrpc.Handler {
 			s.mu.Lock()
 			loading := s.loadingHistory
 			turnID := s.turnID
+			wakeup := s.wakeupTurn
+			var startedWakeup string
+			if !loading && turnID == "" && isWakeupSessionUpdate(&params.Update) {
+				s.wakeupSeq++
+				turnID = fmt.Sprintf("wakeup-%d", s.wakeupSeq)
+				s.turnID = turnID
+				s.wakeupTurn = true
+				s.interrupting = false
+				s.activeKind = ""
+				s.segmentSeq = 0
+				s.turnSettled = nil
+				wakeup = true
+				startedWakeup = turnID
+			}
 			s.mu.Unlock()
-			if loading || (turnID == "" && params.Update.SessionUpdate != "usage_update") {
+			if loading {
 				return nil, nil
 			}
+			if turnID == "" && params.Update.SessionUpdate != "usage_update" {
+				return nil, nil
+			}
+			if startedWakeup != "" {
+				a.emit.Emit(domain.RuntimeEvent{
+					Kind:     domain.EventTurnStarted,
+					ThreadID: s.threadID,
+					TurnID:   startedWakeup,
+					Driver:   domain.DriverAntigravity,
+					Account:  s.account,
+				})
+			}
 			a.handleSessionUpdate(s, turnID, &params.Update)
+			if wakeup {
+				a.refreshWakeupTimer(s, turnID)
+			}
 			return nil, nil
 
 		case "session/request_permission":
@@ -692,12 +834,19 @@ func (a *Adapter) handleRequestPermission(ctx context.Context, s *session, param
 			questionCh: questionCh,
 			isQuestion: true,
 		}
+		if s.wakeupTimer != nil {
+			s.wakeupTimer.Stop()
+			s.wakeupTimer = nil
+		}
 		turnID := s.turnID
 		s.mu.Unlock()
 
 		defer func() {
 			s.mu.Lock()
 			delete(s.pending, reqID)
+			if s.wakeupTurn && s.turnID != "" && len(s.pending) == 0 {
+				a.armWakeupTimerLocked(s, s.turnID, a.wakeupActivityDelay())
+			}
 			s.mu.Unlock()
 		}()
 
@@ -767,12 +916,19 @@ func (a *Adapter) handleRequestPermission(ctx context.Context, s *session, param
 		options: params.Options,
 		reply:   replyCh,
 	}
+	if s.wakeupTimer != nil {
+		s.wakeupTimer.Stop()
+		s.wakeupTimer = nil
+	}
 	turnID := s.turnID
 	s.mu.Unlock()
 
 	defer func() {
 		s.mu.Lock()
 		delete(s.pending, reqID)
+		if s.wakeupTurn && s.turnID != "" && len(s.pending) == 0 {
+			a.armWakeupTimerLocked(s, s.turnID, a.wakeupActivityDelay())
+		}
 		s.mu.Unlock()
 	}()
 
@@ -925,6 +1081,11 @@ func (a *Adapter) SendTurn(ctx context.Context, in domain.SendTurnInput) error {
 	}
 
 	s.turnID = in.TurnID
+	s.wakeupTurn = false
+	if s.wakeupTimer != nil {
+		s.wakeupTimer.Stop()
+		s.wakeupTimer = nil
+	}
 	s.interrupting = false
 	s.activeKind = ""
 	s.segmentSeq = 0
@@ -1056,11 +1217,26 @@ func (a *Adapter) InterruptTurn(ctx context.Context, threadID string) error {
 		s.mu.Unlock()
 		return nil
 	}
+	wakeup := s.wakeupTurn
 	s.interrupting = true
 	sessionID := s.sessionID
 	s.mu.Unlock()
 
 	_ = s.conn.Notify("session/cancel", sessionCancelParams{SessionID: sessionID})
+
+	if wakeup {
+		if _, _, _, claimed := s.claimTurnSettlement(turnID); claimed {
+			a.emit.Emit(domain.RuntimeEvent{
+				Kind:       domain.EventTurnCompleted,
+				ThreadID:   s.threadID,
+				TurnID:     turnID,
+				Driver:     domain.DriverAntigravity,
+				Account:    s.account,
+				StopReason: domain.StopCancelled,
+			})
+		}
+		return nil
+	}
 
 	go func() {
 		timer := time.NewTimer(6 * time.Second)
