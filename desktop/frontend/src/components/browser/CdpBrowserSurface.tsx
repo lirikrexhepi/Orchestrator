@@ -62,7 +62,15 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const sessionRef = useRef<browser.SessionInfo | null>(null);
-  const latestFrameSeq = useRef<number>(0);
+  const pendingFrameRef = useRef<ArrayBuffer | null>(null);
+  const decodingFrameRef = useRef<boolean>(false);
+  const lastClickRef = useRef<{ time: number; x: number; y: number; button: number; count: number }>({
+    time: 0,
+    x: 0,
+    y: 0,
+    button: -1,
+    count: 0,
+  });
 
   const pendingResizeRef = useRef<{ width: number; height: number; dpr: number } | null>(null);
   const pendingNavRef = useRef<string | null>(null);
@@ -259,7 +267,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
         const rect = containerRef.current?.getBoundingClientRect();
         const w = Math.max(200, Math.round(rect?.width || 1280));
         const h = Math.max(160, Math.round(rect?.height || 800));
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
         const startUrl = initialUrlRef.current || 'about:blank';
 
         const [endpoint, session] = await Promise.all([
@@ -325,39 +333,54 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
             ws.send(JSON.stringify({ type: 'navigate', url: pendingNav }));
           }
 
-          if (pausedRef.current) {
-            ws.send(JSON.stringify({ type: 'pause', paused: true }));
+          ws.send(JSON.stringify({ type: 'pause', paused: pausedRef.current }));
+        };
+
+        const pumpFrameDecode = async () => {
+          if (decodingFrameRef.current) return;
+          decodingFrameRef.current = true;
+          try {
+            while (!unmounted && pendingFrameRef.current) {
+              const frameData = pendingFrameRef.current;
+              pendingFrameRef.current = null;
+              try {
+                const blob = new Blob([frameData], { type: 'image/jpeg' });
+                const bitmap = await createImageBitmap(blob);
+                if (unmounted) {
+                  bitmap.close();
+                  break;
+                }
+                // If an even newer frame arrived while decoding, skip painting stale bitmap
+                if (!pendingFrameRef.current) {
+                  const canvas = canvasRef.current;
+                  if (canvas) {
+                    if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+                      canvas.width = bitmap.width;
+                      canvas.height = bitmap.height;
+                    }
+                    const ctx = canvas.getContext('2d', { alpha: false });
+                    if (ctx) {
+                      ctx.drawImage(bitmap, 0, 0);
+                    }
+                  }
+                }
+                bitmap.close();
+              } catch {
+                // Frame decode error; drop frame
+              }
+            }
+          } finally {
+            decodingFrameRef.current = false;
           }
         };
 
-        ws.onmessage = async (event: MessageEvent) => {
+        ws.onmessage = (event: MessageEvent) => {
           if (unmounted) return;
 
-          // Binary screencast JPEG frame
+          // Binary screencast JPEG frame — keep only the newest undecoded frame
           if (event.data instanceof ArrayBuffer) {
-            const seq = ++latestFrameSeq.current;
-            try {
-              const blob = new Blob([event.data], { type: 'image/jpeg' });
-              const bitmap = await createImageBitmap(blob);
-              if (seq < latestFrameSeq.current || unmounted) {
-                bitmap.close();
-                return;
-              }
-              const canvas = canvasRef.current;
-              if (canvas) {
-                if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-                  canvas.width = bitmap.width;
-                  canvas.height = bitmap.height;
-                }
-                const ctx = canvas.getContext('2d');
-                if (ctx) {
-                  ctx.drawImage(bitmap, 0, 0);
-                }
-              }
-              bitmap.close();
-            } catch {
-              // Frame decode error; drop frame
-            }
+            pendingFrameRef.current = event.data;
+            void pumpFrameDecode();
             return;
           }
 
@@ -475,7 +498,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
           window.clearTimeout(resizeTimer);
         }
         resizeTimer = window.setTimeout(() => {
-          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
           const w = Math.round(width);
           const h = Math.round(height);
           tabStateRef.current.width = w;
@@ -644,6 +667,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isFocused) return;
+    e.stopPropagation();
     if (e.button === 3 || e.button === 4) {
       e.preventDefault();
     }
@@ -654,7 +678,17 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
       // Ignore if synthetic event cannot capture pointer
     }
     const { x, y } = getCoordinates(e.clientX, e.clientY);
-    canvasRef.current?.focus();
+    canvasRef.current?.focus({ preventScroll: true });
+
+    const now = performance.now();
+    const prev = lastClickRef.current;
+    const isMulti =
+      prev.button === e.button &&
+      now - prev.time < 420 &&
+      Math.hypot(x - prev.x, y - prev.y) < 8;
+    const clickCount = isMulti ? Math.min(prev.count + 1, 3) : 1;
+    lastClickRef.current = { time: now, x, y, button: e.button, count: clickCount };
+
     send({
       type: 'mouse',
       mouseType: 'mousePressed',
@@ -662,13 +696,14 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
       y,
       button: mapButton(e.button),
       buttons: e.buttons,
-      clickCount: e.detail || 1,
+      clickCount,
       modifiers: getModifiers(e),
     });
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isFocused) return;
+    e.stopPropagation();
     if (e.button === 3 || e.button === 4) {
       e.preventDefault();
     }
@@ -681,6 +716,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
       // Ignore release errors
     }
     const { x, y } = getCoordinates(e.clientX, e.clientY);
+    const clickCount = lastClickRef.current.button === e.button ? lastClickRef.current.count || 1 : 1;
     send({
       type: 'mouse',
       mouseType: 'mouseReleased',
@@ -688,7 +724,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
       y,
       button: mapButton(e.button),
       buttons: e.buttons,
-      clickCount: e.detail || 1,
+      clickCount,
       modifiers: getModifiers(e),
     });
   };

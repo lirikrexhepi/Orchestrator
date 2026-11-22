@@ -180,11 +180,11 @@ func (m *Manager) ensureChromiumLocked(ctx context.Context) error {
 		}
 	}
 
-	wsURL, lockFailure, err := m.launchChromiumLocked(ctx, execPath, profile)
+	wsURL, lockFailure, err := m.launchChromiumLocked(ctx, execPath, profile, false)
 	if err != nil && lockFailure && !m.isTempProfile {
 		logger.Warnf("BrowserManager", "Chromium exited with profile lock error (%v), cleaning locks and retrying...", err)
 		_ = cleanStaleProfileLocks(profile)
-		wsURL, lockFailure, err = m.launchChromiumLocked(ctx, execPath, profile)
+		wsURL, lockFailure, err = m.launchChromiumLocked(ctx, execPath, profile, false)
 		if err != nil && lockFailure {
 			// Persistent profile is genuinely locked by another active Chromium instance; fall back cleanly to a temp profile.
 			tempDir, tempErr := os.MkdirTemp("", "orchestrator-chrome-profile-*")
@@ -192,9 +192,14 @@ func (m *Manager) ensureChromiumLocked(ctx context.Context) error {
 				logger.Warnf("BrowserManager", "Persistent profile %s remains locked, falling back to temp profile %s", profile, tempDir)
 				m.isTempProfile = true
 				m.profileDir = tempDir
-				wsURL, _, err = m.launchChromiumLocked(ctx, execPath, tempDir)
+				wsURL, _, err = m.launchChromiumLocked(ctx, execPath, tempDir, false)
 			}
 		}
+	}
+	if err != nil && !lockFailure {
+		// Fall back once to software rendering if GPU initialization failed on this system.
+		logger.Warnf("BrowserManager", "Chromium GPU launch failed (%v), retrying with --disable-gpu", err)
+		wsURL, _, err = m.launchChromiumLocked(ctx, execPath, m.profileDir, true)
 	}
 	if err != nil {
 		return err
@@ -288,7 +293,7 @@ func (m *Manager) ensureChromiumLocked(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) launchChromiumLocked(ctx context.Context, execPath, profile string) (string, bool, error) {
+func (m *Manager) launchChromiumLocked(ctx context.Context, execPath, profile string, disableGPU bool) (string, bool, error) {
 	wsURLCh := make(chan string, 1)
 	var once sync.Once
 
@@ -297,15 +302,18 @@ func (m *Manager) launchChromiumLocked(ctx context.Context, execPath, profile st
 		"--remote-debugging-port=0",
 		"--remote-allow-origins=*",
 		"--user-data-dir=" + profile,
-		"--disable-gpu",
 		"--no-first-run",
 		"--no-default-browser-check",
+		"--autoplay-policy=no-user-gesture-required",
 		"--disable-background-timer-throttling",
 		"--disable-renderer-backgrounding",
 		"--disable-backgrounding-occluded-windows",
+		"--disable-features=CalculateNativeWinOcclusion",
 		"--disable-dev-shm-usage",
-		"--disable-gpu-sandbox",
 		"--window-size=1280,800",
+	}
+	if disableGPU {
+		flags = append(flags, "--disable-gpu", "--disable-gpu-sandbox")
 	}
 
 	spec := process.Spec{
@@ -523,8 +531,9 @@ func (m *Manager) Open(ctx context.Context, threadID, initialURL string, width, 
 	}
 	m.tabs[tabID] = t
 
-	// 3. Enable Page domain and set device metrics
+	// 3. Enable Page domain, focus the target, and set device metrics
 	_ = m.cdp.Call(ctx, t.sessionID, "Page.enable", nil, nil)
+	_ = m.cdp.Send(t.sessionID, "Page.bringToFront", nil)
 	_ = m.cdp.Call(ctx, t.sessionID, "Emulation.setDeviceMetricsOverride", map[string]any{
 		"width":             width,
 		"height":            height,
@@ -573,19 +582,17 @@ func (m *Manager) handleTabCDPEvent(t *tab, method string, params json.RawMessag
 			return
 		}
 
-		// Non-blocking immediate ACK so Chrome continues frame delivery
-		go func(sessID string, ackID any) {
+		// Immediate fire-and-forget ACK so Chrome keeps delivering frames at full rate.
+		if ev.SessionID != nil {
 			m.mu.Lock()
 			cdp := m.cdp
 			m.mu.Unlock()
-			if cdp != nil && ackID != nil {
-				ackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				defer cancel()
-				_ = cdp.Call(ackCtx, sessID, "Page.screencastFrameAck", map[string]any{
-					"sessionId": ackID,
-				}, nil)
+			if cdp != nil {
+				_ = cdp.Send(t.sessionID, "Page.screencastFrameAck", map[string]any{
+					"sessionId": ev.SessionID,
+				})
 			}
-		}(t.sessionID, ev.SessionID)
+		}
 
 		jpegBytes, err := base64.StdEncoding.DecodeString(ev.Data)
 		if err != nil {
@@ -604,7 +611,16 @@ func (m *Manager) handleTabCDPEvent(t *tab, method string, params json.RawMessag
 			select {
 			case ch <- tabEvent{isBinary: true, binary: jpegBytes}:
 			default:
-				// Lagging subscriber: drop stale frame so latency never builds up
+				// Channel full: evict oldest queued event and deliver the newest frame
+				// so viewers always render the freshest image instead of falling behind.
+				select {
+				case <-ch:
+				default:
+				}
+				select {
+				case ch <- tabEvent{isBinary: true, binary: jpegBytes}:
+				default:
+				}
 			}
 		}
 
@@ -884,14 +900,14 @@ func (m *Manager) Reload(ctx context.Context, id string) error {
 func screencastParams(width, height int, dpr float64) map[string]any {
 	if dpr < 1.0 {
 		dpr = 1.0
-	} else if dpr > 2.0 {
-		dpr = 2.0
+	} else if dpr > 1.5 {
+		dpr = 1.5
 	}
-	maxW := clamp(int(math.Round(float64(width)*dpr)), 200, 2560)
-	maxH := clamp(int(math.Round(float64(height)*dpr)), 160, 1600)
+	maxW := clamp(int(math.Round(float64(width)*dpr)), 200, 1920)
+	maxH := clamp(int(math.Round(float64(height)*dpr)), 160, 1200)
 	return map[string]any{
 		"format":        "jpeg",
-		"quality":       82,
+		"quality":       75,
 		"everyNthFrame": 1,
 		"maxWidth":      maxW,
 		"maxHeight":     maxH,
@@ -975,6 +991,7 @@ func (m *Manager) SetPaused(ctx context.Context, id string, paused bool) error {
 		return cdp.Call(ctx, sessID, "Page.stopScreencast", nil, nil)
 	}
 
+	_ = cdp.Send(sessID, "Page.bringToFront", nil)
 	if subCount > 0 {
 		return cdp.Call(ctx, sessID, "Page.startScreencast", params, nil)
 	}
@@ -1058,7 +1075,10 @@ func (m *Manager) DispatchMouse(ctx context.Context, id string, ev MouseEvent) e
 		"deltaY":     ev.DeltaY,
 		"modifiers":  ev.Modifiers,
 	}
-	return cdp.Call(ctx, t.sessionID, "Input.dispatchMouseEvent", params, nil)
+	if ev.Type == "mousePressed" {
+		_ = cdp.Send(t.sessionID, "Page.bringToFront", nil)
+	}
+	return cdp.Send(t.sessionID, "Input.dispatchMouseEvent", params)
 }
 
 // DispatchKey sends key events into the CDP tab.
@@ -1100,7 +1120,7 @@ func (m *Manager) DispatchKey(ctx context.Context, id string, ev KeyEvent) error
 		"nativeVirtualKeyCode":  ev.NativeVirtualKeyCode,
 		"modifiers":             ev.Modifiers,
 	}
-	return cdp.Call(ctx, t.sessionID, "Input.dispatchKeyEvent", params, nil)
+	return cdp.Send(t.sessionID, "Input.dispatchKeyEvent", params)
 }
 
 // InsertText inserts text directly into the focused input element (e.g. paste).
@@ -1117,7 +1137,7 @@ func (m *Manager) InsertText(ctx context.Context, id, text string) error {
 		return ErrBrowserClosed
 	}
 
-	return cdp.Call(ctx, t.sessionID, "Input.insertText", map[string]any{"text": text}, nil)
+	return cdp.Send(t.sessionID, "Input.insertText", map[string]any{"text": text})
 }
 
 // Close destroys a single tab and triggers idle cleanup if no tabs remain.

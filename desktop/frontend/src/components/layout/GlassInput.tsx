@@ -12,10 +12,11 @@ import { readChatDrag, isChatDrag } from '../common/chatDrag';
 import { markChatContextTarget, leaveChatContextTarget } from '../common/ChatDragLayer';
 import { AIModel } from '../orchestrator/types';
 
-// Persist the last synced chat key across GlassInput unmounts (e.g. switching
-// to full-page Web or Terminal and coming back to the same chat) so returning
-// never overwrites the user's currently selected model.
+// Persist the last synced chat key and unsent draft text across GlassInput
+// unmounts (e.g. switching to full-page Web, Terminal, or Servers and coming
+// back) so neither the selected model nor typed prompt text is ever lost.
 let lastSyncedChatKey: string | null = null;
+const draftTextByChat = new Map<string, string>();
 
 export function resolveMatchingModel(
   models: AIModel[],
@@ -103,7 +104,27 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   activeChatModel,
   activeChatDriver,
 }) => {
-  const [text, setText] = useState('');
+  const draftKey = activeChatKey || '__home__';
+  const [text, setTextState] = useState(() => draftTextByChat.get(draftKey) ?? '');
+  const setText = React.useCallback(
+    (next: string | ((prev: string) => string)) => {
+      setTextState((prev) => {
+        const resolved = typeof next === 'function' ? next(prev) : next;
+        if (resolved) {
+          draftTextByChat.set(draftKey, resolved);
+        } else {
+          draftTextByChat.delete(draftKey);
+        }
+        return resolved;
+      });
+    },
+    [draftKey],
+  );
+
+  // Restore the draft belonging to whichever chat is now active
+  useEffect(() => {
+    setTextState(draftTextByChat.get(draftKey) ?? '');
+  }, [draftKey]);
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   const [isProjectPickerOpen, setIsProjectPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);

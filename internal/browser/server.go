@@ -301,32 +301,13 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		ctx, cmdCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		switch cmd.Type {
-		case "navigate":
-			if navErr := s.mgr.Navigate(ctx, tabID, cmd.URL); navErr != nil {
-				errPayload, _ := json.Marshal(map[string]any{
-					"type":    "error",
-					"message": navErr.Error(),
-				})
-				_ = writeSafe(websocket.TextMessage, errPayload)
-			}
-		case "back":
-			_ = s.mgr.Back(ctx, tabID)
-		case "forward":
-			_ = s.mgr.Forward(ctx, tabID)
-		case "reload":
-			_ = s.mgr.Reload(ctx, tabID)
-		case "resize":
-			_ = s.mgr.Resize(ctx, tabID, cmd.Width, cmd.Height, cmd.DPR)
-		case "pause":
-			_ = s.mgr.SetPaused(ctx, tabID, cmd.Paused)
 		case "mouse":
 			mType := cmd.MouseType
 			if mType == "" {
 				mType = "mouseMoved"
 			}
-			_ = s.mgr.DispatchMouse(ctx, tabID, MouseEvent{
+			_ = s.mgr.DispatchMouse(context.Background(), tabID, MouseEvent{
 				Type:       mType,
 				X:          cmd.X,
 				Y:          cmd.Y,
@@ -342,7 +323,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if kType == "" {
 				kType = "keyDown"
 			}
-			_ = s.mgr.DispatchKey(ctx, tabID, KeyEvent{
+			_ = s.mgr.DispatchKey(context.Background(), tabID, KeyEvent{
 				Type:                  kType,
 				Key:                   cmd.Key,
 				Code:                  cmd.Code,
@@ -353,12 +334,38 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Modifiers:             cmd.Modifiers,
 			})
 		case "paste":
-			text := cmd.Text
-			if text != "" {
-				_ = s.mgr.InsertText(ctx, tabID, text)
+			if cmd.Text != "" {
+				_ = s.mgr.InsertText(context.Background(), tabID, cmd.Text)
 			}
+		case "navigate", "back", "forward", "reload", "resize", "pause":
+			// Run potentially slow CDP lifecycle/navigation RPCs asynchronously
+			// so they never stall incoming mouse/wheel/keyboard events.
+			c := cmd
+			go func() {
+				ctx, cmdCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cmdCancel()
+				switch c.Type {
+				case "navigate":
+					if navErr := s.mgr.Navigate(ctx, tabID, c.URL); navErr != nil {
+						errPayload, _ := json.Marshal(map[string]any{
+							"type":    "error",
+							"message": navErr.Error(),
+						})
+						_ = writeSafe(websocket.TextMessage, errPayload)
+					}
+				case "back":
+					_ = s.mgr.Back(ctx, tabID)
+				case "forward":
+					_ = s.mgr.Forward(ctx, tabID)
+				case "reload":
+					_ = s.mgr.Reload(ctx, tabID)
+				case "resize":
+					_ = s.mgr.Resize(ctx, tabID, c.Width, c.Height, c.DPR)
+				case "pause":
+					_ = s.mgr.SetPaused(ctx, tabID, c.Paused)
+				}
+			}()
 		}
-		cmdCancel()
 	}
 
 	close(readerDone)

@@ -131,6 +131,33 @@ func (c *CDPClient) Close() error {
 	return c.ws.Close()
 }
 
+// Send dispatches a fire-and-forget CDP JSON-RPC command without waiting for
+// a response. Ideal for high-frequency input events and screencast ACKs so
+// Chromium receives events with zero head-of-line blocking.
+func (c *CDPClient) Send(sessionID, method string, params any) error {
+	select {
+	case <-c.done:
+		return ErrCDPClosed
+	default:
+	}
+
+	id := atomic.AddInt64(&c.nextID, 1)
+	req := cdpRequest{
+		ID:        id,
+		SessionID: sessionID,
+		Method:    method,
+		Params:    params,
+	}
+
+	c.writeMu.Lock()
+	err := c.ws.WriteJSON(req)
+	c.writeMu.Unlock()
+	if err != nil {
+		return fmt.Errorf("failed to write cdp command: %w", err)
+	}
+	return nil
+}
+
 // Call executes a CDP JSON-RPC command, optionally routed to a specific sessionID.
 func (c *CDPClient) Call(ctx context.Context, sessionID, method string, params any, result any) error {
 	select {
@@ -258,11 +285,9 @@ func (c *CDPClient) sendScreencastAck(sessionID string, params json.RawMessage) 
 	if err := json.Unmarshal(params, &ev); err != nil || ev.SessionID == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = c.Call(ctx, sessionID, "Page.screencastFrameAck", map[string]any{
+	_ = c.Send(sessionID, "Page.screencastFrameAck", map[string]any{
 		"sessionId": ev.SessionID,
-	}, nil)
+	})
 }
 
 func (c *CDPClient) ackScreencastFrameAsync(sessionID string, params json.RawMessage) {

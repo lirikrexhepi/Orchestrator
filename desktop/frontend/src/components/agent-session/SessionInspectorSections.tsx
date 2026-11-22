@@ -253,7 +253,7 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
     <div className="flex min-h-0 flex-col gap-0.5 px-1.5 pb-1.5 font-(family-name:--app-font)">
       {/* Changes Section (only shown when multi-repo or outside workspace root) */}
       {shouldShowChanges && (
-        <div className="flex min-h-0 flex-col">
+        <div className="flex min-h-0 shrink-0 flex-col">
           <div className={`mx-2 my-1 border-t ${tone.divider}`} />
           <SectionRow
             tone={tone}
@@ -321,28 +321,30 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
                             transition={TRANSITION}
                             className="flex flex-col overflow-hidden pt-0.5 pl-4 pr-1 gap-0.5"
                           >
-                            {group.files.map((file) => {
-                              const basename = file.path.split(/[/\\]/).pop() || file.path;
-                              return (
-                                <button
-                                  key={file.key}
-                                  type="button"
-                                  onClick={() => {
-                                    if (onOpenFile) onOpenFile(file.path, group);
-                                    else if (onOpenChanges) onOpenChanges(group);
-                                  }}
-                                  className={`flex h-7 w-full items-center justify-between text-left text-[11.5px] px-2 rounded-[8px] ${tone.hover} cursor-pointer transition-colors`}
-                                >
-                                  <span className={`truncate flex-1 ${tone.body}`} title={file.path}>
-                                    {basename}
-                                  </span>
-                                  <span className="flex items-center gap-1.5 text-[10.5px] font-mono tabular-nums shrink-0 ml-2">
-                                    {file.additions > 0 && <span className="text-emerald-500">+{file.additions}</span>}
-                                    {file.deletions > 0 && <span className="text-rose-500">−{file.deletions}</span>}
-                                  </span>
-                                </button>
-                              );
-                            })}
+                            <div className="flex flex-col gap-0.5 max-h-[176px] overflow-y-auto overflow-x-hidden custom-scrollbar pr-0.5">
+                              {group.files.map((file) => {
+                                const basename = file.path.split(/[/\\]/).pop() || file.path;
+                                return (
+                                  <button
+                                    key={file.key}
+                                    type="button"
+                                    onClick={() => {
+                                      if (onOpenFile) onOpenFile(file.path, group);
+                                      else if (onOpenChanges) onOpenChanges(group);
+                                    }}
+                                    className={`flex h-7 shrink-0 w-full items-center justify-between text-left text-[11.5px] px-2 rounded-[8px] ${tone.hover} cursor-pointer transition-colors`}
+                                  >
+                                    <span className={`truncate flex-1 ${tone.body}`} title={file.path}>
+                                      {basename}
+                                    </span>
+                                    <span className="flex items-center gap-1.5 text-[10.5px] font-mono tabular-nums shrink-0 ml-2">
+                                      {file.additions > 0 && <span className="text-emerald-500">+{file.additions}</span>}
+                                      {file.deletions > 0 && <span className="text-rose-500">−{file.deletions}</span>}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
                             {onOpenChanges && (
                               <button
                                 type="button"
@@ -350,7 +352,7 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
                                   e.stopPropagation();
                                   onOpenChanges(group);
                                 }}
-                                className={`flex h-7 items-center gap-1.5 px-2 rounded-[8px] text-[11px] font-medium cursor-pointer transition-colors self-start ${tone.hover} ${tone.muted}`}
+                                className={`flex h-7 shrink-0 items-center gap-1.5 px-2 rounded-[8px] text-[11px] font-medium cursor-pointer transition-colors self-start ${tone.hover} ${tone.muted}`}
                               >
                                 <MaterialIcon name="difference" size={13} />
                                 <span>View diff</span>
@@ -370,7 +372,7 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
 
       {/* Checks Section (non-expanding, latest batch only) */}
       {checks.length > 0 && (
-        <div className="flex min-h-0 flex-col">
+        <div className="flex shrink-0 flex-col">
           <div className={`mx-2 my-1 border-t ${tone.divider}`} />
           <div className="flex h-8 w-full items-center gap-2.5 rounded-[10px] px-2 select-none">
             <span className={`flex w-4 shrink-0 items-center justify-center ${tone.muted}`}>
@@ -392,7 +394,7 @@ export const SessionInspectorSections: React.FC<SessionInspectorSectionsProps> =
 
       {/* MCPs Section */}
       {mcps.length > 0 && (
-        <div className="flex min-h-0 flex-col">
+        <div className="flex shrink-0 flex-col">
           <div className={`mx-2 my-1 border-t ${tone.divider}`} />
           <SectionRow
             tone={tone}

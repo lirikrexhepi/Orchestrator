@@ -301,8 +301,8 @@ func TestScreencastParams_BoundedAndClamped(t *testing.T) {
 	}
 
 	p2 := screencastParams(1920, 1080, 2.0)
-	if p2["maxWidth"] != 2560 || p2["maxHeight"] != 1600 {
-		t.Fatalf("expected Retina 4K to clamp to 2560x1600, got %vx%v", p2["maxWidth"], p2["maxHeight"])
+	if p2["maxWidth"] != 1920 || p2["maxHeight"] != 1200 {
+		t.Fatalf("expected Retina 4K to clamp to 1920x1200, got %vx%v", p2["maxWidth"], p2["maxHeight"])
 	}
 
 	p3 := screencastParams(100, 50, 0.5)
