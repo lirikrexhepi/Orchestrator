@@ -28,33 +28,6 @@ export function useAppUpdate(): AppUpdateState {
   const [progress, setProgress] = useState<AppUpdateProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    CheckAppUpdate()
-      .then((res) => {
-        if (alive) setStatus(res);
-      })
-      .catch(() => undefined);
-
-    const offAvailable = EventsOn('app:update-available', (payload: updater.Status) => {
-      if (alive && payload) setStatus(payload);
-    });
-    const offProgress = EventsOn('app:update-progress', (payload: AppUpdateProgress) => {
-      if (!alive || !payload) return;
-      setProgress(payload);
-      if (payload.stage === 'error') {
-        setInstalling(false);
-        setError(payload.error || 'Update failed');
-      }
-    });
-
-    return () => {
-      alive = false;
-      offAvailable();
-      offProgress();
-    };
-  }, []);
-
   const checkNow = useCallback(async () => {
     setChecking(true);
     setError(null);
@@ -81,6 +54,54 @@ export function useAppUpdate(): AppUpdateState {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+
+    // Fast initial check against cache or server
+    CheckAppUpdate()
+      .then((res) => {
+        if (alive && res) setStatus(res);
+      })
+      .catch(() => undefined);
+
+    // Refresh immediately after startup (3s) to ensure fresh GitHub releases state
+    const bootTimer = window.setTimeout(() => {
+      if (alive) void checkNow();
+    }, 3000);
+
+    // Periodic automatic background check every 3 minutes
+    const interval = window.setInterval(() => {
+      if (alive) void checkNow();
+    }, 3 * 60 * 1000);
+
+    // Check automatically whenever the user brings the app into focus
+    const onFocus = () => {
+      if (alive) void checkNow();
+    };
+    window.addEventListener('focus', onFocus);
+
+    const offAvailable = EventsOn('app:update-available', (payload: updater.Status) => {
+      if (alive && payload) setStatus(payload);
+    });
+    const offProgress = EventsOn('app:update-progress', (payload: AppUpdateProgress) => {
+      if (!alive || !payload) return;
+      setProgress(payload);
+      if (payload.stage === 'error') {
+        setInstalling(false);
+        setError(payload.error || 'Update failed');
+      }
+    });
+
+    return () => {
+      alive = false;
+      window.clearTimeout(bootTimer);
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      offAvailable();
+      offProgress();
+    };
+  }, [checkNow]);
 
   return { status, checking, installing, progress, error, checkNow, install };
 }

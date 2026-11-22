@@ -100,14 +100,8 @@ export const NavRailUpdateButton: React.FC<NavRailUpdateButtonProps> = ({
         type="button"
         onClick={handleButtonClick}
         aria-label={version ? `Update to v${version}` : 'Update available'}
-        className={`w-[28px] h-[28px] rounded-[7px] flex items-center justify-center transition-all duration-150 relative cursor-pointer active:scale-90 ${
-          isInstalling
-            ? isLight
-              ? 'bg-[#0A84FF]/15 text-[#0066CC] shadow-sm'
-              : 'bg-[#0A84FF]/20 text-[#0A84FF] shadow-sm'
-            : isLight
-              ? 'bg-[#0A84FF]/10 text-[#0066CC] hover:bg-[#0A84FF]/20 border border-[#0A84FF]/25 shadow-sm'
-              : 'bg-[#0A84FF]/15 text-[#0A84FF] hover:bg-[#0A84FF]/25 border border-[#0A84FF]/30 shadow-sm'
+        className={`w-[28px] h-[28px] rounded-[7px] flex items-center justify-center transition-all duration-150 relative cursor-pointer active:scale-90 text-[#0A84FF] hover:text-[#0077ED] ${
+          isLight ? 'hover:bg-black/[0.04]' : 'hover:bg-white/[0.04]'
         }`}
       >
         {isInstalling ? (
@@ -156,11 +150,11 @@ export const NavRailUpdateButton: React.FC<NavRailUpdateButtonProps> = ({
               <polyline points="7 10 12 15 17 10" />
               <line x1="12" y1="15" x2="12" y2="3" />
             </svg>
-            {/* Glowing Accent Dot */}
+            {/* Accent Dot */}
             <span
-              className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-[#0A84FF] ring-2 ${
+              className={`absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-[#0A84FF] ring-2 ${
                 isLight ? 'ring-[#e6e6eb]' : 'ring-[#141414]'
-              } animate-pulse`}
+              }`}
             />
           </>
         )}
@@ -181,14 +175,14 @@ export const NavRailUpdateButton: React.FC<NavRailUpdateButtonProps> = ({
           {/* Card Header */}
           <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/[0.06]">
             <div className="flex items-center gap-1.5 min-w-0">
-              <span className="w-5 h-5 rounded-md bg-[#0A84FF]/20 text-[#0A84FF] flex items-center justify-center shrink-0">
+              <span className="text-[#0A84FF] flex items-center justify-center shrink-0">
                 <svg
-                  width="12"
-                  height="12"
+                  width="13"
+                  height="13"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="2.4"
+                  strokeWidth="2.2"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 >
@@ -220,7 +214,7 @@ export const NavRailUpdateButton: React.FC<NavRailUpdateButtonProps> = ({
                 <button
                   type="button"
                   onClick={handleInstallClick}
-                  className="w-full py-1.5 px-3 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-300 text-[11px] font-medium transition-colors cursor-pointer"
+                  className="w-full py-1 px-2.5 rounded-md bg-red-500/15 hover:bg-red-500/25 text-red-300 text-[11px] font-medium transition-colors cursor-pointer"
                 >
                   Retry Update
                 </button>
@@ -271,17 +265,22 @@ export const NavRailUpdateButton: React.FC<NavRailUpdateButtonProps> = ({
                 <button
                   type="button"
                   onClick={handleInstallClick}
-                  className="w-full py-1.5 px-3 rounded-lg bg-[#0A84FF] hover:bg-[#0077ED] active:scale-[0.98] text-white text-[12px] font-medium flex items-center justify-center gap-1.5 transition-all shadow-sm cursor-pointer"
+                  className={`w-full py-1 px-2.5 rounded-md text-[11.5px] font-medium flex items-center justify-center gap-1.5 transition-all active:scale-[0.98] cursor-pointer ${
+                    isLight
+                      ? 'bg-black/[0.05] hover:bg-black/[0.09] text-black/85 hover:text-black border border-black/[0.06]'
+                      : 'bg-white/[0.08] hover:bg-white/[0.13] text-white/90 hover:text-white border border-white/[0.08]'
+                  }`}
                 >
                   <svg
-                    width="13"
-                    height="13"
+                    width="12"
+                    height="12"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
                     strokeWidth="2.2"
                     strokeLinecap="round"
                     strokeLinejoin="round"
+                    className="text-[#0A84FF]"
                   >
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                     <polyline points="7 10 12 15 17 10" />

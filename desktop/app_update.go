@@ -18,8 +18,8 @@ const (
 	appUpdateAvailableChannel = "app:update-available"
 	appUpdateProgressChannel  = "app:update-progress"
 
-	appUpdateCacheTTL      = 30 * time.Minute
-	appUpdateCheckInterval = 6 * time.Hour
+	appUpdateCacheTTL      = 3 * time.Minute
+	appUpdateCheckInterval = 15 * time.Minute
 )
 
 type appUpdaterState struct {
@@ -188,11 +188,11 @@ func (a *App) watchAppUpdates(ctx context.Context) {
 		return
 	}
 	select {
-	case <-time.After(5 * time.Second):
+	case <-time.After(3 * time.Second):
 	case <-ctx.Done():
 		return
 	}
-	a.checkAppUpdate(false)
+	a.checkAppUpdate(true)
 
 	ticker := time.NewTicker(appUpdateCheckInterval)
 	defer ticker.Stop()
