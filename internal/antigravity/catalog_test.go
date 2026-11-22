@@ -2,11 +2,19 @@ package antigravity
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
 
 func TestCatalogWithRealProfile(t *testing.T) {
+	if os.Getenv("CI") != "" || testing.Short() {
+		t.Skip("skipping live agy profile test in CI/short mode")
+	}
+	if _, err := exec.LookPath("agy"); err != nil {
+		t.Skip("agy CLI not found on PATH")
+	}
 	InvalidateAccountModels("")
 	models, err := FetchAccountModels(context.Background(), "agy", "lirikrexhepiii-neon", "keyring", "")
 	if err != nil {
