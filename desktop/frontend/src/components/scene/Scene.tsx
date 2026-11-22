@@ -238,11 +238,19 @@ export const Scene: React.FC<SceneProps> = () => {
           const parsed = parseSwitchNotice(b.label);
           if (parsed?.toModel) return parsed.toModel;
         }
+        if ((b as any).model) {
+          return (b as any).model;
+        }
       }
     }
     const models = activeTask.models;
     if (models && models.length > 0) return models[models.length - 1];
     return activeTask.model;
+  }, [activeTask]);
+
+  const activeTaskAccount = useMemo(() => {
+    if (!activeTask) return undefined;
+    return activeTask.account;
   }, [activeTask]);
 
   const activeTaskDriver = useMemo(() => {
@@ -253,6 +261,9 @@ export const Scene: React.FC<SceneProps> = () => {
         if (b.type === 'notice' && b.label) {
           const parsed = parseSwitchNotice(b.label);
           if (parsed?.toDriver) return parsed.toDriver;
+        }
+        if ((b as any).driver) {
+          return (b as any).driver;
         }
       }
     }
@@ -972,6 +983,7 @@ export const Scene: React.FC<SceneProps> = () => {
               activeChatKey={activeView === 'chat' ? (activeTask?.threadId || String(activeCardIndex)) : '__home__'}
               activeChatModel={activeView === 'chat' ? activeTaskModel : undefined}
               activeChatDriver={activeView === 'chat' ? activeTaskDriver : undefined}
+              activeChatAccount={activeView === 'chat' ? activeTaskAccount : undefined}
             />
           </div>
         )}

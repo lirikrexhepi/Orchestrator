@@ -90,6 +90,7 @@ export interface GlassInputProps {
   activeChatKey?: string;
   activeChatModel?: string;
   activeChatDriver?: string;
+  activeChatAccount?: string;
 }
 
 export const GlassInput: React.FC<GlassInputProps> = ({
@@ -103,6 +104,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   activeChatKey,
   activeChatModel,
   activeChatDriver,
+  activeChatAccount,
 }) => {
   const draftKey = activeChatKey || '__home__';
   const [text, setTextState] = useState(() => draftTextByChat.get(draftKey) ?? '');
@@ -208,14 +210,12 @@ export const GlassInput: React.FC<GlassInputProps> = ({
     };
   }, [activeChatKey]);
 
-  // Sync selected model to current chat's model only when switching to a DIFFERENT chat
+  // Sync selected model and account to current chat's last used model/account
   useEffect(() => {
     if (!activeChatKey || activeChatKey === '__home__') {
       lastSyncedChatKey = activeChatKey ?? null;
       return;
     }
-
-    if (lastSyncedChatKey === activeChatKey && store.selectedModelId) return;
 
     const models = store.models;
     if (!models || models.length === 0) return;
@@ -226,10 +226,13 @@ export const GlassInput: React.FC<GlassInputProps> = ({
       if (target.id !== store.selectedModelId || target.providerId !== store.selectedProviderId) {
         store.selectModelSilently(target.id, target.providerId);
       }
+      if (activeChatAccount && store.shownAccount(target.providerId) !== activeChatAccount) {
+        store.selectAccount(target.providerId, activeChatAccount);
+      }
     } else {
       lastSyncedChatKey = activeChatKey;
     }
-  }, [activeChatKey, activeChatModel, activeChatDriver, store.models, store.selectedModelId]);
+  }, [activeChatKey, activeChatModel, activeChatDriver, activeChatAccount, store.models, store.selectedModelId]);
 
   // Auto-resize textarea
   useEffect(() => {
