@@ -200,7 +200,12 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     const loaded = await get().loadAccountModels(providerId, accountId);
     if (!stillShown() || loaded.length === 0) return;
     const preferred = pick(loaded);
-    if (preferred) {
+    if (preserveModelId && preferred) {
+      select(preferred);
+    } else if (get().selectedModelId && loaded.some((m) => m.id === get().selectedModelId)) {
+      const current = loaded.find((m) => m.id === get().selectedModelId);
+      if (current) select(current);
+    } else if (preferred) {
       select(preferred);
     } else if (!loaded.some((m) => m.id === get().selectedModelId)) {
       select(loaded[0]);
@@ -476,8 +481,10 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   },
 
   selectModel: (modelId, providerId) => {
-    const models = get().models;
     const targetProvider = providerId || get().selectedProviderId;
+    const currentAccount = get().shownAccount(targetProvider);
+    const accountSpecific = get().getModelsForProvider(targetProvider, currentAccount);
+    const models = [...accountSpecific, ...get().models];
     const model =
       (targetProvider ? models.find((m) => m.id === modelId && m.providerId === targetProvider) : undefined) ||
       models.find((m) => m.id === modelId);
@@ -501,8 +508,10 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   },
 
   selectModelSilently: (modelId, providerId) => {
-    const models = get().models;
     const targetProvider = providerId || get().selectedProviderId;
+    const currentAccount = get().shownAccount(targetProvider);
+    const accountSpecific = get().getModelsForProvider(targetProvider, currentAccount);
+    const models = [...accountSpecific, ...get().models];
     const model =
       (targetProvider ? models.find((m) => m.id === modelId && m.providerId === targetProvider) : undefined) ||
       models.find((m) => m.id === modelId);
@@ -577,12 +586,15 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     }),
 
   getSelectedModel: () => {
-    const { models, selectedModelId, selectedProviderId } = get();
+    const { models, selectedModelId, selectedProviderId, shownAccount } = get();
+    const accountSpecific = selectedProviderId ? get().getModelsForProvider(selectedProviderId, shownAccount(selectedProviderId)) : [];
+    const all = [...accountSpecific, ...models];
     return (
       (selectedProviderId
-        ? models.find((m) => m.id === selectedModelId && m.providerId === selectedProviderId)
+        ? all.find((m) => m.id === selectedModelId && m.providerId === selectedProviderId)
         : undefined) ||
-      models.find((m) => m.id === selectedModelId) ||
+      all.find((m) => m.id === selectedModelId) ||
+      accountSpecific[0] ||
       models[0]
     );
   },
@@ -593,11 +605,14 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   },
 
   getConfiguringModel: () => {
-    const { models, activeConfiguringModelId, selectedModelId, selectedProviderId } = get();
+    const { models, activeConfiguringModelId, selectedModelId, selectedProviderId, shownAccount } = get();
+    const accountSpecific = selectedProviderId ? get().getModelsForProvider(selectedProviderId, shownAccount(selectedProviderId)) : [];
+    const all = [...accountSpecific, ...models];
     const id = activeConfiguringModelId || selectedModelId;
     return (
-      (selectedProviderId ? models.find((m) => m.id === id && m.providerId === selectedProviderId) : undefined) ||
-      models.find((m) => m.id === id) ||
+      (selectedProviderId ? all.find((m) => m.id === id && m.providerId === selectedProviderId) : undefined) ||
+      all.find((m) => m.id === id) ||
+      accountSpecific[0] ||
       models[0]
     );
   },
