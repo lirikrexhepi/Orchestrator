@@ -191,11 +191,12 @@ var browserTools = []Tool{
 	},
 	{
 		Name:        "browser_batch",
-		Description: "Execute a sequence of browser actions (click, drag, wheel, type, press, wait, eval, navigate) in one fast call, stopping on error. Optionally capture a final screenshot.",
+		Description: "Execute a sequence of browser actions (click, drag, wheel, type, press, wait, eval, navigate, snapshot) in one fast call, stopping on error. Optionally capture a final snapshot and/or screenshot.",
 		InputSchema: ToolInputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
 				"steps":      {Type: "array", Items: &PropertySchema{Type: "object"}},
+				"snapshot":   {Type: "boolean"},
 				"screenshot": {Type: "boolean"},
 				"grid":       {Type: "boolean"},
 				"tabId":      {Type: "string"},
@@ -252,7 +253,7 @@ var browserToolAcceptedKeys = map[string][]string{
 	"browser_wheel":      {"deltaX", "deltaY", "modifiers", "tabId", "x", "y"},
 	"browser_type":       {"ref", "screenshot", "selector", "tabId", "text"},
 	"browser_press":      {"key", "modifiers", "screenshot", "tabId"},
-	"browser_batch":      {"grid", "screenshot", "steps", "tabId"},
+	"browser_batch":      {"grid", "screenshot", "snapshot", "steps", "tabId"},
 	"browser_eval":       {"expression", "tabId"},
 	"browser_console":    {"clear", "tabId"},
 	"browser_resize":     {"height", "tabId", "width"},
@@ -483,6 +484,7 @@ func executeBrowserTool(ctx context.Context, backend Backend, scope CallerScope,
 	case "browser_batch":
 		var args struct {
 			Steps      []browser.BatchStep `json:"steps"`
+			Snapshot   bool                `json:"snapshot"`
 			Screenshot bool                `json:"screenshot"`
 			Grid       bool                `json:"grid"`
 			TabID      string              `json:"tabId"`
@@ -499,6 +501,11 @@ func executeBrowserTool(ctx context.Context, backend Backend, scope CallerScope,
 		res, errs, err := bb.BrowserBatch(ctx, scope.ThreadID, args.TabID, args.Steps)
 		if err != nil {
 			return toolError(err.Error())
+		}
+		if args.Snapshot && res.LastSnapshot == nil {
+			if snap, snapErr := bb.BrowserSnapshot(ctx, scope.ThreadID, res.TabID); snapErr == nil {
+				res.LastSnapshot = &snap
+			}
 		}
 		payload := struct {
 			browser.BatchResult

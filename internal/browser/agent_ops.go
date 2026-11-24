@@ -241,14 +241,15 @@ type SnapshotElement struct {
 
 // SnapshotResult summarizes the current page DOM for an agent.
 type SnapshotResult struct {
-	TabID    string            `json:"tabId"`
-	URL      string            `json:"url"`
-	Title    string            `json:"title"`
-	Width    int               `json:"width"`
-	Height   int               `json:"height"`
-	Canvases []SnapshotElement `json:"canvases,omitempty"`
-	Elements []SnapshotElement `json:"elements"`
-	Text     string            `json:"text,omitempty"`
+	TabID    string              `json:"tabId"`
+	URL      string              `json:"url"`
+	Title    string              `json:"title"`
+	Width    int                 `json:"width"`
+	Height   int                 `json:"height"`
+	Canvases []SnapshotElement   `json:"canvases,omitempty"`
+	Elements []SnapshotElement   `json:"elements"`
+	Bridges  map[string][]string `json:"bridges,omitempty"`
+	Text     string              `json:"text,omitempty"`
 }
 
 const snapshotJS = `(() => {
@@ -320,6 +321,32 @@ const snapshotJS = `(() => {
 		elements.push(item);
 	}
 
+	const discoverBridges = () => {
+		const candidates = [
+			['window.__ORCHESTRATOR_BRIDGE__', window.__ORCHESTRATOR_BRIDGE__],
+			['window.__APP_BRIDGE__', window.__APP_BRIDGE__],
+			['window.planner.agent', window.planner && window.planner.agent],
+		];
+		const out = {};
+		let count = 0;
+		for (const [name, obj] of candidates) {
+			if (!obj || typeof obj !== 'object') continue;
+			const keys = new Set(Object.keys(obj));
+			const proto = Object.getPrototypeOf(obj);
+			if (proto && proto !== Object.prototype) {
+				for (const k of Object.getOwnPropertyNames(proto)) {
+					if (k !== 'constructor') keys.add(k);
+				}
+			}
+			const list = Array.from(keys).slice(0, 30);
+			if (list.length > 0) {
+				out[name] = list;
+				count++;
+			}
+		}
+		return count > 0 ? out : undefined;
+	};
+
 	const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
 	return {
 		url: location.href,
@@ -328,6 +355,7 @@ const snapshotJS = `(() => {
 		height: vh,
 		canvases,
 		elements,
+		bridges: discoverBridges(),
 		text: bodyText,
 	};
 })()`
@@ -902,7 +930,8 @@ func (m *Manager) InspectElementAt(ctx context.Context, id string, x, y float64)
 
 // BatchStep defines one action inside a browser_batch sequence.
 type BatchStep struct {
-	Action     string   `json:"action"` // "click", "drag", "wheel", "type", "press", "wait", "eval", "navigate"
+	Action     string   `json:"action"`         // "click", "drag", "wheel", "type", "press", "wait", "eval", "navigate", "snapshot"
+	Type       string   `json:"type,omitempty"` // alias for action
 	X          *float64 `json:"x,omitempty"`
 	Y          *float64 `json:"y,omitempty"`
 	FromX      float64  `json:"fromX,omitempty"`
@@ -927,12 +956,13 @@ type BatchStep struct {
 
 // BatchResult summarizes a multi-step browser_batch execution.
 type BatchResult struct {
-	TabID          string `json:"tabId"`
-	CompletedSteps int    `json:"completedSteps"`
-	TotalSteps     int    `json:"totalSteps"`
-	LastEval       any    `json:"lastEval,omitempty"`
-	FailedStep     int    `json:"failedStep,omitempty"`
-	Error          string `json:"error,omitempty"`
+	TabID          string          `json:"tabId"`
+	CompletedSteps int             `json:"completedSteps"`
+	TotalSteps     int             `json:"totalSteps"`
+	LastEval       any             `json:"lastEval,omitempty"`
+	LastSnapshot   *SnapshotResult `json:"lastSnapshot,omitempty"`
+	FailedStep     int             `json:"failedStep,omitempty"`
+	Error          string          `json:"error,omitempty"`
 }
 
 // Batch executes multiple browser actions sequentially in one tool call, stopping on first error.
@@ -943,7 +973,11 @@ func (m *Manager) Batch(ctx context.Context, id string, steps []BatchStep) Batch
 	}
 	for i, st := range steps {
 		var stepErr error
-		switch strings.ToLower(strings.TrimSpace(st.Action)) {
+		action := strings.ToLower(strings.TrimSpace(st.Action))
+		if action == "" {
+			action = strings.ToLower(strings.TrimSpace(st.Type))
+		}
+		switch action {
 		case "click":
 			_, _, stepErr = m.Click(ctx, id, ClickOptions{
 				X:          st.X,
@@ -985,6 +1019,12 @@ func (m *Manager) Batch(ctx context.Context, id string, steps []BatchStep) Batch
 			val, stepErr = m.Evaluate(ctx, id, st.Expression)
 			if stepErr == nil {
 				res.LastEval = val
+			}
+		case "snapshot":
+			var snap SnapshotResult
+			snap, stepErr = m.Snapshot(ctx, id)
+			if stepErr == nil {
+				res.LastSnapshot = &snap
 			}
 		case "wait":
 			ms := st.Ms
