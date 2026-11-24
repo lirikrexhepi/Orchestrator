@@ -44,6 +44,18 @@ export interface DynamicIslandProps {
     projectName?: string;
     blocks?: any[];
   }>;
+  openTasks?: Array<{
+    threadId: string;
+    title: string;
+    model?: string;
+    driver?: string;
+    isBusy?: boolean;
+    projectName?: string;
+  }>;
+  activeThreadId?: string;
+  onSelectOpenTask?: (threadId: string) => void;
+  onReorderOpenTasks?: (orderedThreadIds: string[]) => void;
+  onCloseOpenTask?: (threadId: string) => void;
   notification?: DynamicIslandNotification | null;
   onDismissNotification?: () => void;
   historyEntries?: history.Meta[];
@@ -323,9 +335,17 @@ export function formatModelBadge(model?: string, driver?: string): string {
   const known = model ? useOrchestratorStore.getState().models.find((entry) => entry.id === model)?.name : undefined;
   if (known) return known;
   const m = (model || '').toLowerCase();
+  if (m.includes('gemini-4-neon')) return 'Gemini 4 Neon';
+  if (m.includes('gemini-4-hydrogen')) return 'Gemini 4 Hydrogen';
+  if (m.includes('gemini-4-argon')) return 'Gemini 4 Argon';
   if (m.includes('gemini-3.8-flash')) return 'Gemini 3.8 Flash';
   if (m.includes('gemini-2.5-flash')) return 'Gemini 2.5 Flash';
   if (m.includes('gemini-2.5-pro')) return 'Gemini 2.5 Pro';
+  if (m.includes('claude-opus-5-5')) return 'Claude Opus 5.5';
+  if (m.includes('claude-fable-5-2')) return 'Claude Fable 5.2';
+  if (m.includes('claude-fable-5-1')) return 'Claude Fable 5.1';
+  if (m.includes('claude-sonnet-5-5')) return 'Claude Sonnet 5.5';
+  if (m.includes('claude-haiku-5-5')) return 'Claude Haiku 5.5';
   if (m.includes('claude-3-5-sonnet') || m.includes('claude-3.5-sonnet')) return 'Claude 3.5 Sonnet';
   if (m.includes('claude-3-7-sonnet') || m.includes('claude-3.7-sonnet')) return 'Claude 3.7 Sonnet';
   if (m.includes('claude-3-opus')) return 'Claude 3 Opus';
@@ -470,6 +490,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   usageReport,
   usageError,
   activeTasks = [],
+  openTasks = [],
+  activeThreadId,
+  onSelectOpenTask,
+  onReorderOpenTasks,
+  onCloseOpenTask,
   notification,
   onDismissNotification,
   historyEntries = [],
@@ -1074,6 +1099,12 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               chatCounts={chatCounts}
               claudeCount={claudeExhausted && Object.values(claudeExhausted).every(Boolean) ? handClaudeChats.length : 0}
               recentClaude={recentClaudeChats}
+              openTasks={openTasks}
+              activeThreadId={activeThreadId}
+              renderOpenTaskIcon={(sess) => renderChatIcon(sess.driver, sess.model, isLight, 'w-[14px] h-[14px]')}
+              onSelectOpenTask={onSelectOpenTask}
+              onReorderOpenTasks={onReorderOpenTasks}
+              onCloseOpenTask={onCloseOpenTask}
               relativeTime={relativeTime}
               onOpenClaudeSession={(chat) => {
                 void (async () => {

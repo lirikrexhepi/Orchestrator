@@ -4,7 +4,7 @@
 - **Do not build `desktop.exe` locally** to deploy or test changes in the running app.
 - The app runs as an **installed release** that auto-updates from GitHub Releases.
 - **Always commit and push changes** without stopping to ask — GitHub can revert if needed.
-- To ship changes: commit and push to GitHub, then bump the version by pushing a semver tag (`vX.Y.Z`) or triggering [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds the Windows NSIS installer and publishes the GitHub Release + `latest.json`.
+- To ship changes: commit and push to GitHub, then bump the version by pushing an annotated semver tag (`git tag -a vX.Y.Z -m "- Fix ...\n- Add ..."`) or running `scripts/release.ps1 X.Y.Z -Notes @(...)` / triggering [`.github/workflows/release.yml`](.github/workflows/release.yml). Release tags require a short bullet list of fixes/changes, which is published into `latest.json` and shown in the in-app Update Ready popover.
 
 ## UI Design Guidelines & Personal Preferences
 - **No unnecessary borders, boxy backgrounds, or colored gradients**:

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"composer/internal/domain"
 	"composer/internal/provider"
@@ -167,27 +168,53 @@ func defaultChoice(choices []domain.OptionChoice) string {
 	return ""
 }
 
+const accountModelsTTL = 10 * time.Minute
+
+type cachedAccountModels struct {
+	Models    []domain.Model `json:"models"`
+	FetchedAt int64          `json:"fetchedAt,omitempty"`
+}
+
 var (
 	accountModelsMu       sync.Mutex
-	accountModelsCache    = make(map[string][]domain.Model)
+	accountModelsCache    = make(map[string]cachedAccountModels)
 	accountModelsFilePath string
 )
 
 // InitAccountModelsCache sets the file path to persist account models across app runs.
+// Supports both the timestamped format and the legacy map[string][]domain.Model format
+// (legacy entries load with FetchedAt=0 so they refresh automatically on next fetch).
 func InitAccountModelsCache(path string) {
 	accountModelsMu.Lock()
 	defer accountModelsMu.Unlock()
 	accountModelsFilePath = path
-	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
-		var stored map[string][]domain.Model
-		if json.Unmarshal(data, &stored) == nil && stored != nil {
-			accountModelsCache = stored
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil || raw == nil {
+		return
+	}
+	loaded := make(map[string]cachedAccountModels, len(raw))
+	for k, v := range raw {
+		var entry cachedAccountModels
+		if json.Unmarshal(v, &entry) == nil && len(entry.Models) > 0 {
+			loaded[k] = entry
+			continue
 		}
+		var legacy []domain.Model
+		if json.Unmarshal(v, &legacy) == nil && len(legacy) > 0 {
+			loaded[k] = cachedAccountModels{Models: legacy, FetchedAt: 0}
+		}
+	}
+	if len(loaded) > 0 {
+		accountModelsCache = loaded
 	}
 }
 
 func saveAccountModelsLocked() {
-	if accountModelsFilePath == "" || len(accountModelsCache) == 0 {
+	if accountModelsFilePath == "" {
 		return
 	}
 	if data, err := json.Marshal(accountModelsCache); err == nil {
@@ -196,22 +223,33 @@ func saveAccountModelsLocked() {
 }
 
 // FetchAccountModels retrieves available models for a specific Antigravity account,
-// using the appropriate environment or keyring profile.
+// refreshing from the CLI when the cached entry is missing or older than accountModelsTTL.
 func FetchAccountModels(ctx context.Context, binary string, accountID, authMode, apiKey string) ([]domain.Model, error) {
+	return FetchAccountModelsFresh(ctx, binary, accountID, authMode, apiKey, false)
+}
+
+// FetchAccountModelsFresh retrieves available models for a specific Antigravity account.
+// When force is true, any cached entry is bypassed and `agy models` is queried live.
+func FetchAccountModelsFresh(ctx context.Context, binary string, accountID, authMode, apiKey string, force bool) ([]domain.Model, error) {
 	normID := domain.NormalizeAccount(accountID)
 	cacheKey := normID
 	if authMode == "api_key" {
 		cacheKey = "api:" + normID
 	}
 
+	var stale []domain.Model
 	accountModelsMu.Lock()
-	if cached, ok := accountModelsCache[cacheKey]; ok && len(cached) > 0 {
-		accountModelsMu.Unlock()
-		return cached, nil
+	if cached, ok := accountModelsCache[cacheKey]; ok && len(cached.Models) > 0 {
+		stale = cached.Models
+		if !force && cached.FetchedAt > 0 && time.Since(time.UnixMilli(cached.FetchedAt)) < accountModelsTTL {
+			accountModelsMu.Unlock()
+			return cached.Models, nil
+		}
 	}
 	accountModelsMu.Unlock()
 
 	var stdout string
+	var runErr error
 	if authMode == "api_key" && apiKey != "" {
 		env := provider.Without(
 			shell.BaseEnvironment(),
@@ -222,9 +260,7 @@ func FetchAccountModels(ctx context.Context, binary string, accountID, authMode,
 		)
 		env["GEMINI_API_KEY"] = apiKey
 		res := provider.RunCommand(ctx, binary, []string{"models"}, env, "")
-		if res.Err != nil {
-			return nil, res.Err
-		}
+		runErr = res.Err
 		stdout = res.Stdout
 	} else {
 		// Keyring mode
@@ -233,6 +269,9 @@ func FetchAccountModels(ctx context.Context, binary string, accountID, authMode,
 
 		// Activate requested profile (backing up default if needed), then restore default after running.
 		if err := DefaultKeyringStore.ActivateProfile(normID); err != nil && normID != domain.DefaultAccountID {
+			if len(stale) > 0 {
+				return stale, nil
+			}
 			return nil, err
 		}
 		if normID != domain.DefaultAccountID {
@@ -240,18 +279,30 @@ func FetchAccountModels(ctx context.Context, binary string, accountID, authMode,
 		}
 
 		res := provider.RunCommand(ctx, binary, []string{"models"}, nil, "")
-		if res.Err != nil {
-			return nil, res.Err
-		}
+		runErr = res.Err
 		stdout = res.Stdout
+	}
+
+	if runErr != nil {
+		if len(stale) > 0 {
+			return stale, nil
+		}
+		return nil, runErr
 	}
 
 	models := ParseModels(stdout)
 	if len(models) > 0 {
 		accountModelsMu.Lock()
-		accountModelsCache[cacheKey] = models
+		accountModelsCache[cacheKey] = cachedAccountModels{
+			Models:    models,
+			FetchedAt: time.Now().UnixMilli(),
+		}
 		saveAccountModelsLocked()
 		accountModelsMu.Unlock()
+		return models, nil
+	}
+	if len(stale) > 0 {
+		return stale, nil
 	}
 	return models, nil
 }
@@ -261,7 +312,7 @@ func InvalidateAccountModels(accountID string) {
 	accountModelsMu.Lock()
 	defer accountModelsMu.Unlock()
 	if accountID == "" {
-		accountModelsCache = make(map[string][]domain.Model)
+		accountModelsCache = make(map[string]cachedAccountModels)
 	} else {
 		delete(accountModelsCache, domain.NormalizeAccount(accountID))
 		delete(accountModelsCache, "api:"+domain.NormalizeAccount(accountID))

@@ -68,6 +68,9 @@ func (a *App) RefreshUsage() session.UsageReport {
 }
 
 func (a *App) ListProviders(force bool) []domain.ProviderSnapshot {
+	if force {
+		antigravity.InvalidateAccountModels("")
+	}
 	return a.registry.Probe(a.ctx, force)
 }
 

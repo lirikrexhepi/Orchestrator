@@ -202,6 +202,9 @@ func (m *Manager) record(event domain.RuntimeEvent) {
 	if published.ThreadID != "" {
 		if entry, ok := m.threads[published.ThreadID]; ok {
 			entry.lastAt = published.At
+			if published.Kind == domain.EventSessionStarted && published.Text != "" {
+				entry.session.ProviderSessionID = published.Text
+			}
 		}
 		transcript := m.history[published.ThreadID]
 		// Consecutive deltas of the same item are stored as one event, so the
@@ -353,6 +356,9 @@ func (m *Manager) Start(ctx context.Context, kind domain.DriverKind, in domain.S
 	session.Account = account
 
 	m.mu.Lock()
+	if existing, ok := m.threads[in.ThreadID]; ok && session.ProviderSessionID == "" && existing.session.ProviderSessionID != "" {
+		session.ProviderSessionID = existing.session.ProviderSessionID
+	}
 	m.threads[in.ThreadID] = &record{session: session, adapter: adapter, input: in, lastAt: time.Now().UnixMilli()}
 	recorder := m.recorder
 	m.mu.Unlock()
@@ -441,6 +447,18 @@ func (m *Manager) revive(ctx context.Context, threadID string, entry *record) er
 	in.MCP = nil
 	if resume := entry.session.ProviderSessionID; resume != "" {
 		in.Resume = resume
+	} else if in.Resume == "" {
+		// Fall back to the latest session.started event in memory so a crashed
+		// or rate-limited CLI still resumes natively instead of starting fresh
+		// with a handoff prompt.
+		hist := m.History(threadID)
+		for i := len(hist) - 1; i >= 0; i-- {
+			ev := hist[i]
+			if ev.Kind == domain.EventSessionStarted && ev.Text != "" && (ev.Driver == "" || ev.Driver == entry.session.Driver) {
+				in.Resume = ev.Text
+				break
+			}
+		}
 	}
 	if in.Model == "" {
 		in.Model = entry.session.Model

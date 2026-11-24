@@ -14,6 +14,10 @@ on:
         description: "Release version without leading v (e.g. 1.0.0)"
         required: true
         type: string
+      notes:
+        description: "Short bullet list of fixes/changes shown in the in-app update popover"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -25,8 +29,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Resolve version
+      - name: Resolve version & validate release notes
         id: meta
         shell: pwsh
         run: |
@@ -34,18 +40,40 @@ jobs:
             $raw = "${{ inputs.version }}".Trim()
             $ver = $raw.TrimStart("v", "V")
             $tag = "v$ver"
+            $notesRaw = @"
+          ${{ inputs.notes }}
+          "@.Trim()
           } else {
             $tag = "${{ github.ref_name }}".Trim()
             $ver = $tag.TrimStart("v", "V")
+            $notesRaw = (git tag -l --format='%(contents)' $tag | Out-String).Trim()
           }
           if ($ver -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
             throw "Invalid semver version: $ver"
           }
+          $meaningfulLines = @(
+            $notesRaw -split "`r?`n" |
+              ForEach-Object { $_.Trim() } |
+              Where-Object {
+                $_ -ne "" -and
+                $_ -notmatch '^(Release|Orchestrator)\s+v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$' -and
+                $_ -notmatch '^v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$'
+              }
+          )
+          if ($meaningfulLines.Count -eq 0) {
+            throw "Release $tag is missing changelog notes. Push an annotated tag with a short list of fixes (e.g. git tag -a $tag -m `"- Fix ...`") or use scripts/release.ps1 -Notes."
+          }
+          $notesClean = ($meaningfulLines -join "`n").Trim()
           $numericVer = ($ver -split '-')[0]
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "numeric_version=$numericVer" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $eof = "RELEASE_NOTES_EOF"
+          "notes<<$eof" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $notesClean | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $eof | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Releasing Orchestrator $tag (numeric=$numericVer)"
+          Write-Host "Release notes:`n$notesClean"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -128,10 +156,14 @@ jobs:
           $hash = (Get-FileHash "dist-release/$versionedName" -Algorithm SHA256).Hash.ToLowerInvariant()
           $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
+          $releaseNotes = $env:RELEASE_NOTES
+          if (-not $releaseNotes -or -not $releaseNotes.Trim()) {
+            $releaseNotes = "Orchestrator $tag"
+          }
           $manifest = @{
             version   = $ver
             pubDate   = $pubDate
-            notes     = "Orchestrator $tag"
+            notes     = $releaseNotes.Trim()
             platforms = @{
               "windows-amd64" = @{
                 url    = "https://github.com/$repo/releases/download/$tag/$versionedName"
@@ -143,6 +175,8 @@ jobs:
           $manifestPath = Join-Path (Resolve-Path "dist-release").Path "latest.json"
           [System.IO.File]::WriteAllText($manifestPath, $manifestJson, [System.Text.UTF8Encoding]::new($false))
           Get-Content $manifestPath
+        env:
+          RELEASE_NOTES: ${{ steps.meta.outputs.notes }}
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -150,6 +184,7 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: Orchestrator ${{ steps.meta.outputs.tag }}
+          body: ${{ steps.meta.outputs.notes }}
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(steps.meta.outputs.version, '-') }}

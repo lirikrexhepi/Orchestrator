@@ -40,7 +40,7 @@ const (
 	// stream from becoming unloadable. It applies to streamed deltas only:
 	// user messages, tool calls and turn boundaries are always written, and
 	// deltas are already merged per item by the recorder.
-	maxEventsPerThread = 20000
+	maxEventsPerThread = 100000
 )
 
 // Meta is everything about a workspace except the transcripts themselves.
@@ -656,7 +656,27 @@ func (s *Store) load(workspaceID string, maxBytes int) (Session, error) {
 		}
 	}
 
-	for contID, rootID := range contMap {
+	contIDs := make([]string, 0, len(contMap))
+	for contID := range contMap {
+		contIDs = append(contIDs, contID)
+	}
+	sort.Slice(contIDs, func(i, j int) bool {
+		ei, ej := loaded.Transcripts[contIDs[i]], loaded.Transcripts[contIDs[j]]
+		var ti, tj int64
+		if len(ei) > 0 {
+			ti = ei[0].At
+		}
+		if len(ej) > 0 {
+			tj = ej[0].At
+		}
+		if ti != tj {
+			return ti < tj
+		}
+		return contIDs[i] < contIDs[j]
+	})
+
+	for _, contID := range contIDs {
+		rootID := contMap[contID]
 		contEvents, hasContEvents := loaded.Transcripts[contID]
 		if hasContEvents {
 			rootEvents := loaded.Transcripts[rootID]

@@ -494,6 +494,10 @@ func parseSummaryResponse(raw []byte, requestedAt time.Time) ([]parsedBucket, er
 func bucketFamily(bucketID, groupDisplayName string) string {
 	trimmed := strings.TrimSpace(groupDisplayName)
 	switch {
+	case strings.HasPrefix(bucketID, "gemini-neon-"):
+		return firstNonEmpty(trimmed, "Gemini Neon")
+	case strings.HasPrefix(bucketID, "gemini-hydrogen-"):
+		return firstNonEmpty(trimmed, "Gemini Hydrogen")
 	case strings.HasPrefix(bucketID, "gemini-argon-"):
 		return firstNonEmpty(trimmed, "Gemini Argon")
 	case strings.HasPrefix(bucketID, "gemini-carbon-"):

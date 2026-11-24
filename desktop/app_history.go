@@ -153,6 +153,21 @@ func (a *App) ResumeHistoryThread(workspaceID, threadID string) (session.ResumeR
 			}
 		}
 		resumeID := loaded.Meta.Resume[task.ThreadID]
+		if resumeID == "" {
+			// Recover resume ID from the transcript's latest session.started event
+			// when meta.json missed it, avoiding an unnecessary fresh session + handoff.
+			events := loaded.Transcripts[task.ThreadID]
+			for i := len(events) - 1; i >= 0; i-- {
+				ev := events[i]
+				if ev.Kind == domain.EventSessionStarted && ev.Text != "" && (ev.Driver == "" || ev.Driver == task.Driver) {
+					resumeID = ev.Text
+					if a.recorder != nil {
+						a.recorder.NoteProviderSession(task.ThreadID, resumeID)
+					}
+					break
+				}
+			}
+		}
 		logger.Infof("App", "ResumeHistoryThread: thread=%s cwd=%q fellBack=%v hasResumeID=%v", task.ThreadID, cwd, fellBack, resumeID != "")
 		fork := false
 		if loaded.Meta.Workspace.ImportedFrom == "claude-code" {

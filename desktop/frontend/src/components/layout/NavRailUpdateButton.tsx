@@ -23,6 +23,24 @@ export const NavRailUpdateButton: React.FC<NavRailUpdateButtonProps> = ({
   const progress = appUpdate?.progress;
   const error = appUpdate?.error || (progress?.stage === 'error' ? progress.error : null);
   const version = status?.latestVersion || fallbackVersion || '';
+  const releaseBullets = React.useMemo(() => {
+    const raw = status?.releaseNotes?.trim();
+    if (!raw) return [];
+    const lines = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => {
+        if (!line) return false;
+        if (/^(release|orchestrator)\s+v?\d+\.\d+\.\d+/i.test(line)) return false;
+        if (/^v?\d+\.\d+\.\d+(-[0-9a-z.-]+)?$/i.test(line)) return false;
+        if (/^#{1,3}\s+what'?s changed/i.test(line)) return false;
+        if (/^\*\*full changelog\*\*/i.test(line)) return false;
+        return true;
+      })
+      .map((line) => line.replace(/^[-*•]\s+/, '').trim())
+      .filter(Boolean);
+    return lines.slice(0, 6);
+  }, [status?.releaseNotes]);
 
   // Close pinned card when clicking outside while not actively installing.
   useEffect(() => {
@@ -166,7 +184,9 @@ export const NavRailUpdateButton: React.FC<NavRailUpdateButtonProps> = ({
           ref={cardRef}
           role="dialog"
           aria-label="Application Update"
-          className={`absolute left-[38px] bottom-0 z-50 w-[224px] rounded-xl p-3 shadow-2xl backdrop-blur-xl border select-none transition-all duration-150 ${
+          className={`absolute left-[38px] bottom-0 z-50 ${
+            releaseBullets.length > 0 ? 'w-[258px]' : 'w-[224px]'
+          } rounded-xl p-3 shadow-2xl backdrop-blur-xl border select-none transition-all duration-150 ${
             isLight
               ? 'bg-white/95 border-black/10 text-black shadow-black/15'
               : 'bg-[#18181b]/95 border-white/10 text-white shadow-black/60'
@@ -254,13 +274,33 @@ export const NavRailUpdateButton: React.FC<NavRailUpdateButtonProps> = ({
               </div>
             ) : (
               <div className="space-y-2.5">
-                <div
-                  className={`text-[11px] leading-snug ${
-                    isLight ? 'text-black/60' : 'text-white/60'
-                  }`}
-                >
-                  A new release is available with performance and feature improvements.
-                </div>
+                {releaseBullets.length > 0 ? (
+                  <ul className="space-y-1.5 max-h-[140px] overflow-y-auto pr-0.5">
+                    {releaseBullets.map((item, idx) => (
+                      <li
+                        key={idx}
+                        className={`flex items-start gap-2 text-[11px] leading-snug ${
+                          isLight ? 'text-black/70' : 'text-white/70'
+                        }`}
+                      >
+                        <span
+                          className={`mt-[5px] w-1 h-1 rounded-full shrink-0 ${
+                            isLight ? 'bg-black/35' : 'bg-white/35'
+                          }`}
+                        />
+                        <span className="min-w-0 break-words">{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div
+                    className={`text-[11px] leading-snug ${
+                      isLight ? 'text-black/60' : 'text-white/60'
+                    }`}
+                  >
+                    A new release is available with performance and feature improvements.
+                  </div>
+                )}
 
                 <button
                   type="button"

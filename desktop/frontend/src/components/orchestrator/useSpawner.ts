@@ -95,6 +95,8 @@ export interface Spawner {
   deleteTurn: (threadId: string, turnId: string) => Promise<void>;
   moveChat: (payload: ChatDragPayload, project: { name: string; path: string }) => Promise<void>;
   renameChat: (threadId: string, title: string) => Promise<void>;
+  reorderTasks: (orderedThreadIds: string[]) => void;
+  moveTask: (threadId: string, toIndex: number) => void;
 }
 
 export interface UseSpawnerOptions {
@@ -134,14 +136,19 @@ export function normalizeSessionTasks(
   const taskMap = new Map<string, any>();
   const order: string[] = [];
 
-  // Merge any orphaned continuation transcript files into their root thread
-  for (const tKey of Object.keys(transcripts || {})) {
-    if (tKey.includes('-cont-')) {
-      const rootKey = tKey.split('-cont-')[0];
-      const contEvents = transcripts[tKey] || [];
-      if (contEvents.length > 0) {
-        mergedTranscripts[rootKey] = [...(mergedTranscripts[rootKey] || []), ...contEvents];
-      }
+  // Merge any orphaned continuation transcript files into their root thread in chronological order
+  const contKeys = Object.keys(transcripts || {})
+    .filter((k) => k.includes('-cont-'))
+    .sort((a, b) => {
+      const ta = transcripts[a]?.[0]?.at ?? 0;
+      const tb = transcripts[b]?.[0]?.at ?? 0;
+      return ta !== tb ? ta - tb : a.localeCompare(b);
+    });
+  for (const tKey of contKeys) {
+    const rootKey = tKey.split('-cont-')[0];
+    const contEvents = transcripts[tKey] || [];
+    if (contEvents.length > 0) {
+      mergedTranscripts[rootKey] = [...(mergedTranscripts[rootKey] || []), ...contEvents];
     }
   }
 
@@ -1260,6 +1267,42 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
     }
   }, []);
 
+  const reorderTasks = useCallback((orderedThreadIds: string[]) => {
+    setTasks((previous) => {
+      if (previous.length < 2) return previous;
+      const byId = new Map(previous.map((t) => [t.threadId, t]));
+      const next: SpawnedTask[] = [];
+      const seen = new Set<string>();
+      for (const id of orderedThreadIds) {
+        const task = byId.get(id);
+        if (task && !seen.has(id)) {
+          next.push(task);
+          seen.add(id);
+        }
+      }
+      for (const task of previous) {
+        if (!seen.has(task.threadId)) {
+          next.push(task);
+        }
+      }
+      const unchanged = next.length === previous.length && next.every((t, i) => t.threadId === previous[i].threadId);
+      return unchanged ? previous : next;
+    });
+  }, []);
+
+  const moveTask = useCallback((threadId: string, toIndex: number) => {
+    setTasks((previous) => {
+      const fromIndex = previous.findIndex((t) => t.threadId === threadId);
+      if (fromIndex < 0) return previous;
+      const clamped = Math.max(0, Math.min(previous.length - 1, toIndex));
+      if (fromIndex === clamped) return previous;
+      const next = [...previous];
+      const [item] = next.splice(fromIndex, 1);
+      next.splice(clamped, 0, item);
+      return next;
+    });
+  }, []);
+
   const clear = useCallback(() => {
     for (const id of threads.current) {
       StopSession(id).catch(() => {});
@@ -1347,11 +1390,14 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
       deleteTurn,
       moveChat,
       renameChat,
+      reorderTasks,
+      moveTask,
     }),
     [
       tasks, backgroundTasks, allActiveTasks, error, workspaceId, canUseWorktree,
       adoptSpawned, send, sendWithModel, interrupt, close,
       terminate, spawnAgent, openDraft, openHistorySession, loadEarlier, clear, deleteTurn, moveChat, renameChat,
+      reorderTasks, moveTask,
     ],
   );
 }

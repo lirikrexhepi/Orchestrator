@@ -255,6 +255,10 @@ func (r *Recorder) Record(threadID string, event domain.RuntimeEvent) {
 	r.flushStream(threadID)
 	_ = r.store.Append(workspaceID, threadID, event)
 
+	if event.Kind == domain.EventSessionStarted && event.Text != "" {
+		r.NoteProviderSession(threadID, event.Text)
+	}
+
 	// A finished turn is a natural durability point, and cheap: the buffer is
 	// usually near-empty by then. Turn starts and session starts are flushed
 	// too so a crash mid-turn loses only streamed tokens, never the prompt

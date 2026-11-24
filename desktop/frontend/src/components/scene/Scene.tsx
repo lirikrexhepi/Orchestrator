@@ -420,6 +420,24 @@ export const Scene: React.FC<SceneProps> = () => {
         return;
       }
 
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (activeView === 'chat' && activeTask && activeCardIndex < activeTasks.length - 1) {
+          spawner.moveTask(activeTask.threadId, activeCardIndex + 1);
+          setActiveCardIndex((prev) => Math.min(activeTasks.length - 1, prev + 1));
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'ArrowLeft') {
+        e.preventDefault();
+        if (activeView === 'chat' && activeTask && activeCardIndex > 0) {
+          spawner.moveTask(activeTask.threadId, activeCardIndex - 1);
+          setActiveCardIndex((prev) => Math.max(0, prev - 1));
+        }
+        return;
+      }
+
       if ((e.ctrlKey || e.metaKey) && e.key === 'ArrowRight') {
         e.preventDefault();
         if (activeView === 'home' && activeTasks.length > 0) {
@@ -456,7 +474,7 @@ export const Scene: React.FC<SceneProps> = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTasks.length, activeCardIndex, activeView]);
+  }, [activeTasks.length, activeCardIndex, activeView, activeTask, spawner.moveTask]);
 
   // Account label helper
   const providers = useOrchestratorStore((state) => state.providers);
@@ -688,6 +706,26 @@ export const Scene: React.FC<SceneProps> = () => {
             usageReport={usage.report}
             usageError={usage.error}
             activeTasks={spawner.allActiveTasks}
+            openTasks={activeTasks}
+            activeThreadId={activeView === 'chat' ? activeTask?.threadId : undefined}
+            onSelectOpenTask={(threadId) => {
+              const idx = activeTasks.findIndex((t) => t.threadId === threadId);
+              if (idx >= 0) {
+                setDirection(idx >= activeCardIndex ? 1 : -1);
+                setActiveCardIndex(idx);
+                setActiveView('chat');
+                setCardMode('chat');
+              }
+            }}
+            onReorderOpenTasks={(orderedIds) => {
+              const curId = activeTask?.threadId;
+              spawner.reorderTasks(orderedIds);
+              if (curId) {
+                const nextIdx = orderedIds.indexOf(curId);
+                if (nextIdx >= 0) setActiveCardIndex(nextIdx);
+              }
+            }}
+            onCloseOpenTask={handleCloseTask}
             notification={islandNotification}
             onDismissNotification={() => {
               setIslandNotification(null);

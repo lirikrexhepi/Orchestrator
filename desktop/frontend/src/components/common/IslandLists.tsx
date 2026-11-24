@@ -340,6 +340,120 @@ export function shortenPath(path: string): string {
   return trimmed.length > 34 ? `…${trimmed.slice(-33)}` : trimmed;
 }
 
+export interface OpenSessionItem {
+  threadId: string;
+  title: string;
+  model?: string;
+  driver?: string;
+  isBusy?: boolean;
+  projectName?: string;
+}
+
+const OpenSessionRow = React.memo(function OpenSessionRow({
+  session,
+  tone,
+  isActive,
+  canReorder,
+  icon,
+  onSelect,
+  onClose,
+}: {
+  session: OpenSessionItem;
+  tone: IslandTone;
+  isActive: boolean;
+  canReorder: boolean;
+  icon: React.ReactNode;
+  onSelect: () => void;
+  onClose?: () => void;
+}) {
+  const controls = useDragControls();
+  const [dragging, setDragging] = useState(false);
+
+  return (
+    <Reorder.Item
+      value={session.threadId}
+      dragListener={false}
+      dragControls={controls}
+      onDragStart={() => setDragging(true)}
+      onDragEnd={() => setDragging(false)}
+      transition={{ layout: { type: 'spring', stiffness: 540, damping: 38 } }}
+      style={{ zIndex: dragging ? 20 : 1, position: 'relative' }}
+      className={`group flex items-center h-[36px] rounded-[11px] transition-colors duration-150 ${
+        dragging
+          ? tone.isLight
+            ? 'bg-black/[0.08] shadow-md'
+            : 'bg-white/[0.11] shadow-lg'
+          : isActive
+            ? tone.active
+            : tone.hover
+      }`}
+    >
+      {canReorder ? (
+        <span
+          title="Drag to reorder"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            controls.start(event);
+          }}
+          className={`w-[22px] h-full flex items-center justify-center shrink-0 cursor-grab active:cursor-grabbing ${tone.faint} opacity-40 group-hover:opacity-100 transition-opacity touch-none`}
+        >
+          <GripVertical size={12} strokeWidth={2} />
+        </span>
+      ) : (
+        <span className="w-[10px] shrink-0" />
+      )}
+      <button
+        type="button"
+        onClick={onSelect}
+        className="flex-1 min-w-0 h-full flex items-center gap-2 text-left cursor-pointer"
+      >
+        <span className="w-[16px] flex items-center justify-center shrink-0">{icon}</span>
+        <span className="flex items-baseline gap-1.5 min-w-0 flex-1">
+          <span
+            className={`text-[12px] tracking-tight truncate ${
+              isActive
+                ? tone.isLight
+                  ? 'text-black font-medium'
+                  : 'text-white font-medium'
+                : tone.isLight
+                  ? 'text-black/60 font-normal'
+                  : 'text-white/60 font-normal'
+            }`}
+          >
+            {session.title || 'Untitled session'}
+          </span>
+          {session.projectName && (
+            <span className={`text-[10px] truncate shrink-0 max-w-[90px] ${tone.faint}`}>
+              {session.projectName}
+            </span>
+          )}
+        </span>
+        {session.isBusy && (
+          <span
+            title="Working"
+            className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${
+              tone.isLight ? 'bg-black/60' : 'bg-white/75'
+            }`}
+          />
+        )}
+      </button>
+      {onClose && (
+        <button
+          type="button"
+          title="Close session"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+          className={`w-[24px] h-[24px] mr-1 rounded-full flex items-center justify-center ${tone.sub} ${tone.hover} opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all duration-150 cursor-pointer shrink-0`}
+        >
+          <X size={12} strokeWidth={2} />
+        </button>
+      )}
+    </Reorder.Item>
+  );
+});
+
 export function ProjectsView({
   tone,
   projects,
@@ -347,6 +461,12 @@ export function ProjectsView({
   claudeCount,
   recentClaude = [],
   recentChats = [],
+  openTasks = [],
+  activeThreadId,
+  renderOpenTaskIcon,
+  onSelectOpenTask,
+  onReorderOpenTasks,
+  onCloseOpenTask,
   runningThreadIds,
   relativeTime,
   renderIcon,
@@ -365,6 +485,12 @@ export function ProjectsView({
   claudeCount: number;
   recentClaude?: claudeimport.ExternalSession[];
   recentChats?: ChatHistoryItem[];
+  openTasks?: OpenSessionItem[];
+  activeThreadId?: string;
+  renderOpenTaskIcon?: (session: OpenSessionItem) => React.ReactNode;
+  onSelectOpenTask?: (threadId: string) => void;
+  onReorderOpenTasks?: (orderedThreadIds: string[]) => void;
+  onCloseOpenTask?: (threadId: string) => void;
   runningThreadIds?: Set<string>;
   relativeTime?: (timestamp: number) => string;
   renderIcon?: (chat: ChatHistoryItem) => React.ReactNode;
@@ -387,6 +513,9 @@ export function ProjectsView({
   }, [list]);
 
   const byId = useMemo(() => new Map(list.map((p) => [p.id, p])), [list]);
+
+  const openOrder = useMemo(() => openTasks.map((t) => t.threadId), [openTasks]);
+  const openById = useMemo(() => new Map(openTasks.map((t) => [t.threadId, t])), [openTasks]);
 
   const commit = (id: string) => {
     const to = orderRef.current.indexOf(id);
@@ -419,6 +548,54 @@ export function ProjectsView({
         }
       />
       <ScrollArea maxHeight={360} className="-mr-1 pr-1">
+        {openTasks.length > 0 && (
+          <div className="flex flex-col mb-1">
+            <div className="flex items-center justify-between px-2 pt-0.5 pb-1">
+              <span className={`text-[10.5px] font-medium tracking-tight ${tone.faint}`}>
+                Open sessions
+              </span>
+              {openTasks.length >= 2 && (
+                <span className={`text-[10px] tracking-tight ${tone.faint}`}>
+                  Drag or Ctrl+Shift+←/→
+                </span>
+              )}
+            </div>
+            <Reorder.Group
+              axis="y"
+              values={openOrder}
+              onReorder={(next) => onReorderOpenTasks?.(next)}
+              className="flex flex-col gap-0.5"
+              layoutScroll
+            >
+              {openOrder.map((threadId) => {
+                const sess = openById.get(threadId);
+                if (!sess) return null;
+                return (
+                  <OpenSessionRow
+                    key={threadId}
+                    session={sess}
+                    tone={tone}
+                    isActive={threadId === activeThreadId}
+                    canReorder={openTasks.length >= 2}
+                    icon={
+                      renderOpenTaskIcon ? (
+                        renderOpenTaskIcon(sess)
+                      ) : (
+                        <MaterialIcon name="chat" className={`text-[14px] ${tone.sub}`} />
+                      )
+                    }
+                    onSelect={() => {
+                      onSelectOpenTask?.(threadId);
+                      onClose();
+                    }}
+                    onClose={onCloseOpenTask ? () => onCloseOpenTask(threadId) : undefined}
+                  />
+                );
+              })}
+            </Reorder.Group>
+            <div className={`h-px mx-2 my-1.5 ${tone.divider}`} />
+          </div>
+        )}
         {list.length === 0 ? (
           <EmptyState tone={tone}>No projects yet</EmptyState>
         ) : (

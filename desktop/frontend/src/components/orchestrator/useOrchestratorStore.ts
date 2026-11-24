@@ -404,6 +404,7 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       set({
         providers,
         models,
+        ...(force ? { accountModels: {} } : {}),
         preferredModels,
         preferredAccountModels,
         preferredAccountEfforts,
@@ -413,11 +414,11 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
         isLoadingProviders: false,
         providersError: snapshots.length === 0 ? 'No agent CLIs detected' : null,
       });
-      // First load: honour the shown account's pinned default rather than
-      // the provider-wide (Default account) one.
+      // First load or forced refresh: honour the shown account's pinned default
+      // and refresh account-scoped models (e.g. Antigravity accounts).
       const initialProvider = get().selectedProviderId;
-      if (!keep && initialProvider) {
-        void get().applyAccountDefault(initialProvider, get().shownAccount(initialProvider));
+      if (initialProvider && (!keep || force)) {
+        void get().applyAccountDefault(initialProvider, get().shownAccount(initialProvider), keep ? previous : undefined);
       }
     } catch (cause) {
       set({
