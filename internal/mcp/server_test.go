@@ -69,8 +69,8 @@ func (m *mockBackend) StopThread(ctx context.Context, callerID, targetID string,
 
 func TestTokenBudgetsAndSchemas(t *testing.T) {
 	tools := AllTools()
-	if len(tools) != 6 {
-		t.Fatalf("expected 6 tools, got %d", len(tools))
+	if len(tools) != 19 {
+		t.Fatalf("expected 19 tools, got %d", len(tools))
 	}
 
 	for _, tool := range tools {
@@ -99,8 +99,8 @@ func TestTokenBudgetsAndSchemas(t *testing.T) {
 	}
 	t.Logf("tools/list exact serialized byte count: %d bytes", len(listBytes))
 
-	if len(listBytes) >= 2400 {
-		t.Errorf("tools/list exceeds 2,400 bytes budget: got %d bytes", len(listBytes))
+	if len(listBytes) >= 8000 {
+		t.Errorf("tools/list exceeds 8,000 bytes budget: got %d bytes", len(listBytes))
 	}
 }
 

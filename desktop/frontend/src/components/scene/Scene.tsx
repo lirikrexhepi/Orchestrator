@@ -110,8 +110,8 @@ export const Scene: React.FC<SceneProps> = () => {
   const [activeCardIndex, setActiveCardIndex] = useState(0);
   const [direction, setDirection] = useState(0);
   const [cardMode, setCardMode] = useState<AgentCardMode>('chat');
-  const [isBrowserSplit, setIsBrowserSplit] = useState(false);
-  const [browserSplitRatio, setBrowserSplitRatio] = useState(0.5);
+  const [isBrowserSplit, setIsBrowserSplit] = useState(true);
+  const [browserSplitRatio, setBrowserSplitRatio] = useState(0.38);
   const [browserTarget, setBrowserTarget] = useState<{ url: string; nonce: number } | null>(null);
 
   // Dynamic Island Notifications
@@ -120,6 +120,22 @@ export const Scene: React.FC<SceneProps> = () => {
 
   // Active task object
   const activeTask = activeTasks[activeCardIndex] ?? null;
+  const activeTaskThreadIdRef = useRef<string | undefined>(activeTask?.threadId);
+  activeTaskThreadIdRef.current = activeTask?.threadId;
+
+  // Auto-open split browser pane when an agent opens or interacts with the embedded browser
+  useEffect(() => {
+    const off = EventsOn('browser:agent_tab_opened', (payload: { threadId?: string }) => {
+      const currentTid = activeTaskThreadIdRef.current;
+      if (!payload?.threadId || !currentTid || payload.threadId !== currentTid) return;
+      setIsBrowserSplit(true);
+      setCardMode('browser');
+      setActiveView('chat');
+    });
+    return () => {
+      if (typeof off === 'function') off();
+    };
+  }, []);
   const activeAttachmentScope = activeView === 'chat' && activeTask ? activeTask.threadId : '__home__';
   const attachments = useAttachments(activeAttachmentScope);
 

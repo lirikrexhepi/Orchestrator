@@ -131,35 +131,59 @@ type KeyEvent struct {
 	Modifiers             int    `json:"modifiers"`
 }
 
+// AgentAction represents a live browser interaction performed by an agent,
+// streamed over WebSocket so the UI can render a real-time cursor and ripple overlay.
+type AgentAction struct {
+	Kind      string  `json:"kind"` // "move", "click", "drag_start", "drag_move", "drag_end", "wheel", "type", "key", "navigate", "screenshot"
+	X         float64 `json:"x,omitempty"`
+	Y         float64 `json:"y,omitempty"`
+	ToX       float64 `json:"toX,omitempty"`
+	ToY       float64 `json:"toY,omitempty"`
+	Button    string  `json:"button,omitempty"`
+	Label     string  `json:"label,omitempty"`
+	Timestamp int64   `json:"timestamp"`
+}
+
+// ConsoleEntry records a browser console message, uncaught exception, or failed network request.
+type ConsoleEntry struct {
+	Level     string `json:"level"` // "log", "info", "warn", "error", "exception", "network"
+	Text      string `json:"text"`
+	URL       string `json:"url,omitempty"`
+	Line      int    `json:"line,omitempty"`
+	Timestamp int64  `json:"timestamp"`
+}
+
 type tabEvent struct {
-	isBinary bool
-	binary   []byte
-	state    SessionInfo
-	err      string
+	isBinary    bool
+	binary      []byte
+	state       SessionInfo
+	agentAction *AgentAction
+	err         string
 }
 
 type tab struct {
-	id           string
-	threadID     string
-	targetID     string
-	sessionID    string
-	url          string
-	title        string
+	id             string
+	threadID       string
+	targetID       string
+	sessionID      string
+	url            string
+	title          string
 	favicon        string
 	faviconURL     string
 	cursor         string
 	lastCursorAt   time.Time
 	cursorInFlight bool
-	loading      bool
-	canGoBack    bool
-	canGoForward bool
-	width        int
-	height       int
-	dpr          float64
-	paused       bool
-	lastFrame    []byte
-	subscribers  map[chan tabEvent]struct{}
-	mu           sync.RWMutex
+	loading        bool
+	canGoBack      bool
+	canGoForward   bool
+	width          int
+	height         int
+	dpr            float64
+	paused         bool
+	lastFrame      []byte
+	consoleLogs    []ConsoleEntry
+	subscribers    map[chan tabEvent]struct{}
+	mu             sync.RWMutex
 }
 
 func (t *tab) info() SessionInfo {
@@ -604,8 +628,9 @@ func (m *Manager) Open(ctx context.Context, threadID, initialURL string, width, 
 	}
 	m.tabs[tabID] = t
 
-	// 3. Enable Page and Network domains, focus the target, configure anti-bot stealth and device metrics
+	// 3. Enable Page, Runtime, and Network domains, focus the target, configure anti-bot stealth and device metrics
 	_ = m.cdp.Call(ctx, t.sessionID, "Page.enable", nil, nil)
+	_ = m.cdp.Call(ctx, t.sessionID, "Runtime.enable", nil, nil)
 	_ = m.cdp.Call(ctx, t.sessionID, "Network.enable", nil, nil)
 	_ = m.cdp.Call(ctx, t.sessionID, "Network.setUserAgentOverride", map[string]any{
 		"userAgent":      desktopChromeUserAgent,
@@ -780,6 +805,78 @@ func (m *Manager) handleTabCDPEvent(t *tab, method string, params json.RawMessag
 			go func() {
 				_ = m.Navigate(context.Background(), t.id, ev.URL)
 			}()
+		}
+
+	case "Runtime.consoleAPICalled":
+		var ev struct {
+			Type string `json:"type"`
+			Args []struct {
+				Type        string `json:"type"`
+				Value       any    `json:"value"`
+				Description string `json:"description"`
+			} `json:"args"`
+		}
+		if err := json.Unmarshal(params, &ev); err == nil {
+			parts := make([]string, 0, len(ev.Args))
+			for _, a := range ev.Args {
+				if a.Description != "" {
+					parts = append(parts, a.Description)
+				} else if a.Value != nil {
+					parts = append(parts, fmt.Sprint(a.Value))
+				} else if a.Type != "" {
+					parts = append(parts, a.Type)
+				}
+			}
+			level := ev.Type
+			if level == "warning" {
+				level = "warn"
+			}
+			t.appendConsole(ConsoleEntry{
+				Level:     level,
+				Text:      strings.Join(parts, " "),
+				Timestamp: time.Now().UnixMilli(),
+			})
+		}
+
+	case "Runtime.exceptionThrown":
+		var ev struct {
+			ExceptionDetails struct {
+				Text       string `json:"text"`
+				URL        string `json:"url"`
+				LineNumber int    `json:"lineNumber"`
+				Exception  struct {
+					Description string `json:"description"`
+				} `json:"exception"`
+			} `json:"exceptionDetails"`
+		}
+		if err := json.Unmarshal(params, &ev); err == nil {
+			msg := strings.TrimSpace(ev.ExceptionDetails.Exception.Description)
+			if msg == "" {
+				msg = strings.TrimSpace(ev.ExceptionDetails.Text)
+			}
+			if msg != "" {
+				t.appendConsole(ConsoleEntry{
+					Level:     "exception",
+					Text:      msg,
+					URL:       ev.ExceptionDetails.URL,
+					Line:      ev.ExceptionDetails.LineNumber + 1,
+					Timestamp: time.Now().UnixMilli(),
+				})
+			}
+		}
+
+	case "Network.loadingFailed":
+		var ev struct {
+			ErrorText string `json:"errorText"`
+			Canceled  bool   `json:"canceled"`
+			Type      string `json:"type"`
+		}
+		if err := json.Unmarshal(params, &ev); err == nil && !ev.Canceled && ev.ErrorText != "" {
+			t.appendConsole(ConsoleEntry{
+				Level:     "network",
+				Text:      fmt.Sprintf("[%s] %s", ev.Type, ev.ErrorText),
+				Timestamp: time.Now().UnixMilli(),
+			})
 		}
 	}
 }

@@ -145,6 +145,32 @@ function orchestratorAction(name: string): string | null {
       return 'Messaged thread';
     case 'stop_thread':
       return 'Stopped thread';
+    case 'browser_open':
+      return 'Opened browser';
+    case 'browser_tabs':
+      return 'Listed browser tabs';
+    case 'browser_navigate':
+      return 'Navigated browser';
+    case 'browser_screenshot':
+      return 'Captured screenshot';
+    case 'browser_snapshot':
+      return 'Inspected page';
+    case 'browser_click':
+      return 'Clicked browser';
+    case 'browser_drag':
+      return 'Dragged browser';
+    case 'browser_wheel':
+      return 'Scrolled browser';
+    case 'browser_type':
+      return 'Typed in browser';
+    case 'browser_press':
+      return 'Pressed key';
+    case 'browser_eval':
+      return 'Evaluated JS';
+    case 'browser_console':
+      return 'Read console';
+    case 'browser_resize':
+      return 'Resized browser';
     default:
       return null;
   }

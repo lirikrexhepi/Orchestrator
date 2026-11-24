@@ -326,6 +326,46 @@ export function useSpawner(options?: UseSpawnerOptions): Spawner {
     [retitle],
   );
 
+  useEffect(
+    () =>
+      EventsOn(
+        'browser:agent_screenshot',
+        (payload: {
+          threadId?: string;
+          tabId?: string;
+          url?: string;
+          width?: number;
+          height?: number;
+          dataUrl?: string;
+          at?: number;
+        }) => {
+          if (!payload?.threadId || !payload.dataUrl) return;
+          const block: AgentStreamBlock = {
+            type: 'browser_screenshot',
+            id: `bshot-${payload.at || Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            tabId: payload.tabId,
+            url: payload.url,
+            width: payload.width,
+            height: payload.height,
+            dataUrl: payload.dataUrl,
+            at: payload.at,
+          };
+          const appendShot = (previous: SpawnedTask[]) => {
+            let changed = false;
+            const next = previous.map((task) => {
+              if (task.threadId !== payload.threadId) return task;
+              changed = true;
+              return { ...task, blocks: [...task.blocks, block] };
+            });
+            return changed ? next : previous;
+          };
+          setTasks(appendShot);
+          setBackgroundTasks(appendShot);
+        },
+      ),
+    [],
+  );
+
   const renameChat = useCallback(
     async (threadId: string, title: string) => {
       const clean = title.replace(/\s+/g, ' ').trim();

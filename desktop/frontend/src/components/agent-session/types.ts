@@ -206,6 +206,17 @@ export interface McpAppBlockData {
   driver?: string;
 }
 
+export interface BrowserScreenshotBlockData {
+  type: 'browser_screenshot';
+  id: string;
+  tabId?: string;
+  url?: string;
+  width?: number;
+  height?: number;
+  dataUrl: string;
+  at?: number;
+}
+
 export type AgentStreamBlock =  | UserMessageBlock
   | NoticeBlock
   | AssistantTextBlock
@@ -219,5 +230,6 @@ export type AgentStreamBlock =  | UserMessageBlock
   | QuestionToolBlockData
   | ApprovalBlockData
   | SubagentBlockData
-  | McpAppBlockData;
+  | McpAppBlockData
+  | BrowserScreenshotBlockData;
 

@@ -22,7 +22,7 @@ import { buildFeedSegments, FeedSegment } from './feedTurns';
 import { ChangesCard, WorkedFor, WorkingHeader } from './TurnParts';
 import { PlainSegment, ROW_DOT_Y, TEXT_DOT_Y, TimelineAnimateContext, TimelineNode, TimelineSegment } from './Timeline';
 
-const CARD_TYPES = new Set<AgentStreamBlock['type']>(['text', 'tool_question', 'approval_request', 'tool_plan', 'tool_todo', 'mcp_app']);
+const CARD_TYPES = new Set<AgentStreamBlock['type']>(['text', 'tool_question', 'approval_request', 'tool_plan', 'tool_todo', 'mcp_app', 'browser_screenshot']);
 
 const isTimelineSegment = (segment: FeedSegment) =>
   segment.kind === 'run' ||
@@ -72,6 +72,45 @@ interface FeedBlockProps {
   defaultModel?: string;
   handlers: React.MutableRefObject<Handlers>;
 }
+
+const BrowserScreenshotPreview = React.memo(function BrowserScreenshotPreview({
+  dataUrl,
+  url,
+  width,
+  height,
+}: {
+  dataUrl: string;
+  url?: string;
+  width?: number;
+  height?: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="flex flex-col items-start gap-1 py-0.5 select-none">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        title={expanded ? 'Collapse screenshot' : 'Expand screenshot'}
+        className="group relative overflow-hidden rounded-lg transition-all duration-150 cursor-pointer focus:outline-none"
+      >
+        <img
+          src={dataUrl}
+          alt={url ? `Browser screenshot of ${url}` : 'Browser screenshot'}
+          draggable={false}
+          className={`block rounded-lg object-contain transition-all duration-150 ${
+            expanded ? 'max-w-full max-h-[520px]' : 'max-w-[260px] max-h-[170px] opacity-90 group-hover:opacity-100'
+          }`}
+        />
+      </button>
+      {(url || (width && height)) && (
+        <span className="text-[11px] font-mono text-white/35 truncate max-w-full">
+          {url || ''}
+          {width && height ? `${url ? ' · ' : ''}${width}×${height}` : ''}
+        </span>
+      )}
+    </div>
+  );
+});
 
 /**
  * One feed entry. Memoised on the block object itself, so a streaming token
@@ -272,6 +311,16 @@ const FeedBlock = React.memo(function FeedBlock({
           toolName={block.toolName}
           rawOutput={block.rawOutput}
           driver={block.driver || defaultDriver}
+        />
+      );
+
+    case 'browser_screenshot':
+      return (
+        <BrowserScreenshotPreview
+          dataUrl={block.dataUrl}
+          url={block.url}
+          width={block.width}
+          height={block.height}
         />
       );
 

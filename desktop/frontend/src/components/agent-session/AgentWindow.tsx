@@ -202,8 +202,8 @@ const AgentWindowImpl: React.FC<AgentWindowProps> = ({
   }, []);
   const [internalMode, setInternalMode] = useState<AgentCardMode>('chat');
   const activeMode = cardMode !== undefined ? cardMode : internalMode;
-  const [internalSplitBrowser, setInternalSplitBrowser] = useState(false);
-  const [internalSplitRatio, setInternalSplitRatio] = useState(0.5);
+  const [internalSplitBrowser, setInternalSplitBrowser] = useState(true);
+  const [internalSplitRatio, setInternalSplitRatio] = useState(0.38);
   const splitBrowser = isBrowserSplit !== undefined ? isBrowserSplit : internalSplitBrowser;
   const splitRatio = browserSplitRatio !== undefined ? browserSplitRatio : internalSplitRatio;
   const setSplitBrowser = useCallback(

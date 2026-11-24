@@ -15,6 +15,7 @@ export interface CdpBrowserAction {
 export interface CdpBrowserSurfaceProps {
   threadId?: string;
   tabId?: string;
+  existingSessionId?: string;
   initialUrl: string;
   paused?: boolean;
   isFocused?: boolean;
@@ -33,6 +34,30 @@ export interface CdpBrowserSurfaceProps {
   className?: string;
 }
 
+interface AgentActionPayload {
+  kind: 'move' | 'click' | 'drag_start' | 'drag_move' | 'drag_end' | 'wheel' | 'type' | 'key' | 'navigate' | 'screenshot';
+  x?: number;
+  y?: number;
+  toX?: number;
+  toY?: number;
+  button?: string;
+  label?: string;
+  timestamp?: number;
+}
+
+interface AgentCursorOverlayState {
+  visible: boolean;
+  x: number;
+  y: number;
+  dragFromX?: number;
+  dragFromY?: number;
+  dragging: boolean;
+  label: string;
+  rippleKey: number;
+  rippleX: number;
+  rippleY: number;
+}
+
 const PREVENT_KEYS = new Set([
   ' ',
   'Spacebar',
@@ -49,6 +74,7 @@ const PREVENT_KEYS = new Set([
 export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
   threadId = '',
   tabId = 'default',
+  existingSessionId,
   initialUrl,
   paused = false,
   isFocused = true,
@@ -127,6 +153,45 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cursorStyle, setCursorStyle] = useState<string>('default');
   const [reconnectNonce, setReconnectNonce] = useState<number>(0);
+  const [agentCursor, setAgentCursor] = useState<AgentCursorOverlayState | null>(null);
+  const agentFadeTimerRef = useRef<number | null>(null);
+  const lastAgentActionAtRef = useRef<number>(0);
+  const dragOriginRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Convert emulated CDP viewport coordinates into CSS pixel coordinates over the rendered canvas
+  const viewportToDisplay = useCallback((vx: number, vy: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { px: 0, py: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const emulatedWidth = tabStateRef.current.width || canvas.width || 1280;
+    const emulatedHeight = tabStateRef.current.height || canvas.height || 800;
+
+    const boxW = rect.width || 1;
+    const boxH = rect.height || 1;
+    const srcW = canvas.width || emulatedWidth;
+    const srcH = canvas.height || emulatedHeight;
+    const srcAspect = srcW / (srcH || 1);
+    const boxAspect = boxW / boxH;
+
+    let drawW = boxW;
+    let drawH = boxH;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (boxAspect > srcAspect) {
+      drawH = boxH;
+      drawW = boxH * srcAspect;
+      offsetX = (boxW - drawW) / 2;
+    } else {
+      drawW = boxW;
+      drawH = boxW / srcAspect;
+      offsetY = (boxH - drawH) / 2;
+    }
+
+    return {
+      px: offsetX + (vx / (emulatedWidth || 1)) * drawW,
+      py: offsetY + (vy / (emulatedHeight || 1)) * drawH,
+    };
+  }, []);
 
   const sessionThreadKey =
     tabId && tabId !== 'default'
@@ -272,18 +337,27 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
         const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2.5));
         const startUrl = initialUrlRef.current || 'about:blank';
 
-        const [endpoint, session] = await Promise.all([
-          BrowserEndpoint(),
-          BrowserOpen(sessionThreadKey, startUrl, w, h),
-        ]);
+        const endpoint = await BrowserEndpoint();
+        let session: browser.SessionInfo;
+        if (existingSessionId) {
+          session = browser.SessionInfo.createFrom({
+            id: existingSessionId,
+            threadId: sessionThreadKey,
+            url: startUrl,
+            width: w,
+            height: h,
+          });
+        } else {
+          session = await BrowserOpen(sessionThreadKey, startUrl, w, h);
+        }
 
         if (unmounted) {
-          if (session?.id) void BrowserClose(session.id);
+          if (!existingSessionId && session?.id) void BrowserClose(session.id);
           return;
         }
 
         const activeUrl = session.url && session.url !== 'about:blank' ? session.url : startUrl;
-        createdSessionId = session.id;
+        createdSessionId = existingSessionId ? null : session.id;
         sessionRef.current = session;
         tabStateRef.current = {
           width: session.width || w,
@@ -424,6 +498,38 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
                   pendingCapturesRef.current.delete(payload.requestId);
                   resolver(typeof payload.data === 'string' ? payload.data : null);
                 }
+              } else if (payload.type === 'agent_action' && payload.action) {
+                const act = payload.action as AgentActionPayload;
+                lastAgentActionAtRef.current = Date.now();
+                const hasPoint = typeof act.x === 'number' && typeof act.y === 'number' && (act.x > 0 || act.y > 0);
+                setAgentCursor((prev) => {
+                  const nextX = hasPoint ? act.x! : prev?.x ?? tabStateRef.current.width / 2;
+                  const nextY = hasPoint ? act.y! : prev?.y ?? tabStateRef.current.height / 2;
+                  if (act.kind === 'drag_start') {
+                    dragOriginRef.current = { x: nextX, y: nextY };
+                  } else if (act.kind === 'drag_end') {
+                    dragOriginRef.current = null;
+                  }
+                  const triggerRipple = act.kind === 'click' || act.kind === 'drag_start' || act.kind === 'drag_end' || act.kind === 'wheel';
+                  return {
+                    visible: true,
+                    x: nextX,
+                    y: nextY,
+                    dragFromX: dragOriginRef.current?.x,
+                    dragFromY: dragOriginRef.current?.y,
+                    dragging: act.kind === 'drag_start' || act.kind === 'drag_move',
+                    label: act.label || '',
+                    rippleKey: triggerRipple ? (prev?.rippleKey ?? 0) + 1 : prev?.rippleKey ?? 0,
+                    rippleX: triggerRipple ? nextX : prev?.rippleX ?? nextX,
+                    rippleY: triggerRipple ? nextY : prev?.rippleY ?? nextY,
+                  };
+                });
+                if (agentFadeTimerRef.current !== null) {
+                  window.clearTimeout(agentFadeTimerRef.current);
+                }
+                agentFadeTimerRef.current = window.setTimeout(() => {
+                  setAgentCursor((prev) => (prev ? { ...prev, visible: false, dragging: false } : null));
+                }, 2600);
               } else if (payload.type === 'error') {
                 const msg = payload.message || 'Browser session error';
                 setErrorMessage(msg);
@@ -472,6 +578,10 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
 
     return () => {
       unmounted = true;
+      if (agentFadeTimerRef.current !== null) {
+        window.clearTimeout(agentFadeTimerRef.current);
+        agentFadeTimerRef.current = null;
+      }
       for (const [, resolver] of pendingCapturesRef.current.entries()) {
         resolver(null);
       }
@@ -489,7 +599,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
         void BrowserClose(createdSessionId);
       }
     };
-  }, [sessionThreadKey, reconnectNonce]);
+  }, [sessionThreadKey, existingSessionId, reconnectNonce]);
 
   // Debounced ResizeObserver to track container dimension changes
   useEffect(() => {
@@ -506,6 +616,8 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
           window.clearTimeout(resizeTimer);
         }
         resizeTimer = window.setTimeout(() => {
+          // Avoid stomping on an agent's active click/drag coordinates mid-action
+          if (Date.now() - lastAgentActionAtRef.current < 3000) return;
           const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2.5));
           const w = Math.round(width);
           const h = Math.round(height);
@@ -858,6 +970,69 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
           cursor: cursorStyle,
         }}
       />
+
+      {/* Live Agent Cursor, Click Ripple & Drag Trail Overlay */}
+      {agentCursor && agentCursor.visible && (() => {
+        const pt = viewportToDisplay(agentCursor.x, agentCursor.y);
+        const ripplePt = viewportToDisplay(agentCursor.rippleX, agentCursor.rippleY);
+        const dragStartPt =
+          agentCursor.dragging && agentCursor.dragFromX !== undefined && agentCursor.dragFromY !== undefined
+            ? viewportToDisplay(agentCursor.dragFromX, agentCursor.dragFromY)
+            : null;
+        return (
+          <div className="absolute inset-0 z-20 pointer-events-none overflow-hidden">
+            {dragStartPt && (
+              <svg className="absolute inset-0 w-full h-full">
+                <line
+                  x1={dragStartPt.px}
+                  y1={dragStartPt.py}
+                  x2={pt.px}
+                  y2={pt.py}
+                  stroke="rgba(255,255,255,0.65)"
+                  strokeWidth="1.5"
+                  strokeDasharray="4 4"
+                />
+                <circle cx={dragStartPt.px} cy={dragStartPt.py} r="3.5" fill="rgba(255,255,255,0.85)" />
+              </svg>
+            )}
+
+            {agentCursor.rippleKey > 0 && (
+              <span
+                key={agentCursor.rippleKey}
+                className="absolute -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full border border-white/80 animate-ping"
+                style={{ left: ripplePt.px, top: ripplePt.py, animationDuration: '650ms', animationIterationCount: 1 }}
+              />
+            )}
+
+            <div
+              className="absolute transition-all duration-150 ease-out"
+              style={{ left: pt.px, top: pt.py }}
+            >
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 20 20"
+                fill="none"
+                className="drop-shadow-[0_2px_4px_rgba(0,0,0,0.75)]"
+              >
+                <path
+                  d="M3 2L16.5 10.5L10.3 11.7L7.4 17.5L3 2Z"
+                  fill="#ffffff"
+                  stroke="#101012"
+                  strokeWidth="1.5"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
+
+            {agentCursor.label && (
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-md bg-[#141518]/90 text-white/90 text-[11px] font-mono tracking-tight shadow-md backdrop-blur-sm whitespace-nowrap">
+                {agentCursor.label}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {!hideErrorOverlay && errorMessage && (
         <div className="absolute inset-0 z-30 bg-[#0A0A0A] flex flex-col items-center justify-center text-center p-6">

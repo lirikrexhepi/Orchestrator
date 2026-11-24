@@ -240,6 +240,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					if err := writeSafe(websocket.BinaryMessage, ev.binary); err != nil {
 						return
 					}
+				} else if ev.agentAction != nil {
+					actionPayload, _ := json.Marshal(map[string]any{
+						"type":   "agent_action",
+						"action": ev.agentAction,
+					})
+					if err := writeSafe(websocket.TextMessage, actionPayload); err != nil {
+						return
+					}
 				} else if ev.err != "" {
 					errPayload, _ := json.Marshal(map[string]any{
 						"type":    "error",

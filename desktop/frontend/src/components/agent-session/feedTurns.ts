@@ -41,6 +41,7 @@ function isPinned(block: AgentStreamBlock): boolean {
     case 'tool_plan':
     case 'notice':
     case 'mcp_app':
+    case 'browser_screenshot':
       return true;
     case 'text':
       return Boolean(block.variant);

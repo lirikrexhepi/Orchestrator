@@ -44,3 +44,11 @@ func (a *App) BrowserClose(id string) error {
 	}
 	return a.browsers.Close(id)
 }
+
+// BrowserListTabs returns open browser tabs belonging to threadID (or all tabs if empty).
+func (a *App) BrowserListTabs(threadID string) []browser.SessionInfo {
+	if a.browsers == nil {
+		return []browser.SessionInfo{}
+	}
+	return a.browsers.ListTabs(threadID)
+}

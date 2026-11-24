@@ -85,13 +85,17 @@ type ToolInputSchema struct {
 }
 
 type PropertySchema struct {
-	Type string   `json:"type"`
-	Enum []string `json:"enum,omitempty"`
+	Type        string          `json:"type"`
+	Description string          `json:"description,omitempty"`
+	Enum        []string        `json:"enum,omitempty"`
+	Items       *PropertySchema `json:"items,omitempty"`
 }
 
 type ContentItem struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
 }
 
 type CallToolResult struct {
@@ -189,12 +193,20 @@ var allTools = []Tool{
 
 // AllTools returns a slice of registered tools.
 func AllTools() []Tool {
-	return allTools
+	out := make([]Tool, 0, len(allTools)+len(browserTools))
+	out = append(out, allTools...)
+	out = append(out, browserTools...)
+	return out
 }
 
 // IsKnownTool reports whether name is a recognized tool.
 func IsKnownTool(name string) bool {
 	for _, t := range allTools {
+		if t.Name == name {
+			return true
+		}
+	}
+	for _, t := range browserTools {
 		if t.Name == name {
 			return true
 		}
@@ -223,6 +235,9 @@ func ValidateToolArguments(name string, rawArgs json.RawMessage) error {
 	}
 
 	accepted, ok := toolAcceptedKeys[name]
+	if !ok {
+		accepted, ok = browserToolAcceptedKeys[name]
+	}
 	if !ok {
 		return fmt.Errorf("unknown tool %q", name)
 	}
@@ -508,6 +523,9 @@ func executeTool(ctx context.Context, backend Backend, scope CallerScope, name s
 		return toolSuccess(map[string]bool{"ok": true})
 
 	default:
+		if isBrowserTool(name) {
+			return executeBrowserTool(ctx, backend, scope, name, rawArgs)
+		}
 		return toolError(fmt.Sprintf("unknown tool %q", name))
 	}
 }

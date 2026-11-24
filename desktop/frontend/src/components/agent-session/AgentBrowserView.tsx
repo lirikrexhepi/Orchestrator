@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime/runtime';
-import { ListProjects } from '../../../wailsjs/go/main/App';
+import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../../../wailsjs/runtime/runtime';
+import { BrowserListTabs, ListProjects } from '../../../wailsjs/go/main/App';
 import { servers } from '../../../wailsjs/go/models';
 import {
   Check,
@@ -22,6 +22,7 @@ import { CdpBrowserAction, CdpBrowserSurface } from '../browser/CdpBrowserSurfac
 
 export interface BrowserTabItem {
   id: string;
+  sessionId?: string;
   url: string;
   title: string;
   favicon: string;
@@ -309,6 +310,71 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
     if (!activeTab || isInputEditingRef.current) return;
     setInputUrl(activeTab.url === 'about:blank' ? '' : activeTab.url);
   }, [activeTab?.id, activeTab?.url]);
+
+  // Adopt/attach to CDP tabs opened by an agent for this thread
+  const adoptBackendTab = useCallback(
+    (info: { id?: string; url?: string; title?: string; loading?: boolean; canGoBack?: boolean; canGoForward?: boolean }) => {
+      if (!info?.id) return;
+      const sid = info.id;
+      const tabUrl = info.url && info.url !== 'about:blank' ? info.url : 'about:blank';
+      setTabs((prev) => {
+        const existing = prev.find((t) => t.sessionId === sid || t.id === sid);
+        if (existing) {
+          return prev.map((t) =>
+            t.id === existing.id
+              ? {
+                  ...t,
+                  sessionId: sid,
+                  url: tabUrl !== 'about:blank' ? tabUrl : t.url,
+                  title: info.title || t.title,
+                  loading: info.loading ?? t.loading,
+                }
+              : t,
+          );
+        }
+        const nextTab: BrowserTabItem = {
+          id: sid,
+          sessionId: sid,
+          url: tabUrl,
+          title: info.title || (tabUrl !== 'about:blank' ? getDomain(tabUrl) : 'Browser'),
+          favicon: '',
+          loading: Boolean(info.loading),
+          canGoBack: Boolean(info.canGoBack),
+          canGoForward: Boolean(info.canGoForward),
+          error: null,
+        };
+        if (prev.length === 1 && prev[0].id === 'default' && (!prev[0].url || prev[0].url === 'about:blank')) {
+          return [nextTab];
+        }
+        return [...prev, nextTab];
+      });
+      setActiveTabId(sid);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!threadId || threadId === 'global') return;
+    let active = true;
+    BrowserListTabs(threadId)
+      .then((list) => {
+        if (!active || !Array.isArray(list) || list.length === 0) return;
+        adoptBackendTab(list[list.length - 1]);
+      })
+      .catch(() => {});
+
+    const off = EventsOn(
+      'browser:agent_tab_opened',
+      (payload: { threadId?: string; tab?: { id?: string; url?: string; title?: string; loading?: boolean; canGoBack?: boolean; canGoForward?: boolean } }) => {
+        if (!payload || payload.threadId !== threadId || !payload.tab?.id) return;
+        adoptBackendTab(payload.tab);
+      },
+    );
+    return () => {
+      active = false;
+      if (typeof off === 'function') off();
+    };
+  }, [threadId, adoptBackendTab]);
 
   const [viewportPreset, setViewportPreset] = useState<ViewportPreset>('responsive');
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -1077,6 +1143,7 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
                 key={tab.id}
                 threadId={threadId}
                 tabId={tab.id}
+                existingSessionId={tab.sessionId}
                 initialUrl={tab.url}
                 paused={shouldPause || !isTabActive}
                 isFocused={isFocused && !isAnimating && isTabActive && tool === 'interact'}

@@ -37,6 +37,8 @@ export function BrowserClose(arg1:string):Promise<void>;
 
 export function BrowserEndpoint():Promise<main.BrowserEndpointInfo>;
 
+export function BrowserListTabs(arg1:string):Promise<Array<browser.SessionInfo>>;
+
 export function BrowserOpen(arg1:string,arg2:string,arg3:number,arg4:number):Promise<browser.SessionInfo>;
 
 export function CaptureAntigravityProfile(arg1:string):Promise<void>;
