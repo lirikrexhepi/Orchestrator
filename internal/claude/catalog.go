@@ -28,6 +28,11 @@ var claudeCatalog = []catalogEntry{
 		fastMode: true, contextWide: true,
 	},
 	{
+		id: "claude-fable-5-2", displayName: "Claude Fable 5.2", minVersion: "2.1.321",
+		efforts: []string{"low", "medium", "high", "xhigh", "max"}, defEffort: "medium",
+		fastMode: true, contextWide: true,
+	},
+	{
 		id: "claude-fable-5-1", displayName: "Claude Fable 5.1", minVersion: "2.1.257",
 		efforts: []string{"low", "medium", "high", "xhigh", "max"}, defEffort: "high",
 		contextWide: true,
@@ -50,6 +55,7 @@ var claudeCatalog = []catalogEntry{
 	{
 		id: "claude-haiku-5-5", displayName: "Claude Haiku 5.5", minVersion: "2.1.291",
 		efforts: []string{"low", "medium", "high", "xhigh", "max"}, defEffort: "medium",
+		contextWide: true,
 	},
 	{
 		id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5",

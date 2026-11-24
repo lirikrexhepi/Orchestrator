@@ -80,4 +80,52 @@ func TestHaiku55GatedOnCLIVersion(t *testing.T) {
 	if modelByID(Models("2.1.290"), "claude-haiku-4-5") == nil {
 		t.Fatalf("claude-haiku-4-5 must stay available on older CLIs")
 	}
+	hasContextWide := false
+	for _, option := range found.Options {
+		if option.ID == domain.OptionContextWindow {
+			hasContextWide = true
+			break
+		}
+	}
+	if !hasContextWide {
+		t.Fatalf("claude-haiku-5-5 should expose 1M context window option")
+	}
+}
+
+func TestFable52GatedOnCLIVersion(t *testing.T) {
+	current := Models("2.1.321")
+	found := modelByID(current, "claude-fable-5-2")
+	if found == nil {
+		t.Fatalf("claude-fable-5-2 missing on CLI 2.1.321: %+v", current)
+	}
+	if effortDefault(found) != "medium" {
+		t.Fatalf("fable 5.2 default effort = %q, want medium", effortDefault(found))
+	}
+	if found.Default {
+		t.Fatalf("fable 5.2 must not steal the default from opus 5.5")
+	}
+	hasFastMode := false
+	hasContextWide := false
+	for _, option := range found.Options {
+		if option.ID == domain.OptionFastMode {
+			hasFastMode = true
+		}
+		if option.ID == domain.OptionContextWindow {
+			hasContextWide = true
+		}
+	}
+	if !hasFastMode {
+		t.Fatalf("claude-fable-5-2 should expose fast mode option")
+	}
+	if !hasContextWide {
+		t.Fatalf("claude-fable-5-2 should expose 1M context window option")
+	}
+
+	previous := Models("2.1.320")
+	if modelByID(previous, "claude-fable-5-2") != nil {
+		t.Fatalf("claude-fable-5-2 must stay hidden on CLI 2.1.320")
+	}
+	if modelByID(previous, "claude-fable-5-1") == nil {
+		t.Fatalf("claude-fable-5-1 fallback missing on CLI 2.1.320")
+	}
 }
