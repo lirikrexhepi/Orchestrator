@@ -20,8 +20,44 @@ func (t *tab) appendConsole(entry ConsoleEntry) {
 	}
 	t.consoleLogs = append(t.consoleLogs, entry)
 	if len(t.consoleLogs) > maxConsoleEntries {
-		t.consoleLogs = t.consoleLogs[len(t.consoleLogs)-maxConsoleEntries:]
+		trim := len(t.consoleLogs) - maxConsoleEntries
+		t.consoleLogs = t.consoleLogs[trim:]
+		t.consoleCursor -= trim
+		if t.consoleCursor < 0 {
+			t.consoleCursor = 0
+		}
 	}
+}
+
+// DrainNewErrors returns up to 5 new error/exception/network entries since the
+// previous drain, keeping MCP tool responses compact while surfacing failures.
+func (m *Manager) DrainNewErrors(id string) []ConsoleEntry {
+	m.mu.Lock()
+	t, ok := m.tabs[id]
+	m.mu.Unlock()
+	if !ok || t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.consoleCursor >= len(t.consoleLogs) {
+		return nil
+	}
+	var out []ConsoleEntry
+	for i := t.consoleCursor; i < len(t.consoleLogs); i++ {
+		e := t.consoleLogs[i]
+		if e.Level == "error" || e.Level == "exception" || e.Level == "network" {
+			if len(e.Text) > 200 {
+				e.Text = e.Text[:200] + "…"
+			}
+			out = append(out, e)
+			if len(out) >= 5 {
+				break
+			}
+		}
+	}
+	t.consoleCursor = len(t.consoleLogs)
+	return out
 }
 
 func (m *Manager) broadcastAgentAction(t *tab, action AgentAction) {
@@ -799,4 +835,182 @@ func (m *Manager) CaptureScreenshotJPEG(ctx context.Context, id string, quality 
 	w, h := t.width, t.height
 	t.mu.RUnlock()
 	return res.Data, w, h, nil
+}
+
+// InspectedElement describes a DOM element under a viewport coordinate for selection mode.
+type InspectedElement struct {
+	Tag       string  `json:"tag"`
+	ID        string  `json:"id,omitempty"`
+	ClassName string  `json:"className,omitempty"`
+	Label     string  `json:"label"`
+	Selector  string  `json:"selector"`
+	Text      string  `json:"text,omitempty"`
+	X         float64 `json:"x"`
+	Y         float64 `json:"y"`
+	Width     float64 `json:"width"`
+	Height    float64 `json:"height"`
+}
+
+// InspectElementAt returns the bounding box and selector info for the DOM element at (x, y).
+func (m *Manager) InspectElementAt(ctx context.Context, id string, x, y float64) (*InspectedElement, error) {
+	expr := fmt.Sprintf(`(() => {
+		const el = document.elementFromPoint(%f, %f);
+		if (!el) return null;
+		const r = el.getBoundingClientRect();
+		const tag = el.tagName.toLowerCase();
+		const elId = el.id ? String(el.id) : '';
+		const rawCls = typeof el.className === 'string' ? el.className : (el.className && el.className.baseVal ? el.className.baseVal : '');
+		const classes = rawCls.trim().split(/\s+/).filter(Boolean).slice(0, 3);
+		let label = tag;
+		if (elId) label += '#' + elId;
+		else if (classes.length > 0) label += '.' + classes.slice(0, 2).join('.');
+		let selector = tag;
+		if (elId) selector += '#' + CSS.escape(elId);
+		else if (classes.length > 0) selector += '.' + classes.map(c => CSS.escape(c)).join('.');
+		const text = (el.getAttribute('aria-label') || el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+		return {
+			tag,
+			id: elId || undefined,
+			className: classes.join(' ') || undefined,
+			label,
+			selector,
+			text: text || undefined,
+			x: r.left,
+			y: r.top,
+			width: r.width,
+			height: r.height,
+		};
+	})()`, x, y)
+
+	raw, err := m.Evaluate(ctx, id, expr)
+	if err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var el InspectedElement
+	if err := json.Unmarshal(b, &el); err != nil {
+		return nil, err
+	}
+	return &el, nil
+}
+
+// BatchStep defines one action inside a browser_batch sequence.
+type BatchStep struct {
+	Action     string   `json:"action"` // "click", "drag", "wheel", "type", "press", "wait", "eval", "navigate"
+	X          *float64 `json:"x,omitempty"`
+	Y          *float64 `json:"y,omitempty"`
+	FromX      float64  `json:"fromX,omitempty"`
+	FromY      float64  `json:"fromY,omitempty"`
+	ToX        float64  `json:"toX,omitempty"`
+	ToY        float64  `json:"toY,omitempty"`
+	DeltaX     float64  `json:"deltaX,omitempty"`
+	DeltaY     float64  `json:"deltaY,omitempty"`
+	Ref        string   `json:"ref,omitempty"`
+	Selector   string   `json:"selector,omitempty"`
+	Button     string   `json:"button,omitempty"`
+	ClickCount int      `json:"clickCount,omitempty"`
+	Modifiers  []string `json:"modifiers,omitempty"`
+	Steps      int      `json:"steps,omitempty"`
+	DurationMs int      `json:"durationMs,omitempty"`
+	Text       string   `json:"text,omitempty"`
+	Key        string   `json:"key,omitempty"`
+	Expression string   `json:"expression,omitempty"`
+	URL        string   `json:"url,omitempty"`
+	Ms         int      `json:"ms,omitempty"`
+}
+
+// BatchResult summarizes a multi-step browser_batch execution.
+type BatchResult struct {
+	TabID          string `json:"tabId"`
+	CompletedSteps int    `json:"completedSteps"`
+	TotalSteps     int    `json:"totalSteps"`
+	LastEval       any    `json:"lastEval,omitempty"`
+	FailedStep     int    `json:"failedStep,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+// Batch executes multiple browser actions sequentially in one tool call, stopping on first error.
+func (m *Manager) Batch(ctx context.Context, id string, steps []BatchStep) BatchResult {
+	res := BatchResult{
+		TabID:      id,
+		TotalSteps: len(steps),
+	}
+	for i, st := range steps {
+		var stepErr error
+		switch strings.ToLower(strings.TrimSpace(st.Action)) {
+		case "click":
+			_, _, stepErr = m.Click(ctx, id, ClickOptions{
+				X:          st.X,
+				Y:          st.Y,
+				Ref:        st.Ref,
+				Selector:   st.Selector,
+				Button:     st.Button,
+				ClickCount: st.ClickCount,
+				Modifiers:  st.Modifiers,
+			})
+		case "drag":
+			stepErr = m.Drag(ctx, id, DragOptions{
+				FromX:      st.FromX,
+				FromY:      st.FromY,
+				ToX:        st.ToX,
+				ToY:        st.ToY,
+				Button:     st.Button,
+				Steps:      st.Steps,
+				DurationMs: st.DurationMs,
+				Modifiers:  st.Modifiers,
+			})
+		case "wheel":
+			var wx, wy float64
+			if st.X != nil {
+				wx = *st.X
+			}
+			if st.Y != nil {
+				wy = *st.Y
+			}
+			stepErr = m.Wheel(ctx, id, wx, wy, st.DeltaX, st.DeltaY, st.Modifiers)
+		case "type":
+			stepErr = m.TypeText(ctx, id, st.Text, st.Ref, st.Selector)
+		case "press":
+			stepErr = m.PressKey(ctx, id, st.Key, st.Modifiers)
+		case "navigate":
+			stepErr = m.Navigate(ctx, id, st.URL)
+		case "eval":
+			var val any
+			val, stepErr = m.Evaluate(ctx, id, st.Expression)
+			if stepErr == nil {
+				res.LastEval = val
+			}
+		case "wait":
+			ms := st.Ms
+			if ms <= 0 {
+				ms = 250
+			}
+			if ms > 5000 {
+				ms = 5000
+			}
+			select {
+			case <-ctx.Done():
+				stepErr = ctx.Err()
+			case <-time.After(time.Duration(ms) * time.Millisecond):
+			}
+		default:
+			stepErr = fmt.Errorf("unknown batch action %q", st.Action)
+		}
+		if stepErr != nil {
+			res.FailedStep = i + 1
+			res.Error = stepErr.Error()
+			return res
+		}
+		res.CompletedSteps = i + 1
+		if i < len(steps)-1 {
+			time.Sleep(40 * time.Millisecond)
+		}
+	}
+	return res
 }

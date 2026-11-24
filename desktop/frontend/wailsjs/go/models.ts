@@ -168,6 +168,37 @@ export namespace attachments {
 
 export namespace browser {
 	
+	export class InspectedElement {
+	    tag: string;
+	    id?: string;
+	    className?: string;
+	    label: string;
+	    selector: string;
+	    text?: string;
+	    x: number;
+	    y: number;
+	    width: number;
+	    height: number;
+
+	    static createFrom(source: any = {}) {
+	        return new InspectedElement(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tag = source["tag"];
+	        this.id = source["id"];
+	        this.className = source["className"];
+	        this.label = source["label"];
+	        this.selector = source["selector"];
+	        this.text = source["text"];
+	        this.x = source["x"];
+	        this.y = source["y"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	    }
+	}
+
 	export class SessionInfo {
 	    id: string;
 	    threadId: string;

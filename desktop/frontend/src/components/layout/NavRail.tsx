@@ -31,6 +31,7 @@ export interface NavRailProps {
   hasPreview?: boolean;
   hasServers?: boolean;
   hasChanges?: boolean;
+  hasActiveBrowser?: boolean;
   // Bookmarks on sidepanel
   bookmarks?: WebBookmark[];
   currentBrowserUrl?: string;
@@ -55,6 +56,7 @@ export const NavRail: React.FC<NavRailProps> = ({
   hasPreview = false,
   hasServers = false,
   hasChanges = false,
+  hasActiveBrowser = false,
   bookmarks = [],
   currentBrowserUrl,
   onBookmarkClick,
@@ -136,11 +138,14 @@ export const NavRail: React.FC<NavRailProps> = ({
         <button
           type="button"
           onClick={() => onModeSelect?.('browser')}
-          className={getIconClass(cardMode === 'browser')}
-          title="Web Browser"
+          className={`relative ${getIconClass(cardMode === 'browser')}`}
+          title={hasActiveBrowser ? 'Web Browser (active session)' : 'Web Browser'}
           aria-label="Web Browser"
         >
           <Globe size={15} strokeWidth={1.8} />
+          {hasActiveBrowser && cardMode !== 'browser' && (
+            <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-white/85" />
+          )}
         </button>
 
         {/* Terminal view icon - Dedicated and always accessible */}

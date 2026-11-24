@@ -52,3 +52,13 @@ func (a *App) BrowserListTabs(threadID string) []browser.SessionInfo {
 	}
 	return a.browsers.ListTabs(threadID)
 }
+
+// BrowserInspectAt returns DOM element bounds and selector metadata at viewport (x, y) for selection mode.
+func (a *App) BrowserInspectAt(id string, x, y float64) (*browser.InspectedElement, error) {
+	if a.browsers == nil {
+		return nil, browser.ErrBrowserClosed
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return a.browsers.InspectElementAt(ctx, id, x, y)
+}

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { BrowserClose, BrowserEndpoint, BrowserOpen } from '../../../wailsjs/go/main/App';
+import { BrowserClose, BrowserEndpoint, BrowserInspectAt, BrowserOpen } from '../../../wailsjs/go/main/App';
 import { browser } from '../../../wailsjs/go/models';
 import { CircleAlert, RefreshCw } from '../common/icons';
 
@@ -19,6 +19,8 @@ export interface CdpBrowserSurfaceProps {
   initialUrl: string;
   paused?: boolean;
   isFocused?: boolean;
+  selectMode?: boolean;
+  onSelectElement?: (el: browser.InspectedElement, x: number, y: number) => void;
   hideErrorOverlay?: boolean;
   externalNav?: { url: string; nonce: number };
   actionRef?: React.MutableRefObject<CdpBrowserAction | null>;
@@ -78,6 +80,8 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
   initialUrl,
   paused = false,
   isFocused = true,
+  selectMode = false,
+  onSelectElement,
   hideErrorOverlay = false,
   externalNav,
   actionRef,
@@ -157,6 +161,18 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
   const agentFadeTimerRef = useRef<number | null>(null);
   const lastAgentActionAtRef = useRef<number>(0);
   const dragOriginRef = useRef<{ x: number; y: number } | null>(null);
+
+  const [hoveredElement, setHoveredElement] = useState<browser.InspectedElement | null>(null);
+  const inspectInFlightRef = useRef<boolean>(false);
+  const lastInspectAtRef = useRef<number>(0);
+  const selectModeRef = useRef<boolean>(selectMode);
+  selectModeRef.current = selectMode;
+
+  useEffect(() => {
+    if (!selectMode) {
+      setHoveredElement(null);
+    }
+  }, [selectMode]);
 
   // Convert emulated CDP viewport coordinates into CSS pixel coordinates over the rendered canvas
   const viewportToDisplay = useCallback((vx: number, vy: number) => {
@@ -788,6 +804,19 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isFocused) return;
     e.stopPropagation();
+    if (selectModeRef.current) {
+      e.preventDefault();
+      const { x, y } = getCoordinates(e.clientX, e.clientY);
+      const sid = sessionRef.current?.id;
+      if (hoveredElement) {
+        onSelectElement?.(hoveredElement, x, y);
+      } else if (sid) {
+        void BrowserInspectAt(sid, x, y).then((el) => {
+          if (el) onSelectElement?.(el, x, y);
+        });
+      }
+      return;
+    }
     if (e.button === 3 || e.button === 4) {
       e.preventDefault();
     }
@@ -823,6 +852,7 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isFocused) return;
+    if (selectModeRef.current) return;
     e.stopPropagation();
     if (e.button === 3 || e.button === 4) {
       e.preventDefault();
@@ -852,6 +882,25 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isFocused) return;
     const { x, y } = getCoordinates(e.clientX, e.clientY);
+    if (selectModeRef.current) {
+      const sid = sessionRef.current?.id;
+      const now = performance.now();
+      if (sid && !inspectInFlightRef.current && now - lastInspectAtRef.current >= 55) {
+        inspectInFlightRef.current = true;
+        lastInspectAtRef.current = now;
+        void BrowserInspectAt(sid, x, y)
+          .then((el) => {
+            if (selectModeRef.current) {
+              setHoveredElement(el || null);
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            inspectInFlightRef.current = false;
+          });
+      }
+      return;
+    }
     pendingMoveRef.current = {
       x,
       y,
@@ -970,6 +1019,37 @@ export const CdpBrowserSurface: React.FC<CdpBrowserSurfaceProps> = ({
           cursor: cursorStyle,
         }}
       />
+
+      {/* Smooth Element Selection Highlight Overlay */}
+      {selectMode && hoveredElement && hoveredElement.width > 0 && hoveredElement.height > 0 && (() => {
+        const tl = viewportToDisplay(hoveredElement.x, hoveredElement.y);
+        const br = viewportToDisplay(hoveredElement.x + hoveredElement.width, hoveredElement.y + hoveredElement.height);
+        const boxW = Math.max(4, br.px - tl.px);
+        const boxH = Math.max(4, br.py - tl.py);
+        const placeBelow = tl.py < 26;
+        return (
+          <div className="absolute inset-0 z-25 pointer-events-none overflow-hidden">
+            <div
+              className="absolute rounded-[3px] border-[1.5px] border-[#3b82f6] bg-[#3b82f6]/18"
+              style={{
+                left: tl.px,
+                top: tl.py,
+                width: boxW,
+                height: boxH,
+                transition: 'left 115ms cubic-bezier(0.22, 1, 0.36, 1), top 115ms cubic-bezier(0.22, 1, 0.36, 1), width 115ms cubic-bezier(0.22, 1, 0.36, 1), height 115ms cubic-bezier(0.22, 1, 0.36, 1)',
+              }}
+            >
+              <div
+                className={`absolute left-0 px-1.5 py-0.5 rounded-[3px] bg-[#2563eb] text-white text-[10.5px] font-mono leading-tight whitespace-nowrap shadow-md ${
+                  placeBelow ? 'top-full mt-1' : 'bottom-full mb-1'
+                }`}
+              >
+                {hoveredElement.label}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Live Agent Cursor, Click Ripple & Drag Trail Overlay */}
       {agentCursor && agentCursor.visible && (() => {

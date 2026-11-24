@@ -24,7 +24,7 @@ import { TitleBar } from '../common/TitleBar';
 import { GlassSquircle } from '../../ui/glass/GlassSquircle';
 import { useWebBookmarks, type WebBookmark } from '../agent-session/useWebBookmarks';
 import { BookmarkModal } from '../agent-session/BookmarkModal';
-import { GetUserPreference, GitWebURL, RespondToQuestion, SetUserPreference } from '../../../wailsjs/go/main/App';
+import { BrowserListTabs, GetUserPreference, GitWebURL, RespondToQuestion, SetUserPreference } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime/runtime';
 import { playTaskComplete } from '../../sound';
 import { domain } from '../../../wailsjs/go/models';
@@ -113,6 +113,7 @@ export const Scene: React.FC<SceneProps> = () => {
   const [isBrowserSplit, setIsBrowserSplit] = useState(true);
   const [browserSplitRatio, setBrowserSplitRatio] = useState(0.38);
   const [browserTarget, setBrowserTarget] = useState<{ url: string; nonce: number } | null>(null);
+  const [hasActiveBrowser, setHasActiveBrowser] = useState(false);
 
   // Dynamic Island Notifications
   const [islandNotification, setIslandNotification] = useState<DynamicIslandNotification | null>(null);
@@ -128,6 +129,7 @@ export const Scene: React.FC<SceneProps> = () => {
     const off = EventsOn('browser:agent_tab_opened', (payload: { threadId?: string }) => {
       const currentTid = activeTaskThreadIdRef.current;
       if (!payload?.threadId || !currentTid || payload.threadId !== currentTid) return;
+      setHasActiveBrowser(true);
       setIsBrowserSplit(true);
       setCardMode('browser');
       setActiveView('chat');
@@ -136,6 +138,28 @@ export const Scene: React.FC<SceneProps> = () => {
       if (typeof off === 'function') off();
     };
   }, []);
+
+  useEffect(() => {
+    const tid = activeTask?.threadId;
+    if (!tid) {
+      setHasActiveBrowser(false);
+      return;
+    }
+    let alive = true;
+    const refresh = () => {
+      BrowserListTabs(tid)
+        .then((tabs) => {
+          if (alive) setHasActiveBrowser(Array.isArray(tabs) && tabs.length > 0);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [activeTask?.threadId, cardMode]);
   const activeAttachmentScope = activeView === 'chat' && activeTask ? activeTask.threadId : '__home__';
   const attachments = useAttachments(activeAttachmentScope);
 
@@ -681,6 +705,7 @@ export const Scene: React.FC<SceneProps> = () => {
         hasPreview={true}
         hasServers={hasServers}
         hasChanges={hasChanges}
+        hasActiveBrowser={hasActiveBrowser}
         bookmarks={visibleBookmarks}
         currentBrowserUrl={browserTarget?.url}
         onBookmarkClick={handleBookmarkClick}

@@ -20,9 +20,16 @@ type BrowserScreenshotResult struct {
 
 // BrowserPointResult reports the coordinates of a click/interaction.
 type BrowserPointResult struct {
-	TabID string  `json:"tabId"`
-	X     float64 `json:"x"`
-	Y     float64 `json:"y"`
+	TabID  string                 `json:"tabId"`
+	X      float64                `json:"x"`
+	Y      float64                `json:"y"`
+	Errors []browser.ConsoleEntry `json:"errors,omitempty"`
+}
+
+// BrowserActionResult reports a generic action result plus any new console/network errors.
+type BrowserActionResult struct {
+	OK     bool                   `json:"ok"`
+	Errors []browser.ConsoleEntry `json:"errors,omitempty"`
 }
 
 // BrowserBackend is optionally implemented by Backend to expose the embedded
@@ -31,16 +38,17 @@ type BrowserBackend interface {
 	BrowserOpen(ctx context.Context, threadID, url string, width, height int) (browser.SessionInfo, error)
 	BrowserListTabs(ctx context.Context, threadID string) ([]browser.SessionInfo, error)
 	BrowserNavigate(ctx context.Context, threadID, tabID, url string) (browser.SessionInfo, error)
-	BrowserScreenshot(ctx context.Context, threadID, tabID string) (BrowserScreenshotResult, error)
+	BrowserScreenshot(ctx context.Context, threadID, tabID string, grid bool) (BrowserScreenshotResult, error)
 	BrowserSnapshot(ctx context.Context, threadID, tabID string) (browser.SnapshotResult, error)
 	BrowserClick(ctx context.Context, threadID, tabID string, opts browser.ClickOptions) (BrowserPointResult, error)
-	BrowserDrag(ctx context.Context, threadID, tabID string, opts browser.DragOptions) error
+	BrowserDrag(ctx context.Context, threadID, tabID string, opts browser.DragOptions) ([]browser.ConsoleEntry, error)
 	BrowserWheel(ctx context.Context, threadID, tabID string, x, y, deltaX, deltaY float64, modifiers []string) error
-	BrowserType(ctx context.Context, threadID, tabID, text, ref, selector string) error
-	BrowserPress(ctx context.Context, threadID, tabID, key string, modifiers []string) error
+	BrowserType(ctx context.Context, threadID, tabID, text, ref, selector string) ([]browser.ConsoleEntry, error)
+	BrowserPress(ctx context.Context, threadID, tabID, key string, modifiers []string) ([]browser.ConsoleEntry, error)
 	BrowserEval(ctx context.Context, threadID, tabID, expression string) (any, error)
 	BrowserConsole(ctx context.Context, threadID, tabID string, clear bool) ([]browser.ConsoleEntry, error)
 	BrowserResize(ctx context.Context, threadID, tabID string, width, height int) (browser.SessionInfo, error)
+	BrowserBatch(ctx context.Context, threadID, tabID string, steps []browser.BatchStep) (browser.BatchResult, []browser.ConsoleEntry, error)
 }
 
 var browserTools = []Tool{
@@ -77,10 +85,11 @@ var browserTools = []Tool{
 	},
 	{
 		Name:        "browser_screenshot",
-		Description: "Capture a visual screenshot of the current browser viewport and return it as an image.",
+		Description: "Capture a visual screenshot of the current browser viewport and return it as an image. Set grid:true for a 100px coordinate ruler on canvas apps.",
 		InputSchema: ToolInputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
+				"grid":  {Type: "boolean"},
 				"tabId": {Type: "string"},
 			},
 		},
@@ -97,7 +106,7 @@ var browserTools = []Tool{
 	},
 	{
 		Name:        "browser_click",
-		Description: "Click an element by ref (from browser_snapshot), CSS selector, or viewport coordinates (x, y).",
+		Description: "Click an element by ref (from browser_snapshot), CSS selector, or (x, y). Set screenshot:true to also return the updated viewport image.",
 		InputSchema: ToolInputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
@@ -108,13 +117,15 @@ var browserTools = []Tool{
 				"button":     {Type: "string", Enum: []string{"left", "middle", "right"}},
 				"clickCount": {Type: "integer"},
 				"modifiers":  {Type: "array", Items: &PropertySchema{Type: "string", Enum: []string{"ctrl", "shift", "alt", "meta"}}},
+				"screenshot": {Type: "boolean"},
+				"grid":       {Type: "boolean"},
 				"tabId":      {Type: "string"},
 			},
 		},
 	},
 	{
 		Name:        "browser_drag",
-		Description: "Smoothly drag the mouse from (fromX, fromY) to (toX, toY) with interpolated steps — ideal for 3D camera orbit/pan, sliders, or canvas drawing.",
+		Description: "Smoothly drag from (fromX, fromY) to (toX, toY) with interpolated steps — ideal for 3D camera orbit/pan, sliders, or canvas drawing.",
 		InputSchema: ToolInputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
@@ -126,6 +137,8 @@ var browserTools = []Tool{
 				"steps":      {Type: "integer"},
 				"durationMs": {Type: "integer"},
 				"modifiers":  {Type: "array", Items: &PropertySchema{Type: "string", Enum: []string{"ctrl", "shift", "alt", "meta"}}},
+				"screenshot": {Type: "boolean"},
+				"grid":       {Type: "boolean"},
 				"tabId":      {Type: "string"},
 			},
 			Required: []string{"fromX", "fromY", "toX", "toY"},
@@ -153,10 +166,11 @@ var browserTools = []Tool{
 		InputSchema: ToolInputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"text":     {Type: "string"},
-				"ref":      {Type: "string"},
-				"selector": {Type: "string"},
-				"tabId":    {Type: "string"},
+				"text":       {Type: "string"},
+				"ref":        {Type: "string"},
+				"selector":   {Type: "string"},
+				"screenshot": {Type: "boolean"},
+				"tabId":      {Type: "string"},
 			},
 			Required: []string{"text"},
 		},
@@ -167,11 +181,26 @@ var browserTools = []Tool{
 		InputSchema: ToolInputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"key":       {Type: "string"},
-				"modifiers": {Type: "array", Items: &PropertySchema{Type: "string", Enum: []string{"ctrl", "shift", "alt", "meta"}}},
-				"tabId":     {Type: "string"},
+				"key":        {Type: "string"},
+				"modifiers":  {Type: "array", Items: &PropertySchema{Type: "string", Enum: []string{"ctrl", "shift", "alt", "meta"}}},
+				"screenshot": {Type: "boolean"},
+				"tabId":      {Type: "string"},
 			},
 			Required: []string{"key"},
+		},
+	},
+	{
+		Name:        "browser_batch",
+		Description: "Execute a sequence of browser actions (click, drag, wheel, type, press, wait, eval, navigate) in one fast call, stopping on error. Optionally capture a final screenshot.",
+		InputSchema: ToolInputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"steps":      {Type: "array", Items: &PropertySchema{Type: "object"}},
+				"screenshot": {Type: "boolean"},
+				"grid":       {Type: "boolean"},
+				"tabId":      {Type: "string"},
+			},
+			Required: []string{"steps"},
 		},
 	},
 	{
@@ -216,13 +245,14 @@ var browserToolAcceptedKeys = map[string][]string{
 	"browser_open":       {"height", "newTab", "url", "width"},
 	"browser_tabs":       {},
 	"browser_navigate":   {"tabId", "url"},
-	"browser_screenshot": {"tabId"},
+	"browser_screenshot": {"grid", "tabId"},
 	"browser_snapshot":   {"tabId"},
-	"browser_click":      {"button", "clickCount", "modifiers", "ref", "selector", "tabId", "x", "y"},
-	"browser_drag":       {"button", "durationMs", "fromX", "fromY", "modifiers", "steps", "tabId", "toX", "toY"},
+	"browser_click":      {"button", "clickCount", "grid", "modifiers", "ref", "screenshot", "selector", "tabId", "x", "y"},
+	"browser_drag":       {"button", "durationMs", "fromX", "fromY", "grid", "modifiers", "screenshot", "steps", "tabId", "toX", "toY"},
 	"browser_wheel":      {"deltaX", "deltaY", "modifiers", "tabId", "x", "y"},
-	"browser_type":       {"ref", "selector", "tabId", "text"},
-	"browser_press":      {"key", "modifiers", "tabId"},
+	"browser_type":       {"ref", "screenshot", "selector", "tabId", "text"},
+	"browser_press":      {"key", "modifiers", "screenshot", "tabId"},
+	"browser_batch":      {"grid", "screenshot", "steps", "tabId"},
 	"browser_eval":       {"expression", "tabId"},
 	"browser_console":    {"clear", "tabId"},
 	"browser_resize":     {"height", "tabId", "width"},
@@ -298,12 +328,13 @@ func executeBrowserTool(ctx context.Context, backend Backend, scope CallerScope,
 
 	case "browser_screenshot":
 		var args struct {
+			Grid  bool   `json:"grid"`
 			TabID string `json:"tabId"`
 		}
 		if len(rawArgs) > 0 && string(rawArgs) != "null" {
 			_ = json.Unmarshal(rawArgs, &args)
 		}
-		shot, err := bb.BrowserScreenshot(ctx, scope.ThreadID, args.TabID)
+		shot, err := bb.BrowserScreenshot(ctx, scope.ThreadID, args.TabID, args.Grid)
 		if err != nil {
 			return toolError(err.Error())
 		}
@@ -344,6 +375,8 @@ func executeBrowserTool(ctx context.Context, backend Backend, scope CallerScope,
 			Button     string   `json:"button"`
 			ClickCount int      `json:"clickCount"`
 			Modifiers  []string `json:"modifiers"`
+			Screenshot bool     `json:"screenshot"`
+			Grid       bool     `json:"grid"`
 			TabID      string   `json:"tabId"`
 		}
 		if len(rawArgs) > 0 && string(rawArgs) != "null" {
@@ -363,7 +396,7 @@ func executeBrowserTool(ctx context.Context, backend Backend, scope CallerScope,
 		if err != nil {
 			return toolError(err.Error())
 		}
-		return toolSuccess(pt)
+		return withOptionalScreenshot(ctx, bb, scope.ThreadID, pt.TabID, args.Screenshot, args.Grid, pt)
 
 	case "browser_drag":
 		var args struct {
@@ -375,12 +408,14 @@ func executeBrowserTool(ctx context.Context, backend Backend, scope CallerScope,
 			Steps      int      `json:"steps"`
 			DurationMs int      `json:"durationMs"`
 			Modifiers  []string `json:"modifiers"`
+			Screenshot bool     `json:"screenshot"`
+			Grid       bool     `json:"grid"`
 			TabID      string   `json:"tabId"`
 		}
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
 			return toolError(fmt.Sprintf("invalid arguments: %v", err))
 		}
-		if err := bb.BrowserDrag(ctx, scope.ThreadID, args.TabID, browser.DragOptions{
+		errs, err := bb.BrowserDrag(ctx, scope.ThreadID, args.TabID, browser.DragOptions{
 			FromX:      args.FromX,
 			FromY:      args.FromY,
 			ToX:        args.ToX,
@@ -389,10 +424,11 @@ func executeBrowserTool(ctx context.Context, backend Backend, scope CallerScope,
 			Steps:      args.Steps,
 			DurationMs: args.DurationMs,
 			Modifiers:  args.Modifiers,
-		}); err != nil {
+		})
+		if err != nil {
 			return toolError(err.Error())
 		}
-		return toolSuccess(map[string]any{"ok": true})
+		return withOptionalScreenshot(ctx, bb, scope.ThreadID, args.TabID, args.Screenshot, args.Grid, BrowserActionResult{OK: true, Errors: errs})
 
 	case "browser_wheel":
 		var args struct {
@@ -413,32 +449,62 @@ func executeBrowserTool(ctx context.Context, backend Backend, scope CallerScope,
 
 	case "browser_type":
 		var args struct {
-			Text     string `json:"text"`
-			Ref      string `json:"ref"`
-			Selector string `json:"selector"`
-			TabID    string `json:"tabId"`
+			Text       string `json:"text"`
+			Ref        string `json:"ref"`
+			Selector   string `json:"selector"`
+			Screenshot bool   `json:"screenshot"`
+			TabID      string `json:"tabId"`
 		}
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
 			return toolError(fmt.Sprintf("invalid arguments: %v", err))
 		}
-		if err := bb.BrowserType(ctx, scope.ThreadID, args.TabID, args.Text, args.Ref, args.Selector); err != nil {
+		errs, err := bb.BrowserType(ctx, scope.ThreadID, args.TabID, args.Text, args.Ref, args.Selector)
+		if err != nil {
 			return toolError(err.Error())
 		}
-		return toolSuccess(map[string]any{"ok": true})
+		return withOptionalScreenshot(ctx, bb, scope.ThreadID, args.TabID, args.Screenshot, false, BrowserActionResult{OK: true, Errors: errs})
 
 	case "browser_press":
 		var args struct {
-			Key       string   `json:"key"`
-			Modifiers []string `json:"modifiers"`
-			TabID     string   `json:"tabId"`
+			Key        string   `json:"key"`
+			Modifiers  []string `json:"modifiers"`
+			Screenshot bool     `json:"screenshot"`
+			TabID      string   `json:"tabId"`
 		}
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
 			return toolError(fmt.Sprintf("invalid arguments: %v", err))
 		}
-		if err := bb.BrowserPress(ctx, scope.ThreadID, args.TabID, args.Key, args.Modifiers); err != nil {
+		errs, err := bb.BrowserPress(ctx, scope.ThreadID, args.TabID, args.Key, args.Modifiers)
+		if err != nil {
 			return toolError(err.Error())
 		}
-		return toolSuccess(map[string]any{"ok": true})
+		return withOptionalScreenshot(ctx, bb, scope.ThreadID, args.TabID, args.Screenshot, false, BrowserActionResult{OK: true, Errors: errs})
+
+	case "browser_batch":
+		var args struct {
+			Steps      []browser.BatchStep `json:"steps"`
+			Screenshot bool                `json:"screenshot"`
+			Grid       bool                `json:"grid"`
+			TabID      string              `json:"tabId"`
+		}
+		if err := json.Unmarshal(rawArgs, &args); err != nil {
+			return toolError(fmt.Sprintf("invalid arguments: %v", err))
+		}
+		if len(args.Steps) == 0 {
+			return toolError("steps must not be empty")
+		}
+		if len(args.Steps) > 25 {
+			return toolError("maximum 25 steps per batch")
+		}
+		res, errs, err := bb.BrowserBatch(ctx, scope.ThreadID, args.TabID, args.Steps)
+		if err != nil {
+			return toolError(err.Error())
+		}
+		payload := struct {
+			browser.BatchResult
+			Errors []browser.ConsoleEntry `json:"errors,omitempty"`
+		}{BatchResult: res, Errors: errs}
+		return withOptionalScreenshot(ctx, bb, scope.ThreadID, res.TabID, args.Screenshot, args.Grid, payload)
 
 	case "browser_eval":
 		var args struct {
@@ -488,5 +554,25 @@ func executeBrowserTool(ctx context.Context, backend Backend, scope CallerScope,
 
 	default:
 		return toolError(fmt.Sprintf("unknown browser tool %q", name))
+	}
+}
+
+func withOptionalScreenshot(ctx context.Context, bb BrowserBackend, threadID, tabID string, wantShot, grid bool, data any) CallToolResult {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to serialize response: %v", err))
+	}
+	if !wantShot {
+		return CallToolResult{Content: []ContentItem{{Type: "text", Text: string(b)}}}
+	}
+	shot, shotErr := bb.BrowserScreenshot(ctx, threadID, tabID, grid)
+	if shotErr != nil {
+		return CallToolResult{Content: []ContentItem{{Type: "text", Text: string(b)}}}
+	}
+	return CallToolResult{
+		Content: []ContentItem{
+			{Type: "image", Data: shot.Base64JPEG, MimeType: "image/jpeg"},
+			{Type: "text", Text: string(b)},
+		},
 	}
 }

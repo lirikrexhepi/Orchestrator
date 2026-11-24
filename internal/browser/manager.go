@@ -182,6 +182,7 @@ type tab struct {
 	paused         bool
 	lastFrame      []byte
 	consoleLogs    []ConsoleEntry
+	consoleCursor  int
 	subscribers    map[chan tabEvent]struct{}
 	mu             sync.RWMutex
 }

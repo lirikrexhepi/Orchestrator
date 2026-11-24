@@ -33,7 +33,7 @@ export interface BrowserTabItem {
 }
 
 export type ViewportPreset = 'responsive' | 1440 | 768 | 390;
-type AnnotationTool = 'interact' | 'draw' | 'rect' | 'text';
+type AnnotationTool = 'interact' | 'select' | 'draw' | 'rect' | 'text';
 
 interface StrokeAnnotation {
   points: Array<{ x: number; y: number }>;
@@ -1023,32 +1023,6 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
           </div>
         </div>
 
-        {/* Dev Server Quick-Switch Chips */}
-        {webServers.length > 0 && (
-          <div className="hidden md:flex items-center gap-1 shrink-0">
-            {webServers.slice(0, 3).map((srv) => {
-              const srvUrl = `http://localhost:${srv.port}`;
-              const onPort = currentUrl.includes(`:${srv.port}`);
-              return (
-                <button
-                  key={`${srv.pid}-${srv.port}`}
-                  type="button"
-                  onClick={() => activeTab && navigateTab(activeTab.id, srvUrl)}
-                  title={`Open ${srvUrl}`}
-                  className={`h-[24px] px-2 rounded-full text-[11px] font-mono flex items-center gap-1.5 transition-all cursor-pointer border ${
-                    onPort
-                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                      : 'bg-white/[0.04] hover:bg-white/[0.09] text-white/60 hover:text-white border-white/[0.08]'
-                  }`}
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                  <span>:{srv.port}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-
         {viewportPreset !== 'responsive' && (
           <button
             type="button"
@@ -1146,7 +1120,12 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
                 existingSessionId={tab.sessionId}
                 initialUrl={tab.url}
                 paused={shouldPause || !isTabActive}
-                isFocused={isFocused && !isAnimating && isTabActive && tool === 'interact'}
+                isFocused={isFocused && !isAnimating && isTabActive && (tool === 'interact' || tool === 'select')}
+                selectMode={tool === 'select'}
+                onSelectElement={() => {
+                  void handleSendToChat();
+                  setTool('interact');
+                }}
                 hideErrorOverlay
                 actionRef={getTabActionRef(tab.id)}
                 onStateChange={(state) => {
@@ -1274,14 +1253,14 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
           )}
 
           {/* Transparent Annotation Canvas Overlay */}
-          {!isBlank && (tool !== 'interact' || hasAnnotations) && (
+          {!isBlank && ((tool !== 'interact' && tool !== 'select') || hasAnnotations) && (
             <canvas
               ref={annotationCanvasRef}
               onPointerDown={handleAnnotationPointerDown}
               onPointerMove={handleAnnotationPointerMove}
               onPointerUp={handleAnnotationPointerUp}
               className={`absolute inset-0 w-full h-full z-20 ${
-                tool === 'interact'
+                tool === 'interact' || tool === 'select'
                   ? 'pointer-events-none'
                   : tool === 'text'
                     ? 'pointer-events-auto cursor-text'
@@ -1322,83 +1301,83 @@ export const AgentBrowserView: React.FC<AgentBrowserViewProps> = ({
             </div>
           )}
 
-          {/* Floating Bottom Annotation & Capture-to-Chat Toolbar */}
+          {/* Floating Bottom Annotation & Selection Toolbar (compact icon-only pill) */}
           {!isBlank && !activeTab?.error && (
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 px-2 py-1 rounded-full bg-[#111114]/90 backdrop-blur-md border border-white/15 shadow-[0_12px_32px_rgba(0,0,0,0.65)]">
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-0.5 px-1.5 py-1 rounded-full bg-[#16171a]/92 backdrop-blur-md shadow-[0_8px_24px_rgba(0,0,0,0.55)]">
               <button
                 type="button"
-                onClick={() => setTool('interact')}
-                title="Interact"
-                className={`h-[26px] px-2 rounded-full flex items-center gap-1 text-[11px] font-medium transition-colors cursor-pointer ${
-                  tool === 'interact' ? 'bg-white/15 text-white' : 'text-white/60 hover:text-white hover:bg-white/10'
+                onClick={() => setTool((t) => (t === 'select' ? 'interact' : 'select'))}
+                title={tool === 'select' ? 'Exit element selection' : 'Select element to send to chat'}
+                aria-label="Select element"
+                className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+                  tool === 'select' ? 'bg-white/15 text-[#60a5fa]' : 'text-white/65 hover:text-white hover:bg-white/10'
                 }`}
               >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
                   <path d="M3 2l9.5 6.2-4.4 1.1-2.1 4.2L3 2z" />
                 </svg>
-                <span className="hidden sm:inline">Interact</span>
               </button>
 
               <button
                 type="button"
-                onClick={() => setTool('draw')}
+                onClick={() => setTool((t) => (t === 'draw' ? 'interact' : 'draw'))}
                 title="Freehand draw"
-                className={`h-[26px] px-2 rounded-full flex items-center gap-1 text-[11px] font-medium transition-colors cursor-pointer ${
-                  tool === 'draw' ? 'bg-rose-500/25 text-rose-200 ring-1 ring-rose-400/50' : 'text-white/60 hover:text-white hover:bg-white/10'
+                aria-label="Freehand draw"
+                className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+                  tool === 'draw' ? 'bg-white/15 text-white' : 'text-white/65 hover:text-white hover:bg-white/10'
                 }`}
               >
-                <MaterialIcon name="edit" size={12} />
-                <span className="hidden sm:inline">Draw</span>
+                <MaterialIcon name="edit" size={13} />
               </button>
 
               <button
                 type="button"
-                onClick={() => setTool('rect')}
+                onClick={() => setTool((t) => (t === 'rect' ? 'interact' : 'rect'))}
                 title="Rectangle highlight"
-                className={`h-[26px] px-2 rounded-full flex items-center gap-1 text-[11px] font-medium transition-colors cursor-pointer ${
-                  tool === 'rect' ? 'bg-rose-500/25 text-rose-200 ring-1 ring-rose-400/50' : 'text-white/60 hover:text-white hover:bg-white/10'
+                aria-label="Rectangle highlight"
+                className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+                  tool === 'rect' ? 'bg-white/15 text-white' : 'text-white/65 hover:text-white hover:bg-white/10'
                 }`}
               >
-                <Square size={11} strokeWidth={2} />
-                <span className="hidden sm:inline">Rect</span>
+                <Square size={12} strokeWidth={2} />
               </button>
 
               <button
                 type="button"
-                onClick={() => setTool('text')}
+                onClick={() => setTool((t) => (t === 'text' ? 'interact' : 'text'))}
                 title="Text callout"
-                className={`h-[26px] px-2 rounded-full flex items-center gap-1 text-[11px] font-medium transition-colors cursor-pointer ${
-                  tool === 'text' ? 'bg-rose-500/25 text-rose-200 ring-1 ring-rose-400/50' : 'text-white/60 hover:text-white hover:bg-white/10'
+                aria-label="Text callout"
+                className={`w-[28px] h-[28px] rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+                  tool === 'text' ? 'bg-white/15 text-white' : 'text-white/65 hover:text-white hover:bg-white/10'
                 }`}
               >
-                <span className="font-serif font-bold text-[12px] leading-none">T</span>
-                <span className="hidden sm:inline">Text</span>
+                <span className="font-serif font-semibold text-[13px] leading-none">T</span>
               </button>
+
+              {hasAnnotations && (
+                <button
+                  type="button"
+                  disabled={isCapturing}
+                  onClick={() => void handleSendToChat()}
+                  title="Send annotated screenshot to chat"
+                  aria-label="Send to chat"
+                  className="w-[28px] h-[28px] rounded-full flex items-center justify-center text-white hover:bg-white/15 disabled:opacity-50 transition-colors cursor-pointer"
+                >
+                  <Send size={12} strokeWidth={2.2} />
+                </button>
+              )}
 
               {(hasAnnotations || tool !== 'interact') && (
                 <button
                   type="button"
                   onClick={clearAnnotations}
-                  title="Clear annotations & exit"
+                  title="Clear & return to interact"
                   aria-label="Clear annotations"
-                  className="w-[26px] h-[26px] rounded-full flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                  className="w-[28px] h-[28px] rounded-full flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
                 >
-                  {hasAnnotations ? <Trash2 size={12} /> : <X size={12} />}
+                  <X size={13} />
                 </button>
               )}
-
-              <div className="w-px h-4 bg-white/15 mx-0.5" />
-
-              <button
-                type="button"
-                disabled={isCapturing}
-                onClick={() => void handleSendToChat()}
-                title="Capture screenshot & attach to chat"
-                className="h-[26px] px-2.5 rounded-full bg-white text-black hover:bg-white/90 disabled:opacity-50 text-[11px] font-semibold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
-              >
-                <Send size={11} strokeWidth={2.2} />
-                <span>{isCapturing ? 'Capturing…' : 'Send to Chat'}</span>
-              </button>
             </div>
           )}
         </div>

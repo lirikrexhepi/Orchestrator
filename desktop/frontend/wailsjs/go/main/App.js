@@ -38,6 +38,10 @@ export function BrowserEndpoint() {
   return window['go']['main']['App']['BrowserEndpoint']();
 }
 
+export function BrowserInspectAt(arg1, arg2, arg3) {
+  return window['go']['main']['App']['BrowserInspectAt'](arg1, arg2, arg3);
+}
+
 export function BrowserListTabs(arg1) {
   return window['go']['main']['App']['BrowserListTabs'](arg1);
 }

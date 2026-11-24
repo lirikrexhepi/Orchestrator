@@ -165,6 +165,8 @@ function orchestratorAction(name: string): string | null {
       return 'Typed in browser';
     case 'browser_press':
       return 'Pressed key';
+    case 'browser_batch':
+      return 'Ran browser sequence';
     case 'browser_eval':
       return 'Evaluated JS';
     case 'browser_console':

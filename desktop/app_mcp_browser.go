@@ -89,7 +89,7 @@ func (b *appMCPBackend) BrowserNavigate(ctx context.Context, threadID, tabID, ur
 	return browser.SessionInfo{ID: id, ThreadID: threadID, URL: url}, nil
 }
 
-func (b *appMCPBackend) BrowserScreenshot(ctx context.Context, threadID, tabID string) (mcp.BrowserScreenshotResult, error) {
+func (b *appMCPBackend) BrowserScreenshot(ctx context.Context, threadID, tabID string, grid bool) (mcp.BrowserScreenshotResult, error) {
 	mgr, id, err := b.resolveTab(threadID, tabID)
 	if err != nil {
 		return mcp.BrowserScreenshotResult{}, err
@@ -99,6 +99,11 @@ func (b *appMCPBackend) BrowserScreenshot(ctx context.Context, threadID, tabID s
 	b64, w, h, err := mgr.CaptureScreenshotJPEG(shotCtx, id, 82)
 	if err != nil {
 		return mcp.BrowserScreenshotResult{}, err
+	}
+	if grid && b64 != "" {
+		if gridded, gErr := browser.OverlayGrid(b64, w, h); gErr == nil {
+			b64 = gridded
+		}
 	}
 	info, _ := mgr.GetTabInfo(id)
 	b.emitBrowserTabOpened(threadID, info)
@@ -146,20 +151,23 @@ func (b *appMCPBackend) BrowserClick(ctx context.Context, threadID, tabID string
 	if info, ok := mgr.GetTabInfo(id); ok {
 		b.emitBrowserTabOpened(threadID, info)
 	}
-	return mcp.BrowserPointResult{TabID: id, X: x, Y: y}, nil
+	return mcp.BrowserPointResult{TabID: id, X: x, Y: y, Errors: mgr.DrainNewErrors(id)}, nil
 }
 
-func (b *appMCPBackend) BrowserDrag(ctx context.Context, threadID, tabID string, opts browser.DragOptions) error {
+func (b *appMCPBackend) BrowserDrag(ctx context.Context, threadID, tabID string, opts browser.DragOptions) ([]browser.ConsoleEntry, error) {
 	mgr, id, err := b.resolveTab(threadID, tabID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dragCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if info, ok := mgr.GetTabInfo(id); ok {
 		b.emitBrowserTabOpened(threadID, info)
 	}
-	return mgr.Drag(dragCtx, id, opts)
+	if err := mgr.Drag(dragCtx, id, opts); err != nil {
+		return nil, err
+	}
+	return mgr.DrainNewErrors(id), nil
 }
 
 func (b *appMCPBackend) BrowserWheel(ctx context.Context, threadID, tabID string, x, y, deltaX, deltaY float64, modifiers []string) error {
@@ -172,24 +180,44 @@ func (b *appMCPBackend) BrowserWheel(ctx context.Context, threadID, tabID string
 	return mgr.Wheel(wheelCtx, id, x, y, deltaX, deltaY, modifiers)
 }
 
-func (b *appMCPBackend) BrowserType(ctx context.Context, threadID, tabID, text, ref, selector string) error {
+func (b *appMCPBackend) BrowserType(ctx context.Context, threadID, tabID, text, ref, selector string) ([]browser.ConsoleEntry, error) {
 	mgr, id, err := b.resolveTab(threadID, tabID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	typeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return mgr.TypeText(typeCtx, id, text, ref, selector)
+	if err := mgr.TypeText(typeCtx, id, text, ref, selector); err != nil {
+		return nil, err
+	}
+	return mgr.DrainNewErrors(id), nil
 }
 
-func (b *appMCPBackend) BrowserPress(ctx context.Context, threadID, tabID, key string, modifiers []string) error {
+func (b *appMCPBackend) BrowserPress(ctx context.Context, threadID, tabID, key string, modifiers []string) ([]browser.ConsoleEntry, error) {
 	mgr, id, err := b.resolveTab(threadID, tabID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	pressCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return mgr.PressKey(pressCtx, id, key, modifiers)
+	if err := mgr.PressKey(pressCtx, id, key, modifiers); err != nil {
+		return nil, err
+	}
+	return mgr.DrainNewErrors(id), nil
+}
+
+func (b *appMCPBackend) BrowserBatch(ctx context.Context, threadID, tabID string, steps []browser.BatchStep) (browser.BatchResult, []browser.ConsoleEntry, error) {
+	mgr, id, err := b.resolveTab(threadID, tabID)
+	if err != nil {
+		return browser.BatchResult{}, nil, err
+	}
+	batchCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
+	if info, ok := mgr.GetTabInfo(id); ok {
+		b.emitBrowserTabOpened(threadID, info)
+	}
+	res := mgr.Batch(batchCtx, id, steps)
+	return res, mgr.DrainNewErrors(id), nil
 }
 
 func (b *appMCPBackend) BrowserEval(ctx context.Context, threadID, tabID, expression string) (any, error) {
