@@ -31,6 +31,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Resolve version & validate release notes
         id: meta
@@ -46,6 +47,7 @@ jobs:
           } else {
             $tag = "${{ github.ref_name }}".Trim()
             $ver = $tag.TrimStart("v", "V")
+            git fetch origin "+refs/tags/$tag:refs/tags/$tag" --force 2>$null
             $notesRaw = (git tag -l --format='%(contents)' $tag | Out-String).Trim()
           }
           if ($ver -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
@@ -56,6 +58,7 @@ jobs:
               ForEach-Object { $_.Trim() } |
               Where-Object {
                 $_ -ne "" -and
+                $_ -notmatch '^chore\(release\):' -and
                 $_ -notmatch '^(Release|Orchestrator)\s+v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$' -and
                 $_ -notmatch '^v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$'
               }
@@ -185,7 +188,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Orchestrator ${{ steps.meta.outputs.tag }}
           body: ${{ steps.meta.outputs.notes }}
-          generate_release_notes: true
+          generate_release_notes: false
           draft: false
           prerelease: ${{ contains(steps.meta.outputs.version, '-') }}
           files: |
