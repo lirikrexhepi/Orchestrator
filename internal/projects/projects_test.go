@@ -234,3 +234,68 @@ func TestIDsAreUniqueForSameBaseName(t *testing.T) {
 		t.Fatalf("ids should be derived from the folder name, got %q and %q", a.ID, b.ID)
 	}
 }
+
+func TestRelocatePreservesIdentityOrderAndAccounts(t *testing.T) {
+	dir := t.TempDir()
+	store := New(dir)
+	oldDir := filepath.Join(t.TempDir(), "falacy")
+	newDir := filepath.Join(t.TempDir(), "falacy-moved")
+	otherDir := filepath.Join(t.TempDir(), "other")
+	for _, p := range []string{oldDir, newDir, otherDir} {
+		if err := os.Mkdir(p, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+
+	first, err := store.Add(oldDir, false)
+	if err != nil {
+		t.Fatalf("Add first: %v", err)
+	}
+	if _, err := store.SetAccount(first.ID, "claude", "work"); err != nil {
+		t.Fatalf("SetAccount: %v", err)
+	}
+	second, err := store.Add(otherDir, false)
+	if err != nil {
+		t.Fatalf("Add second: %v", err)
+	}
+	if _, err := store.Activate(first.ID); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	// Simulate moving the original folder away so it becomes missing.
+	if err := os.RemoveAll(oldDir); err != nil {
+		t.Fatalf("remove oldDir: %v", err)
+	}
+	if got := store.ActivePath(); got != "" {
+		t.Fatalf("expected missing active project to yield empty ActivePath, got %q", got)
+	}
+
+	// Reject relocating onto a path already owned by another project.
+	if _, _, err := store.Relocate(first.ID, otherDir, false); err != ErrAlreadyExists {
+		t.Fatalf("expected ErrAlreadyExists, got %v", err)
+	}
+
+	prev, updated, err := store.Relocate(first.ID, newDir, true)
+	if err != nil {
+		t.Fatalf("Relocate: %v", err)
+	}
+	if prev != first.Path {
+		t.Fatalf("oldPath: got %q want %q", prev, first.Path)
+	}
+	if updated.ID != first.ID || updated.Path != newDir || updated.Name != "falacy-moved" || !updated.IsGit || updated.Missing {
+		t.Fatalf("unexpected relocated project: %+v", updated)
+	}
+	if updated.Accounts["claude"] != "work" {
+		t.Fatalf("expected accounts preserved, got %+v", updated.Accounts)
+	}
+
+	// Order and active selection must survive restart.
+	reopened := New(dir)
+	if got := reopened.ActivePath(); got != newDir {
+		t.Fatalf("ActivePath after relocate: got %q want %q", got, newDir)
+	}
+	list := reopened.List()
+	if len(list) != 2 || list[0].ID != second.ID || list[1].ID != first.ID {
+		t.Fatalf("Relocate must keep picker order: %+v", list)
+	}
+}

@@ -3,6 +3,7 @@ import {
   ActiveProject,
   AddProject,
   ChooseProject,
+  ChooseProjectLocation,
   ListProjects,
   MoveProject,
   RemoveProject,
@@ -22,6 +23,7 @@ export interface ProjectsState {
   choose: () => Promise<boolean>;
   add: (path: string) => Promise<boolean>;
   select: (id: string) => Promise<boolean>;
+  relocate: (id: string) => Promise<boolean>;
   remove: (id: string) => Promise<void>;
   move: (id: string, toIndex: number) => Promise<void>;
   refresh: () => Promise<void>;
@@ -126,6 +128,24 @@ export function useProjects(onSwitched?: () => void | Promise<void>): ProjectsSt
     [refresh],
   );
 
+  const relocate = useCallback(
+    async (id: string) => {
+      setChoosing(true);
+      try {
+        const updated = await ChooseProjectLocation(id);
+        if (!updated) return false;
+        await refresh();
+        return true;
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+        return false;
+      } finally {
+        setChoosing(false);
+      }
+    },
+    [refresh],
+  );
+
   const move = useCallback(
     async (id: string, toIndex: number) => {
       try {
@@ -138,5 +158,5 @@ export function useProjects(onSwitched?: () => void | Promise<void>): ProjectsSt
     [refresh],
   );
 
-  return { projects: list, active, error, isChoosing, choose, add, select, remove, move, refresh };
+  return { projects: list, active, error, isChoosing, choose, add, select, relocate, remove, move, refresh };
 }

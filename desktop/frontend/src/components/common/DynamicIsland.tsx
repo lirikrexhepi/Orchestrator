@@ -1150,26 +1150,29 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           </motion.div>
         )}
 
-        {mode === 'project-chats' && (
+        {mode === 'project-chats' && (() => {
+          const viewedProject =
+            (selectedProject
+              ? projects?.projects.find((p) => p.id === selectedProject.id) ?? selectedProject
+              : null) ||
+            projects?.active ||
+            (projects?.projects && projects.projects.length > 0
+              ? projects.projects[0]
+              : ({ id: 'default', name: 'Past Chats', path: '', isGit: false, addedAt: Date.now() } as Project));
+          return (
           <motion.div key="project-chats-view" {...viewMotion} className="w-full">
             <ProjectChatsView
               tone={tone}
-              project={
-                selectedProject ||
-                projects?.active ||
-                (projects?.projects && projects.projects.length > 0
-                  ? projects.projects[0]
-                  : ({ id: 'default', name: 'Past Chats', path: '', isGit: false, addedAt: Date.now() } as Project))
-              }
+              project={viewedProject}
               groups={groupChatHistoryItems(
                 extractChatHistoryItems(
                   historyEntries || [],
-                  (selectedProject || projects?.active || projects?.projects?.[0])?.path || '',
+                  viewedProject.path || '',
                 ),
               )}
               archived={extractChatHistoryItems(
                 historyEntries || [],
-                (selectedProject || projects?.active || projects?.projects?.[0])?.path || '',
+                viewedProject.path || '',
                 { archived: 'only' },
               )}
               runningThreadIds={runningThreadIds}
@@ -1177,11 +1180,15 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               subtitle={formatChatSubtitle}
               onBack={() => setMode('projects')}
               onClose={() => setMode('idle')}
+              onRelocate={
+                projects && viewedProject.id !== 'default'
+                  ? () => void projects.relocate(viewedProject.id)
+                  : undefined
+              }
               onNewChat={() => {
                 void (async () => {
-                  const proj = selectedProject || projects?.active;
-                  if (proj && proj.id !== projects?.active?.id) {
-                    await projects?.select(proj.id);
+                  if (viewedProject.id !== 'default' && viewedProject.id !== projects?.active?.id) {
+                    await projects?.select(viewedProject.id);
                   }
                   onNewChat?.();
                   setMode('idle');
@@ -1189,9 +1196,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               }}
               onOpen={(chat) => {
                 void (async () => {
-                  const proj = selectedProject || projects?.active;
-                  if (proj && proj.id !== projects?.active?.id) {
-                    await projects?.select(proj.id);
+                  if (viewedProject.id !== 'default' && viewedProject.id !== projects?.active?.id) {
+                    await projects?.select(viewedProject.id);
                   }
                   if (chat.archived) onSetChatArchived?.(chat.workspaceId, chat.threadId, false);
                   onOpenHistory?.(chat.workspaceId, chat.threadId);
@@ -1202,7 +1208,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               onSetArchived={(chat, archived) => onSetChatArchived?.(chat.workspaceId, chat.threadId, archived)}
             />
           </motion.div>
-        )}
+          );
+        })()}
 
         {mode === 'claude-chats' && (
           <motion.div key="claude-chats-view" {...viewMotion} className="w-full">

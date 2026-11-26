@@ -166,6 +166,7 @@ const ProjectRow = React.memo(function ProjectRow({
   canRemove,
   onSelect,
   onOpenChats,
+  onRelocate,
   onRemove,
   onDragEnd,
   onChatDrop,
@@ -177,6 +178,7 @@ const ProjectRow = React.memo(function ProjectRow({
   canRemove: boolean;
   onSelect: () => void;
   onOpenChats: () => void;
+  onRelocate?: () => void;
   onRemove: () => void;
   onDragEnd: () => void;
   onChatDrop?: (payload: ChatDragPayload) => void;
@@ -298,17 +300,43 @@ const ProjectRow = React.memo(function ProjectRow({
               className="flex-1 min-w-0 h-full flex items-center gap-2.5 text-left cursor-pointer"
             >
               <span className="w-[18px] flex items-center justify-center shrink-0">
-                <ProjectGlyph
-                  projectId={project.id}
-                  size={16}
-                  glyph={<MaterialIcon name="folder" className={`text-[16px] ${tone.sub}`}/>}
-                />
+                {project.missing ? (
+                  <MaterialIcon name="folder_off" className={`text-[16px] ${tone.sub} opacity-75`} />
+                ) : (
+                  <ProjectGlyph
+                    projectId={project.id}
+                    size={16}
+                    glyph={<MaterialIcon name="folder" className={`text-[16px] ${tone.sub}`}/>}
+                  />
+                )}
               </span>
-              <span className={`flex items-center gap-1.5 text-[12.5px] font-medium tracking-tight leading-[15px] truncate ${tone.fg}`}>
-                <span className="truncate">{project.name}</span>
-                {isActive && <span className="w-[5px] h-[5px] rounded-full bg-[#0A84FF] shrink-0" />}
+              <span className="flex flex-col min-w-0 gap-[1px]">
+                <span className={`flex items-center gap-1.5 text-[12.5px] font-medium tracking-tight leading-[15px] truncate ${tone.fg} ${project.missing ? 'opacity-65' : ''}`}>
+                  <span className="truncate">{project.name}</span>
+                  {isActive && <span className="w-[5px] h-[5px] rounded-full bg-[#0A84FF] shrink-0" />}
+                </span>
+                {project.missing && (
+                  <span className={`text-[10px] leading-[12px] truncate ${tone.sub}`}>
+                    Folder moved
+                  </span>
+                )}
               </span>
             </button>
+            {onRelocate && (
+              <button
+                type="button"
+                title={project.missing ? 'Locate moved folder' : 'Change folder location'}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRelocate();
+                }}
+                className={`w-[26px] h-[26px] rounded-full flex items-center justify-center ${
+                  project.missing ? `${tone.fg} opacity-80 hover:opacity-100` : `${tone.sub} opacity-0 group-hover:opacity-100 focus:opacity-100`
+                } ${tone.hover} transition-all duration-150 cursor-pointer shrink-0`}
+              >
+                <MaterialIcon name="drive_file_move" size={14} />
+              </button>
+            )}
             {canRemove && (
               <button
                 type="button"
@@ -547,6 +575,11 @@ export function ProjectsView({
           </>
         }
       />
+      {projects?.error && (
+        <div className={`px-2 pb-1.5 text-[11px] leading-[14px] ${tone.sub}`}>
+          {projects.error}
+        </div>
+      )}
       <ScrollArea maxHeight={360} className="-mr-1 pr-1">
         {openTasks.length > 0 && (
           <div className="flex flex-col mb-1">
@@ -618,6 +651,7 @@ export function ProjectsView({
                     })();
                   }}
                   onOpenChats={() => onOpenProjectChats(project)}
+                  onRelocate={projects ? () => void projects.relocate(project.id) : undefined}
                   onRemove={() => void projects?.remove(project.id)}
                   onDragEnd={() => commit(project.id)}
                   onChatDrop={onMoveChat ? (payload) => onMoveChat(payload, project) : undefined}
@@ -726,6 +760,7 @@ export function ProjectChatsView({
   onBack,
   onClose,
   onNewChat,
+  onRelocate,
   onOpen,
   onRename,
   onSetArchived,
@@ -740,6 +775,7 @@ export function ProjectChatsView({
   onBack: () => void;
   onClose: () => void;
   onNewChat: () => void;
+  onRelocate?: () => void;
   onOpen: (chat: ChatHistoryItem) => void;
   onRename?: (chat: ChatHistoryItem, title: string) => void | Promise<void>;
   onSetArchived: (chat: ChatHistoryItem, archived: boolean) => void;
@@ -885,6 +921,15 @@ export function ProjectChatsView({
         springBack
         actions={
           <>
+            {onRelocate && (
+              <IconButton
+                tone={tone}
+                title={project.missing ? 'Locate moved folder' : 'Change folder location'}
+                onClick={onRelocate}
+              >
+                <MaterialIcon name="drive_file_move" size={14} />
+              </IconButton>
+            )}
             <IconButton tone={tone} title={`New chat in ${project.name}`} onClick={onNewChat}>
               <Plus size={15} strokeWidth={2} />
             </IconButton>
@@ -894,6 +939,23 @@ export function ProjectChatsView({
           </>
         }
       />
+      {project.missing && (
+        <div className={`flex items-center justify-between gap-2 px-2 py-1.5 mb-1 text-[11px] ${tone.sub}`}>
+          <span className="flex items-center gap-1.5 min-w-0 truncate" title={project.path}>
+            <MaterialIcon name="folder_off" size={14} className="shrink-0 opacity-75" />
+            <span className="truncate">Folder moved or missing</span>
+          </span>
+          {onRelocate && (
+            <button
+              type="button"
+              onClick={onRelocate}
+              className={`shrink-0 font-medium underline underline-offset-2 cursor-pointer transition-opacity hover:opacity-80 ${tone.fg}`}
+            >
+              Locate…
+            </button>
+          )}
+        </div>
+      )}
       <ScrollArea maxHeight={320} className="-mr-1 pr-1">
         {empty && !showArchived ? <EmptyState tone={tone}>No chats yet</EmptyState> : null}
         <div className="flex flex-col gap-2">

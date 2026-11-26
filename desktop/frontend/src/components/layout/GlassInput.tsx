@@ -376,12 +376,24 @@ export const GlassInput: React.FC<GlassInputProps> = ({
                   : 'text-white/60 hover:text-white hover:bg-white/[0.06]'
               }`}
             >
-              <MaterialIcon name="folder" size={14} className="opacity-70" />
-              <span className="truncate max-w-[200px]">
+              <MaterialIcon name={projects.active?.missing ? 'folder_off' : 'folder'} size={14} className="opacity-70" />
+              <span className={`truncate max-w-[200px] ${projects.active?.missing ? 'opacity-65' : ''}`}>
                 {projects.active?.name || 'No Project'}
               </span>
               <ChevronDown size={12} className="opacity-60" />
             </button>
+            {projects.active?.missing && (
+              <button
+                type="button"
+                onClick={() => void projects.relocate(projects.active!.id)}
+                title={`Folder not found: ${projects.active.path}`}
+                className={`ml-2 text-[11px] font-medium underline underline-offset-2 transition-colors cursor-pointer ${
+                  isLight ? 'text-black/60 hover:text-black' : 'text-white/60 hover:text-white'
+                }`}
+              >
+                Folder moved · Locate…
+              </button>
+            )}
 
             {/* Floating Glass Project Picker Menu (opens upwards) */}
             {isProjectPickerOpen && (
@@ -439,12 +451,14 @@ export const GlassInput: React.FC<GlassInputProps> = ({
                             }`}
                           >
                             <span className="flex items-center gap-2 truncate">
-                              <MaterialIcon name="folder" size={14} className="opacity-70 shrink-0" />
-                              <span className="truncate">{p.name}</span>
+                              <MaterialIcon name={p.missing ? 'folder_off' : 'folder'} size={14} className="opacity-70 shrink-0" />
+                              <span className={`truncate ${p.missing ? 'opacity-60' : ''}`}>{p.name}</span>
                             </span>
-                            {isCurrent && (
+                            {p.missing ? (
+                              <span className="text-[10px] opacity-45 shrink-0">moved</span>
+                            ) : isCurrent ? (
                               <MaterialIcon name="check" size={14} className="text-blue-400 shrink-0" />
-                            )}
+                            ) : null}
                           </button>
                         );
                       })

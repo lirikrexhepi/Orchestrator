@@ -88,6 +88,28 @@ func (s *Store) SaveProjectMemory(cwd, content string) error {
 	return writeFile(filepath.Join(s.projectDir(cwd), projectMemoryFile), content)
 }
 
+// MoveProjectMemory copies project-level MEMORY.md from an old folder path to a
+// new one when the project is relocated, without overwriting existing memory at
+// the destination.
+func (s *Store) MoveProjectMemory(oldCwd, newCwd string) error {
+	if strings.TrimSpace(oldCwd) == "" || strings.TrimSpace(newCwd) == "" {
+		return nil
+	}
+	oldDir := s.projectDir(oldCwd)
+	newDir := s.projectDir(newCwd)
+	if oldDir == newDir {
+		return nil
+	}
+	content := strings.TrimSpace(readFile(filepath.Join(oldDir, projectMemoryFile)))
+	if content == "" {
+		return nil
+	}
+	if strings.TrimSpace(readFile(filepath.Join(newDir, projectMemoryFile))) != "" {
+		return nil
+	}
+	return writeFile(filepath.Join(newDir, projectMemoryFile), content)
+}
+
 func (s *Store) LoadRecap(workspaceID string) string {
 	if workspaceID == "" {
 		return ""

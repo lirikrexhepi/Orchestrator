@@ -53,6 +53,8 @@ export function ChooseAttachments():Promise<Array<attachments.Attachment>>;
 
 export function ChooseProject():Promise<projects.Project>;
 
+export function ChooseProjectLocation(arg1:string):Promise<projects.Project>;
+
 export function ClaudeUpdateStatus():Promise<domain.ProviderUpdate>;
 
 export function CompactWorkspace(arg1:string,arg2:string):Promise<string>;
@@ -220,6 +222,8 @@ export function RecapPrompt(arg1:string):Promise<string>;
 export function RefreshUsage():Promise<session.UsageReport>;
 
 export function RegenerateRemoteToken():Promise<remote.RemoteInfo>;
+
+export function RelocateProject(arg1:string,arg2:string):Promise<projects.Project>;
 
 export function RemoveAccount(arg1:string,arg2:string):Promise<void>;
 

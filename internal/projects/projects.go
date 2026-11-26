@@ -46,8 +46,9 @@ type state struct {
 }
 
 var (
-	ErrNotFound = errors.New("project not found")
-	ErrNotDir   = errors.New("not a directory")
+	ErrNotFound      = errors.New("project not found")
+	ErrNotDir        = errors.New("not a directory")
+	ErrAlreadyExists = errors.New("another project already uses this folder")
 )
 
 // Store keeps the project list between runs.
@@ -238,6 +239,61 @@ func (s *Store) Remove(id string) error {
 		return ErrNotFound
 	}
 	return s.persist()
+}
+
+// ByID returns a single saved project by its ID with live missing status.
+func (s *Store) ByID(id string) (Project, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, project := range s.saved.Projects {
+		if project.ID == id {
+			project.Missing = !isDir(project.Path)
+			return project, true
+		}
+	}
+	return Project{}, false
+}
+
+// Relocate updates an existing project's folder path in place, preserving its
+// ID, picker order, active status, and provider account bindings. Returns the
+// previous path alongside the updated project so callers can migrate history
+// and project memory.
+func (s *Store) Relocate(id, newPath string, isGit bool) (string, Project, error) {
+	clean, err := normalize(newPath)
+	if err != nil {
+		return "", Project{}, err
+	}
+
+	s.mu.Lock()
+	index := -1
+	for i := range s.saved.Projects {
+		if s.saved.Projects[i].ID == id {
+			index = i
+			continue
+		}
+		if samePath(s.saved.Projects[i].Path, clean) {
+			s.mu.Unlock()
+			return "", Project{}, ErrAlreadyExists
+		}
+	}
+	if index < 0 {
+		s.mu.Unlock()
+		return "", Project{}, ErrNotFound
+	}
+
+	oldPath := s.saved.Projects[index].Path
+	s.saved.Projects[index].Path = clean
+	s.saved.Projects[index].Name = filepath.Base(clean)
+	s.saved.Projects[index].IsGit = isGit
+	s.saved.Projects[index].Missing = false
+	updated := s.saved.Projects[index]
+	s.mu.Unlock()
+
+	if err := s.persist(); err != nil {
+		return "", Project{}, err
+	}
+	return oldPath, updated, nil
 }
 
 // Activate selects a project and stamps its last-used time. It deliberately

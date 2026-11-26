@@ -7,6 +7,8 @@ import (
 
 	"composer/internal/domain"
 	"composer/internal/git"
+	"composer/internal/history"
+	"composer/internal/logger"
 	"composer/internal/projects"
 	"composer/internal/session"
 
@@ -86,6 +88,96 @@ func (a *App) MoveProject(id string, toIndex int) error {
 // RemoveProject forgets a project. The directory itself is never touched.
 func (a *App) RemoveProject(id string) error {
 	return a.projects.Remove(id)
+}
+
+// ChooseProjectLocation opens the OS folder picker to point an existing saved
+// project at its new location on disk, migrating its chats and project memory.
+// Returns nil when the dialog is cancelled.
+func (a *App) ChooseProjectLocation(id string) (*projects.Project, error) {
+	title := "Locate project folder"
+	if existing, ok := a.projects.ByID(id); ok && existing.Name != "" {
+		title = fmt.Sprintf("Locate %s folder", existing.Name)
+	}
+	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: title,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if dir == "" {
+		return nil, nil
+	}
+	return a.RelocateProject(id, dir)
+}
+
+// RelocateProject updates a saved project's path in place and migrates every
+// stored chat workspace, Claude session file, and project memory bound to the
+// old path so existing chats stay attached and resumable.
+func (a *App) RelocateProject(id, newDir string) (*projects.Project, error) {
+	if strings.TrimSpace(newDir) == "" {
+		return nil, fmt.Errorf("choose a new folder for the project")
+	}
+	cwd, err := a.requireCwd(newDir)
+	if err != nil {
+		return nil, err
+	}
+	existing, ok := a.projects.ByID(id)
+	if !ok {
+		return nil, projects.ErrNotFound
+	}
+	if isSamePath(existing.Path, cwd) {
+		return &existing, nil
+	}
+
+	if a.recorder != nil {
+		_ = a.recorder.FlushAll()
+	}
+
+	var toMigrate []history.Meta
+	if a.historyStore != nil {
+		metas, err := a.historyStore.List()
+		if err != nil {
+			return nil, err
+		}
+		for _, meta := range metas {
+			if !isSamePath(meta.Workspace.Cwd, existing.Path) {
+				continue
+			}
+			for _, task := range meta.Tasks {
+				if a.manager != nil && a.manager.TurnInProgress(task.ThreadID) {
+					return nil, fmt.Errorf("wait for %q to finish before relocating %s", task.Title, existing.Name)
+				}
+			}
+			toMigrate = append(toMigrate, meta)
+		}
+	}
+
+	_, isGit := git.Open(a.ctx, cwd)
+	oldPath, updated, err := a.projects.Relocate(id, cwd, isGit)
+	if err != nil {
+		return nil, err
+	}
+
+	moved := 0
+	for _, meta := range toMigrate {
+		if err := a.moveWorkspaceMeta(meta, cwd); err != nil {
+			logger.Warnf("App", "RelocateProject: failed to migrate workspace %s to %s: %v", meta.Workspace.ID, cwd, err)
+			continue
+		}
+		moved++
+	}
+	if a.memory != nil {
+		if err := a.memory.MoveProjectMemory(oldPath, cwd); err != nil {
+			logger.Warnf("App", "RelocateProject: failed to migrate project memory from %s to %s: %v", oldPath, cwd, err)
+		}
+	}
+
+	logger.Infof("App", "RelocateProject: %s moved from %s to %s (%d/%d workspaces migrated)", updated.ID, oldPath, cwd, moved, len(toMigrate))
+	a.emit(projectsChangedChannel)
+	if moved > 0 {
+		a.emit(historyChangedChannel)
+	}
+	return &updated, nil
 }
 
 // ProjectIcon reports a saved project's app icon as a data URL, or an empty

@@ -70,6 +70,10 @@ export function ChooseProject() {
   return window['go']['main']['App']['ChooseProject']();
 }
 
+export function ChooseProjectLocation(arg1) {
+  return window['go']['main']['App']['ChooseProjectLocation'](arg1);
+}
+
 export function ClaudeUpdateStatus() {
   return window['go']['main']['App']['ClaudeUpdateStatus']();
 }
@@ -404,6 +408,10 @@ export function RefreshUsage() {
 
 export function RegenerateRemoteToken() {
   return window['go']['main']['App']['RegenerateRemoteToken']();
+}
+
+export function RelocateProject(arg1, arg2) {
+  return window['go']['main']['App']['RelocateProject'](arg1, arg2);
 }
 
 export function RemoveAccount(arg1, arg2) {
