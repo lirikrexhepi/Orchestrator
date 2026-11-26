@@ -169,13 +169,33 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     const key = `${providerId}:${accountId}`;
     const pick = (list: AIModel[]) => {
       if (preserveModelId) {
-        const preserved = list.find((m) => m.id === preserveModelId || m.id.toLowerCase() === preserveModelId.toLowerCase());
+        const target = preserveModelId.trim().toLowerCase();
+        const preserved = list.find(
+          (m) =>
+            m.id === preserveModelId ||
+            m.id.toLowerCase() === target ||
+            m.name.toLowerCase() === target ||
+            m.id.toLowerCase().includes(target) ||
+            target.includes(m.id.toLowerCase()) ||
+            m.name.toLowerCase().includes(target) ||
+            target.includes(m.name.toLowerCase()),
+        );
         if (preserved) return preserved;
       }
       const { preferredAccountModels, preferredModels } = get();
       const ids = [preferredAccountModels[key], preferredModels[providerId]].filter(Boolean);
       for (const id of ids) {
-        const match = list.find((m) => m.id === id);
+        const idLower = id.trim().toLowerCase();
+        const match = list.find(
+          (m) =>
+            m.id === id ||
+            m.id.toLowerCase() === idLower ||
+            m.name.toLowerCase() === idLower ||
+            m.id.toLowerCase().includes(idLower) ||
+            idLower.includes(m.id.toLowerCase()) ||
+            m.name.toLowerCase().includes(idLower) ||
+            idLower.includes(m.name.toLowerCase()),
+        );
         if (match) return match;
       }
       return undefined;
@@ -200,14 +220,20 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     const loaded = await get().loadAccountModels(providerId, accountId);
     if (!stillShown() || loaded.length === 0) return;
     const preferred = pick(loaded);
-    if (preserveModelId && preferred) {
+    if (preserveModelId) {
+      const preserved = pick(loaded);
+      if (preserved) {
+        select(preserved);
+        return;
+      }
+    }
+    // Account preferred default model must always take precedence over the previously selected model!
+    if (preferred) {
       select(preferred);
     } else if (get().selectedModelId && loaded.some((m) => m.id === get().selectedModelId)) {
       const current = loaded.find((m) => m.id === get().selectedModelId);
       if (current) select(current);
-    } else if (preferred) {
-      select(preferred);
-    } else if (!loaded.some((m) => m.id === get().selectedModelId)) {
+    } else if (loaded.length > 0) {
       select(loaded[0]);
     }
   },
@@ -417,8 +443,12 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       // First load or forced refresh: honour the shown account's pinned default
       // and refresh account-scoped models (e.g. Antigravity accounts).
       const initialProvider = get().selectedProviderId;
-      if (initialProvider && (!keep || force)) {
-        void get().applyAccountDefault(initialProvider, get().shownAccount(initialProvider), keep ? previous : undefined);
+      if (initialProvider) {
+        const initialAccount = get().shownAccount(initialProvider);
+        const preferredId =
+          get().preferredAccountModels[`${initialProvider}:${initialAccount}`] ||
+          get().preferredModels[initialProvider];
+        void get().applyAccountDefault(initialProvider, initialAccount, preferredId || undefined);
       }
     } catch (cause) {
       set({

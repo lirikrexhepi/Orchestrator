@@ -150,3 +150,54 @@ func TestDevBuildDoesNotFlagAutoUpdate(t *testing.T) {
 		t.Fatalf("LatestVersion = %q, want 1.2.0", status.LatestVersion)
 	}
 }
+
+func TestFallbackToReleasesAPIWhenManifestIsStale(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest.json":
+			// Stale CDN response returning current version
+			_ = json.NewEncoder(w).Encode(Manifest{
+				Version: "1.0.0",
+				Platforms: map[string]PlatformAsset{
+					"windows-amd64": {URL: srv.URL + "/setup-1.0.0.exe"},
+				},
+			})
+		case "/api/releases/latest":
+			// Live GitHub API returning newly published release
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tag_name":     "v1.0.1",
+				"body":         "Fresh fixes",
+				"published_at": "2026-11-26T19:00:00Z",
+				"assets": []map[string]any{
+					{
+						"name":                 "Orchestrator-1.0.1-setup.exe",
+						"browser_download_url": srv.URL + "/setup-1.0.1.exe",
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := &Client{
+		CurrentVersion:     "1.0.0",
+		ManifestURL:        srv.URL + "/latest.json",
+		ReleasesAPIURL:     srv.URL + "/api/releases/latest",
+		Platform:           "windows-amd64",
+		AllowInsecureLocal: true,
+	}
+
+	status := client.Check(context.Background())
+	if status.Error != "" {
+		t.Fatalf("unexpected check error: %s", status.Error)
+	}
+	if !status.Available {
+		t.Fatalf("expected update to be available from live Releases API: %+v", status)
+	}
+	if status.LatestVersion != "1.0.1" {
+		t.Fatalf("LatestVersion = %q, want 1.0.1", status.LatestVersion)
+	}
+}

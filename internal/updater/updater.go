@@ -165,14 +165,17 @@ func (c *Client) Check(ctx context.Context) Status {
 	}
 
 	manifest, err := c.fetchManifest(ctx)
-	if err != nil {
-		// Fall back to GitHub Releases API when latest.json isn't published yet.
+	// If manifest fetch failed OR if the CDN-cached latest.json returned the current or older version,
+	// query the GitHub Releases API directly. GitHub's release download CDN (/releases/latest/download/...)
+	// can cache the previous release for 5-10 minutes, whereas the Releases API updates in real-time.
+	if err != nil || CompareVersions(manifest.Version, c.CurrentVersion) <= 0 {
 		apiManifest, apiErr := c.fetchFromReleasesAPI(ctx)
-		if apiErr != nil {
+		if apiErr == nil && (manifest.Version == "" || CompareVersions(apiManifest.Version, manifest.Version) > 0) {
+			manifest = apiManifest
+		} else if err != nil {
 			status.Error = err.Error()
 			return status
 		}
-		manifest = apiManifest
 	}
 
 	status.LatestVersion = normalizeVersionLabel(manifest.Version)
@@ -202,7 +205,14 @@ func (c *Client) fetchManifest(ctx context.Context) (Manifest, error) {
 
 	reqCtx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, manifestURL, nil)
+	// Cache buster query string to bypass intermediate CDN caching
+	targetURL := manifestURL
+	if strings.Contains(targetURL, "?") {
+		targetURL += fmt.Sprintf("&_t=%d", time.Now().UnixMilli())
+	} else {
+		targetURL += fmt.Sprintf("?_t=%d", time.Now().UnixMilli())
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -245,7 +255,13 @@ func (c *Client) fetchFromReleasesAPI(ctx context.Context) (Manifest, error) {
 
 	reqCtx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, apiURL, nil)
+	targetURL := apiURL
+	if strings.Contains(targetURL, "?") {
+		targetURL += fmt.Sprintf("&_t=%d", time.Now().UnixMilli())
+	} else {
+		targetURL += fmt.Sprintf("?_t=%d", time.Now().UnixMilli())
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return Manifest{}, err
 	}

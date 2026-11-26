@@ -51,9 +51,23 @@ export function resolveMatchingModel(
 
   const candidatePool = providerModels.length > 0 ? providerModels : models;
 
-  // Check specific keywords (opus, sonnet, haiku, flash, pro, gpt-4o, o3-mini, o1, muse)
+  // Check specific keywords (neon, carbon, argon, hydrogen, opus, sonnet, haiku, flash, pro, gpt-4o, o3-mini, o1, muse)
   if (lower) {
-    const keywords = ['opus', 'sonnet', 'haiku', 'flash', 'pro', 'gpt-4o', 'o3-mini', 'o1', 'muse'];
+    const keywords = [
+      'neon',
+      'carbon',
+      'argon',
+      'hydrogen',
+      'opus',
+      'sonnet',
+      'haiku',
+      'flash',
+      'pro',
+      'gpt-4o',
+      'o3-mini',
+      'o1',
+      'muse',
+    ];
     for (const kw of keywords) {
       if (lower.includes(kw)) {
         const match =
@@ -73,8 +87,8 @@ export function resolveMatchingModel(
     if (containsMatch) return containsMatch;
   }
 
-  // 6. If provider matched, fallback to first model of that provider
-  if (providerModels.length > 0) return providerModels[0];
+  // 6. If provider matched, fallback to first model of that provider ONLY if no specific model was requested
+  if (!raw && providerModels.length > 0) return providerModels[0];
 
   return undefined;
 }
@@ -217,19 +231,28 @@ export const GlassInput: React.FC<GlassInputProps> = ({
       return;
     }
 
+    const models = store.models;
+    if (!models || models.length === 0) return;
+
+    const target = resolveMatchingModel(models, activeChatModel, activeChatDriver);
+    const targetProviderId = target?.providerId || activeChatDriver || store.selectedProviderId;
+    const targetModelId = target?.id || activeChatModel;
+
+    // If a specific chat model was requested but hasn't arrived in models yet (e.g. account models still loading on boot),
+    // trigger loading and do NOT lock lastSyncedChatKey yet so it can sync once models arrive.
+    if (activeChatModel && !target) {
+      if (activeChatAccount && targetProviderId) {
+        void store.loadAccountModels(targetProviderId, activeChatAccount);
+      }
+      return;
+    }
+
     // Crucial: Only sync once on chat tab switch.
     // NEVER re-sync while staying on the same chat, otherwise the user's manual picker clicks get overwritten!
     if (lastSyncedChatKey === activeChatKey) {
       return;
     }
     lastSyncedChatKey = activeChatKey;
-
-    const models = store.models;
-    if (!models || models.length === 0) return;
-
-    const target = resolveMatchingModel(models, activeChatModel, activeChatDriver);
-    const targetProviderId = target?.providerId || activeChatDriver || store.selectedProviderId;
-    const targetModelId = target?.id;
 
     if (activeChatAccount && store.shownAccount(targetProviderId) !== activeChatAccount) {
       store.selectAccount(targetProviderId, activeChatAccount, targetModelId);
